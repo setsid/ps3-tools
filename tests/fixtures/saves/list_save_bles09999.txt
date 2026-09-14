@@ -1,0 +1,2 @@
+-rw-rw-rw-   1 root     root         2048 Sep 06 19:51 PARAM.SFO
+-rw-rw-rw-   1 root     root         4096 Sep 06 19:51 GAME.DAT

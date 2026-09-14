@@ -30,6 +30,11 @@ DEFAULT_ROUTES = {
     "/index.ps3": ("http", "root_147.html"),
     "/cpursx.ps3": ("http", "cpursx_147.html"),
     "/setup.ps3": ("http", "setup.html"),
+    # Confirmed present on webMAN 1.47.48q. It is a path rather than a query
+    # string, which is why it fits the transport rule without weakening it.
+    # Nobody has fired it at a real console yet: the reply body here is a
+    # plausible shape, not an observed one.
+    "/install.ps3/dev_hdd0/packages": ("http", "install.html"),
 }
 
 DEFAULT_LISTINGS = {
@@ -44,6 +49,21 @@ DEFAULT_LISTINGS = {
     "/dev_hdd0/game/BLES01717/USRDIR/": ("ftp", "list_usrdir_bles01717.txt"),
     "/dev_hdd0/game/BLES01428/USRDIR/": ("ftp", "list_usrdir_bles01428.txt"),
     "/dev_hdd0/game/NPEB02143/USRDIR/": ("ftp", "list_usrdir_npeb02143.txt"),
+    # Empty by default. The install endpoint installs whatever is in this
+    # folder rather than a named file, so a test for "somebody else's package
+    # is already sitting there" overrides this with list_packages_stranger.txt.
+    "/dev_hdd0/packages/": ("ftp", "list_packages_empty.txt"),
+    "/dev_hdd0/home/": ("ftp", "list_home.txt"),
+    "/dev_hdd0/home/00000001/savedata/": ("ftp", "list_savedata_user1.txt"),
+    "/dev_hdd0/home/00000002/savedata/": ("ftp", "list_packages_empty.txt"),
+    "/dev_hdd0/home/00000001/savedata/BLES01717-GAMEDATA/":
+        ("ftp", "list_save_folder.txt"),
+    "/dev_hdd0/home/00000001/savedata/BLES01428USRDIR/":
+        ("ftp", "list_save_folder.txt"),
+    "/dev_hdd0/home/00000001/savedata/NPEB02143-AUTOSAVE/":
+        ("ftp", "list_save_folder.txt"),
+    "/dev_hdd0/home/00000001/savedata/FREEFORM-NOTITLEID/":
+        ("ftp", "list_save_folder.txt"),
     "/dev_usb000/": ("ftp", "list_dev_hdd0.txt"),
     "/dev_usb000/GAMES/": ("ftp", "list_usb_games.txt"),
 }
@@ -330,12 +350,25 @@ class MockWebmanFtp:
                     limit = None
                     if injected and str(injected).startswith("TRUNCATE:"):
                         limit = int(str(injected).split(":", 1)[1])
-                    reply("150 opening data connection")
+                    reply(transfer_reply(self._normalise(argument)))
                     received = self._receive(data_socket, limit)
                     data_socket = None
                     path = self._normalise(argument)
+                    # REST before STOR is how a dropped upload resumes: the
+                    # client says how far it got and sends the rest, so the
+                    # bytes already there must be kept rather than replaced.
+                    # A 36 GB transfer that failed at 90% should cost seconds
+                    # to finish, not an hour to redo.
+                    if rest:
+                        head = self.files.get(path, b"")[:rest]
+                        # A client resuming past the end of what is there would
+                        # otherwise leave a hole. Pad so the result is at least
+                        # explicit rather than silently short.
+                        head = head + b"\0" * max(0, rest - len(head))
+                        received = head + received
                     self.files[path] = received
                     self.written[path] = received
+                    rest = 0
                     reply("226 transfer complete")
                 elif verb == "DELE" and self.writable:
                     reply("250 deleted" if

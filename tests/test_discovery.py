@@ -211,8 +211,21 @@ class Scan(FixtureCase):
         seen = []
         discovery.scan(["10.0.0.1", "10.0.0.2", "10.0.0.3"],
                        lambda host: None, connect=lambda host: False,
-                       workers=2, on_progress=lambda *args: seen.append(args))
+                       workers=2, on_progress=lambda *args: seen.append(args),
+                       passes=1)
         self.assertEqual(len(seen), 3)
+
+    def test_a_silent_sweep_is_tried_once_more_and_reports_both(self):
+        # The retry exists because the first packet to an address nobody has
+        # spoken to waits on ARP, and a console can miss a short timeout
+        # because of it. Progress covers both sweeps: the search really is
+        # doing the work twice, and saying otherwise would be a lie about how
+        # long it will take.
+        seen = []
+        discovery.scan(["10.0.0.1", "10.0.0.2", "10.0.0.3"],
+                       lambda host: None, connect=lambda host: False,
+                       workers=2, on_progress=lambda *args: seen.append(args))
+        self.assertEqual(len(seen), 6)
 
 
 class Outcome(FixtureCase):

@@ -444,6 +444,11 @@ class FindTests(ShellCase):
         self.answers = {}
         self.bar.scan_connect = lambda host: host in self.answers
         self.bar.scan_fetch = lambda host: self.answers.get(host)
+        # Find now runs a check on a single match, so the check needs a stub
+        # as well. Without it the test reaches for the invented addresses for
+        # real, which tests/check-no-network.py catches and the live console
+        # on this LAN is the reason it exists.
+        self.bar.check_fetch = lambda host: self.answers.get(host)
         self.asked = []
         self.bar._choose = self.asked.append
 
@@ -455,14 +460,47 @@ class FindTests(ShellCase):
         application.processEvents()
         return task
 
-    def test_one_console_fills_the_address_in_and_does_nothing_else(self):
+    def test_one_console_fills_the_address_in_and_checks_it(self):
         self.answers["192.168.9.3"] = fixture("webman_root.html")
         self._run_find()
         self.assertEqual(self.connection.scan, "found")
         self.assertEqual(self.connection.host, "192.168.9.3")
-        # Found, not contacted: the user asked where the console is.
-        self.assertEqual(self.connection.connection, "unknown")
-        self.assertEqual(self.asked, [])
+        # Pressing Find is already a statement that this is the console to
+        # use, so the check runs without a second button press. Leaving the
+        # status on "Not checked" beside an address the program had just
+        # found read as though the search had failed.
+        self.assertIn(self.connection.connection, ("checking", "connected"))
+
+    def test_find_never_reaches_the_network_through_the_auto_check(self):
+        """The guard for the hole this feature opened.
+
+        Find running a check by itself means a test feeding it invented
+        addresses will reach for them for real unless the check is stubbed
+        too. That happened, and tests/check-no-network.py caught it: three
+        requests went to made-up LAN addresses. This asserts the seam is
+        honoured, so the audit is not the only thing standing between a test
+        and the live console on this network.
+        """
+        def explode(*args, **kwargs):
+            raise AssertionError("the real HttpProbe was constructed")
+
+        original = shell_app.HttpProbe
+        shell_app.HttpProbe = explode
+        self.addCleanup(setattr, shell_app, "HttpProbe", original)
+        self.answers["192.168.9.3"] = fixture("webman_root.html")
+        self._run_find()
+        self.assertEqual(self.connection.host, "192.168.9.3")
+        self.assertIn(self.connection.connection, ("checking", "connected"))
+
+    def test_the_scan_result_is_still_not_the_connection_result(self):
+        # The two remain separate things even though one now triggers the
+        # other: the scan says where it looked, the connection says whether
+        # that address answered.
+        self.answers["192.168.9.3"] = fixture("webman_root.html")
+        self._run_find()
+        self.assertEqual(self.connection.scan, "found")
+        self.assertNotEqual(self.connection.scan_detail,
+                            self.connection.connection_detail)
 
     def test_several_consoles_are_put_to_the_user(self):
         self.answers["192.168.9.3"] = fixture("webman_root.html")

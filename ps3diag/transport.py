@@ -30,6 +30,9 @@ USER_AGENT = f"ps3-diag/{VERSION}"
 DEFAULT_HTTP_TIMEOUT = 20.0
 DEFAULT_FTP_TIMEOUT = 30.0
 
+#: How long to wait before each reconnect attempt, in seconds. See _command.
+RECONNECT_PAUSES = (0.5, 1.5)
+
 
 class UnsafeRequest(Exception):
     """Raised before anything leaves this machine."""
@@ -263,6 +266,40 @@ def may_read_bytes(path):
     return any(pattern.match(path) for pattern in BYTE_READABLE)
 
 
+# Save data files. Their own permission rather than a widening of BYTE_READABLE:
+# that one is capped at 64 KB because it exists to fetch a PARAM.SFO, and a save
+# file is megabytes. The two answer different questions and should not share a
+# cap or a pattern.
+#
+# Anchored at both ends and exactly two segments deep under savedata, so it can
+# name nothing but /dev_hdd0/home/<8 digits>/savedata/<folder>/<file>. It cannot
+# reach /dev_hdd0/game, /dev_flash, an ISO, or anything above or below those two
+# levels: "/" is outside the character class, so no segment can be added, and
+# "?" is outside it too, so no query string can ride along. "." and ".." are
+# refused at both levels, so the path cannot be walked out of. RETR is the only
+# command used with it, and RETR reads.
+#
+# The character class matches the one SAFE_LISTING uses, because these are the
+# same console's filenames. Over-restricting refuses a real save; it cannot
+# reach anything it should not.
+_SAVE_SEGMENT = r"[A-Za-z0-9 _.,'&()\[\]+@!~-]{1,64}"
+
+SAVE_READABLE = (
+    re.compile(r"^/dev_hdd0/home/\d{8}/savedata"
+               r"/(?!\.{1,2}/)" + _SAVE_SEGMENT +
+               r"/(?!\.{1,2}$)" + _SAVE_SEGMENT + r"$"),
+)
+
+# A save is not a disc image. Anything past this is recorded as skipped rather
+# than pulled, so a pathological file cannot turn a backup into a download of
+# the whole console.
+MAX_SAVE_BYTES = 32 * 1024 * 1024
+
+
+def may_read_save(path):
+    return any(pattern.match(path) for pattern in SAVE_READABLE)
+
+
 class FtpLister:
     """LIST and a tightly limited RETR. Nothing that changes anything.
 
@@ -341,8 +378,32 @@ class FtpLister:
         except ftplib.all_errors as exc:
             if self.log:
                 self.log.event("ftp_reconnect", reason=exc.__class__.__name__)
-            self.close()
-            return run(self.open())
+            # Two attempts, with a pause before each. The pause is the point:
+            # webMANftpd hangs up when it has had enough data connections in
+            # quick succession, and a fresh connection opened microseconds
+            # later meets it in the same state. Reconnecting instantly made the
+            # retry look useless on a real console, because the second attempt
+            # died of the cause the first one did.
+            #
+            # Half a second, then a second and a half. A console that is going
+            # to recover has done so by then, and one that is not costs two
+            # seconds before the failure is reported honestly.
+            last = exc
+            for pause in RECONNECT_PAUSES:
+                self.close()
+                time.sleep(pause)
+                try:
+                    return run(self.open())
+                except ftplib.error_perm:
+                    raise
+                except ftplib.all_errors as retry_error:
+                    last = retry_error
+                    if self.log:
+                        self.log.event(
+                            "ftp_reconnect_failed",
+                            reason=retry_error.__class__.__name__,
+                            after=pause)
+            raise last
 
     def list_dir(self, path):
         """Raw LIST output for one directory, as text. Raises on failure."""
@@ -409,6 +470,26 @@ class FtpLister:
                                                  blocksize=8192))
         if self.log:
             self.log.event("ftp_read_bytes", path=path, bytes=total)
+        return b"".join(chunks)
+
+    def download_save_bytes(self, path, max_bytes=MAX_SAVE_BYTES):
+        """One save file, verbatim, if it is on the save-read allowlist."""
+        if not may_read_save(path):
+            raise UnsafeRequest(f"not on the save-read allowlist: {path!r}")
+        chunks = []
+        total = 0
+
+        def take(block):
+            nonlocal total
+            if total >= max_bytes:
+                return
+            chunks.append(block[:max_bytes - total])
+            total += len(block)
+
+        self._command(lambda ftp: ftp.retrbinary(f"RETR {path}", take,
+                                                 blocksize=32768))
+        if self.log:
+            self.log.event("ftp_read_save", path=path, bytes=total)
         return b"".join(chunks)
 
     def close(self):

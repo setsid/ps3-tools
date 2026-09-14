@@ -12,10 +12,13 @@ own does not create it. So a title that is present with no USRDIR is the common
 case, not a fault, and it is reported as no_update rather than as an error: the
 user runs the game once, lets the update download, and comes back.
 
-A title ID that is not in ps3tools.titles is refused rather than patched with
-another region's signing parameters. Whether the klicensee is constant across
-regional SKUs is not established, and re-signing a stranger's binary with the
-wrong key produces something that will not boot. Refusing is the cheap failure.
+A title ID that ps3tools.titles does not recognise as either game is left
+alone: there is nothing here that could say what it is. Every published release
+of the two games is recognised, and most of them are releases nobody has
+confirmed the fix on. Those are reported with verified set to False and are
+still worth scanning, because whether the fix suits them is settled by trying
+to decrypt one of their files and not by anything that can be read from a
+directory listing.
 
 Nothing here writes, and nothing here guesses. The title update version is
 reported only where there is evidence for it; where there is not, tu_version is
@@ -99,6 +102,10 @@ class Installation:
     tu_version: str = None
     tu_detail: str = None
     config: dict = None
+    # True only for the releases somebody has watched the fix work on. False
+    # means the release is recognised and will be attempted, which is a
+    # different thing from being refused and must not be shown as one.
+    verified: bool = False
 
     @property
     def ready(self):
@@ -224,13 +231,15 @@ def _examine(lister, folder, param_sfo_reader):
     if config is None:
         if not _looks_like_cod(files):
             return None
-        # A Call of Duty that is not in the table. Its signing parameters are
-        # not known, so it is surfaced in order to be refused, not patched.
+        # A Call of Duty this tool cannot name. Every published release of the
+        # two games it does fix is in the table, so this is either a third
+        # Call of Duty or a title ID nobody has heard of, and in both cases
+        # there is no klicensee to try. It is surfaced in order to be refused.
         return Installation(
             title_id=title_id, path=path, usrdir=usrdir,
             state=UNKNOWN_VARIANT, files=files or [],
-            tu_detail=("This is not one of the SKUs this tool has been "
-                       "verified against, so nothing about it was read."))
+            tu_detail=("This is not a release of either of the two games this "
+                       "tool fixes, so nothing about it was read."))
 
     sku = titles.sku_for(title_id) or {}
     expected = [record["name"] for record in titles.binaries_for(title_id)]
@@ -255,7 +264,7 @@ def _examine(lister, folder, param_sfo_reader):
         short=config["short"], region=sku.get("region"), path=path,
         usrdir=usrdir, state=state, files=files or [], expected=expected,
         missing=missing, tu_version=tu_version, tu_detail=tu_detail,
-        config=config)
+        config=config, verified=titles.is_verified(title_id))
 
 
 def _list_usrdir(lister, usrdir):
@@ -318,9 +327,18 @@ def _title_update(param_sfo_reader, path):
 def _note_installation(report, installation):
     if installation.state == UNKNOWN_VARIANT:
         report.note(f"{installation.title_id} looks like a Call of Duty "
-                    f"installation but is not one of the versions this tool "
-                    f"has been checked against, so it will be left alone.")
-    elif installation.state == NO_UPDATE and installation.missing:
+                    f"installation but is not a release of either of the two "
+                    f"games this tool fixes, so it will be left alone.")
+        return
+    if not installation.verified and installation.state in (READY, NO_UPDATE):
+        # Said out loud rather than left for the user to discover at the end.
+        # Somebody who knows the fix is being tried on their release reads a
+        # later failure as this tool being honest, not as it being broken.
+        report.note(f"{installation.short} ({installation.title_id}) is a "
+                    f"release nobody has confirmed this fix on yet. It will "
+                    f"be tried, and if the files will not open the tool will "
+                    f"say so and change nothing.")
+    if installation.state == NO_UPDATE and installation.missing:
         report.note(f"{installation.short} ({installation.title_id}) has a "
                     f"USRDIR, but "
                     f"{_and_list(installation.missing)} is not in it.")

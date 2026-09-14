@@ -1,0 +1,52 @@
+{
+  "folders": {
+    "dev_hdd0/PS3ISO": {
+      "device": "dev_hdd0",
+      "folder": "PS3ISO",
+      "count": 2,
+      "entries": [
+        {
+          "name": "Call of Duty - Modern Warfare 3 (Europe).iso",
+          "kind": "file",
+          "size": 17179869184,
+          "size_human": "16.0 GB",
+          "modified": "Aug 30 21:14",
+          "title_id": null,
+          "region": null,
+          "platform": "PS3 disc",
+          "media": "Blu-ray disc"
+        },
+        {
+          "name": "Call of Duty Black Ops II [BLES01717].iso",
+          "kind": "file",
+          "size": 21474836480,
+          "size_human": "20.0 GB",
+          "modified": "Aug 30 22:02",
+          "title_id": "BLES01717",
+          "region": "Europe",
+          "platform": "PS3 disc",
+          "media": "Blu-ray disc"
+        }
+      ]
+    }
+  },
+  "total_items": 2,
+  "no_title_id": 1,
+  "installed_titles": [
+    {
+      "title_id": "BLES01717",
+      "path": "/dev_hdd0/game/BLES01717",
+      "files": [
+        {"name": "EBOOT.BIN", "kind": "file", "size": 6096288,
+         "modified": "Sep 13 18:20"},
+        {"name": "t6_ps3f.self", "kind": "file", "size": 6096288,
+         "modified": "Sep 13 18:21"},
+        {"name": "t6mp_ps3f.self", "kind": "file", "size": 7215488,
+         "modified": "Sep 13 18:22"},
+        {"name": "zone", "kind": "directory", "size": 0,
+         "modified": "Sep 06 19:51"}
+      ]
+    }
+  ],
+  "images_identified": 0
+}

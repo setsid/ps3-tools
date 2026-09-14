@@ -176,6 +176,22 @@ class FetchTests(NoNetworkCase):
         self.assertIn("PS3Tools", update.USER_AGENT)
         self.assertIn(update.VERSION, update.USER_AGENT)
 
+    def test_the_release_version_is_the_one_being_shipped(self):
+        """Pins VERSION so a stray edit cannot ship as the wrong release.
+
+        A build that reports the wrong version makes the update check
+        meaningless: the reported version is the whole of what a release is
+        compared against.
+
+        Changing the release version is meant to be deliberate. When you bump
+        it, bump it here too -- that is the point of this test, not an
+        obstacle to it. It exists so a version change is always a decision
+        somebody made rather than something noticed later on a screenshot.
+        """
+        self.assertEqual(update.VERSION, "1.1.0")
+        # Plain dotted numbers, or the tag comparison silently stops working.
+        self.assertIsNotNone(update.parse_version(update.VERSION))
+
     def test_the_repository_is_confirmed_and_hard_coded(self):
         # The repository is settled. What this guards now is that it stays a
         # constant: if the name is ever made configurable, or read out of a

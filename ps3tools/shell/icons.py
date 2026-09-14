@@ -176,6 +176,10 @@ _BY_KEY = {
     "bo2": "gamepad",
     "mw3": "gamepad",
     "about": "info",
+    "packages": "download",
+    "saves": "shield",
+    "updates": "refresh",
+    "transfer": "network",
 }
 
 _BY_WORD = (

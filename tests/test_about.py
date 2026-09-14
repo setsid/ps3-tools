@@ -25,7 +25,7 @@ from ps3tools import VERSION, update
 from ps3tools.shell.registry import screen_for
 from ps3tools.shell.screen import ConnectionState, Services, Theme, \
     THEME_TOKENS
-from ps3tools.shell.updatebanner import NOTES_LIMIT, UpdateBanner
+from ps3tools.shell.updatebanner import NO_ASSET, UpdateBanner, first_line
 from ps3tools.screens import about
 
 # One QApplication for the module: a second one aborts the process.
@@ -80,10 +80,10 @@ class AboutCase(unittest.TestCase):
         self.screens.append(screen)
         return screen
 
-    def banner(self, fetcher=None, downloader=None):
+    def banner(self, fetcher=None, downloader=None, compact=True):
         widget = UpdateBanner(self.services, fetcher=fetcher,
                               downloader=downloader,
-                              opener=self.opened.append)
+                              opener=self.opened.append, compact=compact)
         self.screens.append(widget)
         return widget
 
@@ -251,8 +251,8 @@ class CheckNowTests(AboutCase):
         screen.check_now()
         self.pump()
         self.assertTrue(self.on_show(screen.banner))
-        self.assertIn("9.9", screen.banner.heading.text())
-        self.assertIn("Fixes a thing.", screen.banner.notes.text())
+        self.assertIn("9.9", screen.banner.message_text())
+        self.assertIn("Fixes a thing.", screen.banner.message_text())
 
     def test_up_to_date_says_so_and_shows_no_banner(self):
         screen = self.build(fetcher=json_fetcher(release_payload(VERSION)))
@@ -380,7 +380,7 @@ class BannerTests(AboutCase):
         with _desktop(self.folder):
             widget.download()
             self.pump()
-        self.assertIn("matches the checksum", widget.detail.text())
+        self.assertIn("matches the checksum", widget.status_text())
         self.assertTrue(self.on_show(widget.folder_button))
         self.assertTrue(os.listdir(self.folder))
 
@@ -390,7 +390,7 @@ class BannerTests(AboutCase):
         with _desktop(self.folder):
             widget.download()
             self.pump()
-        self.assertIn("does not match", widget.detail.text())
+        self.assertIn("does not match", widget.status_text())
         self.assertEqual(os.listdir(self.folder), [])
 
     def test_notes_with_no_hash_are_not_called_verified(self):
@@ -399,8 +399,8 @@ class BannerTests(AboutCase):
         with _desktop(self.folder):
             widget.download()
             self.pump()
-        self.assertIn("not been verified", widget.detail.text())
-        self.assertNotIn("matches the checksum", widget.detail.text())
+        self.assertIn("not been verified", widget.status_text())
+        self.assertNotIn("matches the checksum", widget.status_text())
 
     def test_the_release_page_opens_through_the_injected_opener(self):
         widget = self.banner()
@@ -409,11 +409,241 @@ class BannerTests(AboutCase):
         widget.open_release_page()
         self.assertEqual(self.opened, [release.page_url])
 
-    def test_long_notes_are_trimmed_rather_than_scrolled(self):
+
+
+# --- the banner as a notification bar ----------------------------------------
+
+LONG_NOTE = ("A single line of release notes that runs on well past the width "
+             "of any window this program will ever be opened in, and then "
+             "keeps running on for a good while after that as well.")
+
+MULTI_NOTE = ("Headline change.\n\n## What changed\n\n"
+              "* A bullet about a thing\n* A bullet about another thing\n\n"
+              "A closing paragraph that has no business being in a banner.")
+
+
+class MutableTheme(StubTheme):
+    """A theme whose accent can be changed, so the repaint can be watched."""
+
+    def __init__(self):
+        super().__init__()
+        self._colours = dict(COLOURS)
+
+    def colour(self, token):
+        return self._colours[token]
+
+    def recolour(self, token, value):
+        self._colours[token] = value
+        self.changed.emit()
+
+
+class BannerActionTests(AboutCase):
+    """The download button, on both of the paths a release can arrive by."""
+
+    def newer(self, notes="Fixes a thing.", assets=None):
+        return release_payload(
+            "v9.9", notes=notes,
+            assets=[exe_asset()] if assets is None else assets)
+
+    def test_the_automatic_check_enables_the_download_button(self):
+        widget = self.banner(fetcher=json_fetcher(self.newer()))
+        widget.start_check()
+        self.pump()
+        self.assertTrue(self.on_show(widget))
+        self.assertTrue(self.on_show(widget.download_button))
+        self.assertTrue(widget.download_button.isEnabled())
+
+    def test_the_forced_check_enables_it_the_same_way(self):
+        widget = self.banner(fetcher=json_fetcher(self.newer()))
+        widget.start_check(force=True)
+        self.pump()
+        self.assertTrue(widget.download_button.isEnabled())
+
+    def test_a_release_out_of_the_daily_cache_is_still_downloadable(self):
+        """The launch check answers from the cache; the button must not care."""
+        first = self.banner(fetcher=json_fetcher(self.newer()))
+        first.start_check()
+        self.pump()
+        self.assertIn(update.SETTING_CACHE, self.settings)
+
+        def refuse(url, timeout=None):
+            raise AssertionError("the cached check went to the network")
+
+        second = self.banner(fetcher=refuse)
+        second.start_check()
+        self.pump()
+        self.assertTrue(self.on_show(second))
+        self.assertTrue(second.download_button.isEnabled())
+
+    def test_the_banner_paints_its_own_background(self):
+        """A plain QWidget ignores a stylesheet background without this, which
+        is what left the strip colourless and its buttons looking like page."""
+        from PySide6.QtCore import Qt as _Qt
         widget = self.banner()
-        widget.show_release(self.release("x" * 2000))
-        self.assertLessEqual(len(widget.notes.text()),
-                             NOTES_LIMIT + 3)
+        self.assertTrue(
+            widget.testAttribute(_Qt.WidgetAttribute.WA_StyledBackground))
+
+    def test_no_windows_asset_disables_the_button_and_says_why(self):
+        widget = self.banner(fetcher=json_fetcher(self.newer(assets=[])))
+        widget.start_check()
+        self.pump()
+        self.assertTrue(self.on_show(widget))
+        self.assertFalse(widget.download_button.isEnabled())
+        self.assertIn(NO_ASSET, widget.download_button.toolTip())
+        self.assertIn("no Windows download", widget.message_text())
+
+    def test_a_dead_button_never_starts_a_download(self):
+        asked = []
+
+        def downloader(url, timeout=None):
+            asked.append(url)
+            return b""
+
+        widget = self.banner(fetcher=json_fetcher(self.newer(assets=[])),
+                             downloader=downloader)
+        widget.start_check()
+        self.pump()
+        self.assertIsNone(widget.download())
+        self.pump()
+        self.assertEqual(asked, [])
+
+    def test_the_release_page_link_survives_a_missing_asset(self):
+        widget = self.banner(fetcher=json_fetcher(self.newer(assets=[])))
+        widget.start_check()
+        self.pump()
+        self.assertTrue(self.on_show(widget.page_button))
+
+    def test_the_button_is_disabled_while_a_download_is_running(self):
+        widget = self.banner(downloader=lambda url, timeout=None: b"MZ")
+        widget.show_release(update.Release(self.newer()))
+        self.assertTrue(widget.download_button.isEnabled())
+        with _desktop(tempfile.mkdtemp()):
+            widget.download()
+            self.assertFalse(widget.download_button.isEnabled())
+            self.pump()
+
+    def test_a_failed_download_hands_the_button_back(self):
+        def boom(url, timeout=None):
+            raise OSError("no")
+
+        widget = self.banner(downloader=boom)
+        widget.show_release(update.Release(self.newer()))
+        with _desktop(tempfile.mkdtemp()):
+            widget.download()
+            self.pump()
+        self.assertTrue(widget.download_button.isEnabled())
+        self.assertIn("did not finish", widget.status_text())
+
+
+class BannerShapeTests(AboutCase):
+    """One line high, whatever the release notes look like."""
+
+    def shown(self, notes, compact=True, width=520):
+        widget = self.banner(compact=compact)
+        widget.resize(width, widget.sizeHint().height())
+        widget.show_release(update.Release(release_payload(
+            "v9.9", notes=notes, assets=[exe_asset()])))
+        widget.show()
+        APP.processEvents()
+        return widget
+
+    def test_a_multi_paragraph_body_is_reduced_to_its_first_line(self):
+        widget = self.shown(MULTI_NOTE)
+        self.assertIn("Headline change.", widget.message_text())
+        self.assertNotIn("bullet", widget.message_text())
+        self.assertNotIn("closing paragraph", widget.message_text())
+        self.assertNotIn("\n", widget.message_text())
+
+    def test_markdown_furniture_is_not_read_out(self):
+        self.assertEqual(first_line("## What changed\n\nA real line."),
+                         "What changed")
+        self.assertEqual(first_line("\n\n* A bullet"), "A bullet")
+        self.assertEqual(first_line(""), "")
+
+    def test_a_long_note_is_elided_rather_than_wrapped(self):
+        widget = self.shown(LONG_NOTE)
+        text = widget.message.text()
+        self.assertTrue(text.endswith("\u2026"), text)
+        self.assertNotIn(LONG_NOTE, text)
+        self.assertIn(LONG_NOTE, widget.message_text())
+
+    def test_the_height_does_not_grow_with_the_notes(self):
+        short = self.shown("Fixes a thing.").sizeHint().height()
+        for notes in (LONG_NOTE, MULTI_NOTE, "x" * 6000):
+            self.assertEqual(self.shown(notes).sizeHint().height(), short)
+
+    def test_it_stays_about_a_toolbar_row_high(self):
+        widget = self.shown(MULTI_NOTE)
+        self.assertLess(widget.sizeHint().height(), 56)
+
+    def test_widening_it_shows_more_of_the_line(self):
+        narrow = self.shown(LONG_NOTE, width=380)
+        wide = self.shown(LONG_NOTE, width=1400)
+        self.assertGreater(len(wide.message.text()),
+                           len(narrow.message.text()))
+
+    def test_the_about_copy_is_no_taller_when_it_is_only_showing_news(self):
+        self.assertEqual(self.shown(MULTI_NOTE, compact=False).height(),
+                         self.shown(MULTI_NOTE).height())
+
+
+class BannerColourTests(AboutCase):
+    def test_the_bar_is_painted_from_theme_tokens(self):
+        theme = MutableTheme()
+        services = Services(self.connection, theme, self.settings)
+        widget = UpdateBanner(services, opener=self.opened.append)
+        self.screens.append(widget)
+        self.assertIn(theme.colour("accent"), widget.styleSheet())
+        self.assertIn(theme.colour("accent_text"), widget.styleSheet())
+
+    def test_it_repaints_when_the_theme_changes(self):
+        theme = MutableTheme()
+        services = Services(self.connection, theme, self.settings)
+        widget = UpdateBanner(services, opener=self.opened.append)
+        self.screens.append(widget)
+        theme.recolour("accent", "#123456")
+        self.assertIn("#123456", widget.styleSheet())
+
+    def test_no_colour_is_written_into_the_widget_by_hand(self):
+        """Every colour on the bar has to come from a token, so both palettes
+        stay legible without this file being reviewed twice."""
+        import re
+        theme = MutableTheme()
+        services = Services(self.connection, theme, self.settings)
+        widget = UpdateBanner(services, opener=self.opened.append)
+        self.screens.append(widget)
+        source = open(os.path.join(
+            ROOT, "ps3tools", "shell", "updatebanner.py"), encoding="utf-8")
+        with source as handle:
+            self.assertEqual(re.findall(r"#[0-9a-fA-F]{6}\b", handle.read()),
+                             [])
+
+
+class MainWindowBannerTests(AboutCase):
+    def test_building_a_window_asks_nobody_anything(self):
+        from ps3tools.shell import app as shell_app
+        from ps3tools.shell.theme import AppTheme
+        services = Services(self.connection, AppTheme("light"), self.settings)
+        window = shell_app.MainWindow(services)
+        self.addCleanup(window.deleteLater)
+        APP.processEvents()
+        # setUp has already made the real opener raise; nothing above may have
+        # reached it, and no check may be in flight either.
+        self.assertIsNone(window.update_banner._task)
+        self.assertFalse(window.update_banner.isVisibleTo(window))
+        self.assertNotIn(update.SETTING_CACHE, self.settings)
+
+    def test_the_window_copy_is_the_compact_one(self):
+        from ps3tools.shell import app as shell_app
+        from ps3tools.shell.theme import AppTheme
+        services = Services(self.connection, AppTheme("light"), self.settings)
+        window = shell_app.MainWindow(services)
+        self.addCleanup(window.deleteLater)
+        self.assertTrue(window.update_banner.compact)
+
+    def test_the_about_copy_is_the_roomy_one(self):
+        screen = self.build()
+        self.assertFalse(screen.banner.compact)
 
 
 class _desktop:

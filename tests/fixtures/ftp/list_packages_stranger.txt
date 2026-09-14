@@ -1,0 +1,1 @@
+-rw-rw-rw-   1 root     root    104857600 Aug 02 11:03 SomeoneElsesHomebrew.pkg

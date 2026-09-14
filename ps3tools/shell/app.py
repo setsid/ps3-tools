@@ -72,6 +72,13 @@ SCAN_FETCH_TIMEOUT = 4.0
 
 #: Either may be overridden from the settings file, for a network where the
 #: defaults are still not enough, without a rebuild.
+CHECK_LABEL = "Check IP"
+CHECK_HINT = ("Ask the console at this address whether it is there and "
+              "running webMAN.")
+DISCONNECT_LABEL = "Disconnect"
+DISCONNECT_HINT = ("Stop using this console, so a different one can be found. "
+                   "Nothing is sent to the console.")
+
 SCAN_CONNECT_TIMEOUT_KEY = "scan_connect_timeout"
 SCAN_FETCH_TIMEOUT_KEY = "scan_fetch_timeout"
 
@@ -184,14 +191,17 @@ def save_settings(settings):
 #: PyInstaller as hidden imports. _bundled_screens() below names them in real
 #: import statements as well, because the exe build's import analysis cannot
 #: follow a module name assembled at run time.
-KNOWN_SCREEN_MODULES = ("about", "diagnostics", "patcher")
+KNOWN_SCREEN_MODULES = ("about", "diagnostics", "gameupdates",
+                        "installpkg", "patcher", "saves",
+                        "transfer")
 
 
 def _bundled_screens():
     """Never called. It exists to be read by PyInstaller, which follows import
     statements and not strings; without it the screen modules are absent from
     the exe rather than merely undiscovered in it."""
-    from ..screens import about, diagnostics, patcher  # noqa: F401
+    from ..screens import (about, diagnostics, gameupdates,  # noqa: F401
+                           installpkg, patcher, saves, transfer)
     return (about, diagnostics, patcher)
 
 
@@ -443,11 +453,11 @@ class ConnectionBar(QWidget):
         self._address.returnPressed.connect(self.check)
         row.addWidget(self._address)
 
-        self._check_button = QPushButton("Check", self)
+        self._check_button = QPushButton(CHECK_LABEL, self)
         self._check_button.setProperty("primary", True)
         self._check_button.setToolTip(
             "Ask the console at that address whether it is there.")
-        self._check_button.clicked.connect(self.check)
+        self._check_button.clicked.connect(self._check_or_disconnect)
         row.addWidget(self._check_button)
 
         self._find_button = QPushButton("Find my PS3", self)
@@ -492,6 +502,8 @@ class ConnectionBar(QWidget):
         # imported, so the search can be driven end to end by a test without
         # anything leaving this machine.
         self.scan_connect = None
+        #: Set by tests. None means the real HttpProbe.
+        self.check_fetch = None
         self.scan_fetch = None
         self._scan_task = None
         self._scan_networks = ""
@@ -505,6 +517,27 @@ class ConnectionBar(QWidget):
         # set_host resets the verdict to unknown, which is right: the old
         # answer described the old address.
         self._connection.set_host(text)
+
+    def _check_or_disconnect(self):
+        """One button, two jobs, decided by whether a console is in use."""
+        if self._connection.connection == "connected":
+            return self.disconnect_console()
+        return self.check()
+
+    def disconnect_console(self):
+        """Let go of the console so another one can be looked for.
+
+        Nothing is sent: this end simply stops treating the address as live.
+        The address is left in the box, because the usual reason for pressing
+        this is to search for a different console and the old address is the
+        thing somebody wants to see replaced, not something to hunt for again.
+        """
+        crashreport.note("disconnected from the console")
+        self._connection.set_connection(
+            "unknown", "Not connected. Press Find my PS3, or type an address "
+                       "and press Check IP.")
+        self._connection.set_scan("idle", "")
+        return True
 
     def check(self):
         """Verify reachability, off the GUI thread."""
@@ -521,11 +554,20 @@ class ConnectionBar(QWidget):
         self._connection.set_connection("checking", f"Asking {host}.")
 
         def work(control):
-            probe = HttpProbe(host, timeout=CHECK_TIMEOUT)
-            response = probe.get("/")
+            # Injectable for the same reason scan_fetch is: a test that drives
+            # this must not put a packet on the network. There is a live
+            # console on this LAN, and Find now runs a check by itself, so a
+            # test feeding it invented addresses would reach for them for real.
+            fetch = self.check_fetch
+            if fetch is None:
+                response = HttpProbe(host, timeout=CHECK_TIMEOUT).get("/")
+                ok, body = response.ok, response.body
+            else:
+                body = fetch(host)
+                ok = bool(body)
             if control.cancelled:
                 return None
-            return {"host": host, "ok": response.ok, "body": response.body}
+            return {"host": host, "ok": ok, "body": body or ""}
 
         task = self.services.submit(work)
         task.finished.connect(self._checked)
@@ -607,7 +649,13 @@ class ConnectionBar(QWidget):
             # Nothing else can tell "searched the wrong network", "the console
             # never answered in time" and "something answered but was a
             # router" apart, and all three come back as no PS3 found.
-            tally = {"answered": 0, "fetched": 0, "best": 0, "best_host": ""}
+            # Hosts, not counts. The search sweeps a second time when the
+            # first found nothing -- the first packet to an address nobody has
+            # spoken to waits on ARP, and a console can miss a short timeout
+            # because of it -- so counting increments would report one console
+            # as two and five addresses as ten.
+            tally = {"answered": set(), "fetched": set(), "best": 0,
+                     "best_host": ""}
             lock = threading.Lock()
 
             def fetch(host):
@@ -622,7 +670,7 @@ class ConnectionBar(QWidget):
                 opened = bool(real_connect(host))
                 if opened:
                     with lock:
-                        tally["answered"] += 1
+                        tally["answered"].add(host)
                 return opened
 
             def counted_fetch(host):
@@ -631,7 +679,7 @@ class ConnectionBar(QWidget):
                     return body
                 score = webman_score(body)[0]
                 with lock:
-                    tally["fetched"] += 1
+                    tally["fetched"].add(host)
                     if score > tally["best"]:
                         tally["best"], tally["best_host"] = score, host
                 return body
@@ -641,7 +689,7 @@ class ConnectionBar(QWidget):
                 connect=counted_connect,
                 connect_timeout=connect_timeout,
                 on_progress=lambda done, total, found: control.progress(
-                    (done, total, tally["answered"])),
+                    (done, total, len(tally["answered"]))),
                 should_stop=lambda: control.cancelled)
             return {"address": addresses[0] if addresses else "",
                     "addresses": addresses, "candidates": candidates,
@@ -690,9 +738,16 @@ class ConnectionBar(QWidget):
         self._connection.set_scan(
             "none" if kind == "none" else "found", message, candidates)
         if kind == "one":
-            # The address is filled in and nothing else. The user asked where
-            # the console is, not for anything to be done to it.
+            # Exactly one console, so fill the address in and check it without
+            # making the user press a second button. Pressing Find is already
+            # a statement that they want this console found and used; leaving
+            # the status on "Not checked" next to an address the program just
+            # discovered reads as though the search failed.
+            #
+            # Only for a single match. Picking one of several is the user's
+            # choice, and _choose handles that case itself.
             self.set_address(candidates[0].address)
+            self.check()
         elif kind == "several":
             self._choose(candidates)
 
@@ -723,7 +778,11 @@ class ConnectionBar(QWidget):
                             for item in addresses)
             parts.append(f"Searched {result.get('total', 0)} addresses on "
                          f"{where}.")
+        # Sets since the retry sweep landed, but a cached result from an
+        # older run may still hold plain counts, so accept either.
         answered = tally.get("answered", 0)
+        answered = len(answered) if isinstance(answered, (set, list)) \
+            else answered
         if not answered:
             # "on it" would be wrong the moment more than one subnet is
             # searched, and the number searched varies by machine.
@@ -735,6 +794,8 @@ class ConnectionBar(QWidget):
                   "or was too slow to answer, it would not be found.")
         else:
             fetched = tally.get("fetched", 0)
+            fetched = len(fetched) if isinstance(fetched, (set, list)) \
+                else fetched
             parts.append(f"{answered} answered on port 80 and {fetched} sent "
                          f"back a page.")
             best_host = tally.get("best_host")
@@ -753,7 +814,11 @@ class ConnectionBar(QWidget):
     def _choose(self, candidates):
         dialog = CandidateDialog(candidates, self)
         if dialog.exec() == QDialog.DialogCode.Accepted and dialog.chosen():
+            # Picking one out of the list is the same statement as a single
+            # match: this is the console. Check it rather than leaving the
+            # status reading "Not checked" beside an address just chosen.
             self.set_address(dialog.chosen())
+            self.check()
 
     def _refresh(self):
         state = self._connection.connection
@@ -765,7 +830,24 @@ class ConnectionBar(QWidget):
         detail = self._connection.connection_detail
         self._detail_label.setText(detail)
         self._detail_label.setVisible(bool(detail))
-        self._check_button.setEnabled(state != "checking")
+        # Once a console is connected the pair become one thing: Check turns
+        # into Disconnect, and Find is refused while a console is in use.
+        # Searching the network for another one while a tool is pointed at this
+        # one is not something anybody means to do, and an address that arrived
+        # by itself halfway through a transfer would be worse than useless.
+        connected = state == "connected"
+        scanning = self._connection.scan == "scanning"
+        busy = state == "checking" or scanning
+        self._check_button.setText(DISCONNECT_LABEL if connected
+                                   else CHECK_LABEL)
+        self._check_button.setProperty("primary", not connected)
+        self._check_button.setProperty("danger", connected)
+        self._check_button.setToolTip(
+            DISCONNECT_HINT if connected else CHECK_HINT)
+        self._check_button.setEnabled(connected or not busy)
+        # Re-polish, or the property change does not repaint.
+        self._check_button.style().unpolish(self._check_button)
+        self._check_button.style().polish(self._check_button)
 
         # Never coloured, never merged into the pill above.
         scan_detail = self._connection.scan_detail
@@ -773,7 +855,8 @@ class ConnectionBar(QWidget):
         self._scan_label.setVisible(bool(scan_detail))
         self._scan_label.setStyleSheet(
             f"color: {self._theme.colour('text_dim')};")
-        self._find_button.setEnabled(self._connection.scan != "scanning")
+        self._find_button.setEnabled(not scanning and not connected
+                                     and state != "checking")
 
         if self._address.text().strip() != self._connection.host:
             blocked = self._address.blockSignals(True)
@@ -947,7 +1030,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(FULL_NAME)
         # The old default clipped and overlapped the busier screens. No
         # maximum: a user with the room to spare is welcome to it.
-        self.setMinimumSize(1024, 700)
+        # The floor, not the target. Anything below this clips a screen
+        # somewhere, and every screen is built to scroll rather than trap
+        # content when it is squeezed to it.
+        self.setMinimumSize(1024, 720)
         self.resize(self._default_size())
 
         central = QWidget(self)
@@ -988,7 +1074,12 @@ class MainWindow(QMainWindow):
         """Roomy, but never larger than the desktop it opens on: a window with
         its buttons off the bottom of a small laptop screen is worse than a
         cramped one."""
-        width, height = 1280, 900
+        # Taller than wide-ish on purpose. The screens that matter are lists
+        # that grow downwards -- collection progress, a queue of transfers, a
+        # column of findings -- so vertical room buys more than horizontal.
+        # 1050 rather than 900 puts the whole of the diagnostics screen on one
+        # page at the default size instead of most of it.
+        width, height = 1280, 1050
         screen = QGuiApplication.primaryScreen()
         if screen is not None:
             room = screen.availableGeometry()
@@ -1153,9 +1244,37 @@ class MainWindow(QMainWindow):
         screen.busy_changed.connect(self._on_busy)
         screen.status_message.connect(self.set_status)
         screen.request_home.connect(self.go_home)
+        # Optional: a screen that can hand the user on to another tool. The
+        # patcher uses it to send somebody whose title update is wrong to the
+        # Game updates card rather than leaving them to find it themselves.
+        # Attribute-checked because the screen interface is frozen and this is
+        # not on it; a screen without the signal is the normal case.
+        if hasattr(screen, "request_tool"):
+            screen.request_tool.connect(self._open_tool)
         screen.hide()
         self._screens[key] = screen
         return screen
+
+    def _open_tool(self, key, subject=""):
+        """Navigate to another tool, telling it what the user came about.
+
+        The target decides what to do with the subject. A screen that has no
+        preselect gets shown anyway: arriving at the right card with nothing
+        filled in is a far better outcome than a button that does nothing.
+        """
+        target = self.screen_for(key)
+        if target is None:
+            crashreport.note(f"asked for the missing tool {key}")
+            return False
+        preselect = getattr(target, "preselect", None)
+        if subject and callable(preselect):
+            try:
+                preselect(subject)
+            except Exception:
+                # Landing on the card still helps. Failing to pre-filter is
+                # not a reason to refuse to navigate.
+                pass
+        return self.open_screen(key)
 
     @property
     def screen_classes(self):

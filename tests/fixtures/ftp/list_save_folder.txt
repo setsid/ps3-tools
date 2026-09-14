@@ -1,0 +1,3 @@
+-rw-rw-rw-   1 root     root       262144 Sep 06 19:51 SAVEDATA.BIN
+-rw-rw-rw-   1 root     root         8192 Sep 06 19:51 PARAM.SFO
+-rw-rw-rw-   1 root     root        24576 Sep 06 19:51 ICON0.PNG

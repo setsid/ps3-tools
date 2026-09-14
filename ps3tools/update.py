@@ -55,6 +55,22 @@ TIMEOUT = 8.0
 #: that is released a few times a year.
 CACHE_SECONDS = 24 * 60 * 60
 
+#: How long a check that found nothing is believed for. Much shorter than a
+#: check that found something, and the difference matters:
+#:
+#: the cache records the time even when the answer was "no release" or "the
+#: fetch failed", so that a machine with no internet does not ask at every
+#: launch. But with one TTL for both, a release published an hour after a
+#: negative check stayed invisible for the rest of the day, and the only way
+#: to see it was Check now in About -- which forces past the cache, finds it,
+#: and stores it, after which every later launch shows it. That is exactly the
+#: "it only works after I check manually once" report, and it was the cache,
+#: not the banner.
+#:
+#: An hour still keeps a machine with no internet down to a handful of
+#: attempts a day, well inside GitHub's 60 an hour.
+EMPTY_CACHE_SECONDS = 60 * 60
+
 #: Keys in the shell's settings dict (services.settings). It is persisted by
 #: the shell into the file ps3diag.config works out the location of -- beside
 #: the exe, falling back to per-user -- and takes arbitrary JSON values. Both
@@ -263,6 +279,11 @@ def _cache_fresh(settings, now):
     stored = _cache(settings)
     if "checked" not in stored:
         return False
+    # A remembered release is believed for a day; a remembered "nothing there"
+    # only for an hour, because that one goes stale the moment a release is
+    # published and there is no way for this end to be told.
+    window = (CACHE_SECONDS if isinstance(stored.get("release"), dict)
+              else EMPTY_CACHE_SECONDS)
     try:
         checked = float(stored["checked"])
     except (TypeError, ValueError):
@@ -270,7 +291,7 @@ def _cache_fresh(settings, now):
     # A clock that has gone backwards -- a laptop returning from a different
     # timezone, a machine with no RTC -- would otherwise pin the cache as
     # fresh for as long as the clock is wrong.
-    return 0 <= (now - checked) < CACHE_SECONDS
+    return 0 <= (now - checked) < window
 
 
 def _store(settings, payload, now):

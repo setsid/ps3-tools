@@ -12,9 +12,17 @@ SELF, and never from the title update the console reports. A file whose four
 bytes match neither the stock nor the patched instruction is unrecognised, and
 an unrecognised file is reported and left alone. A file this program could not
 read at all is not unrecognised: that is NOT_EXAMINED, and it is a fault here
-rather than anything to do with the file. The update-package hashes in
-titles.py say which title update is installed and nothing else; nothing here
-looks at them.
+rather than anything to do with the file. A file that would not decrypt is
+neither of those: that is CANNOT_DECRYPT, and it means this release of the game
+signs its binaries differently from the ones the fix was proved on. The
+update-package hashes in titles.py say which title update is installed and
+nothing else; nothing here looks at them.
+
+Which releases get this far is a question for titles.py. Every published title
+ID of either game is attempted, because a wrong klicensee cannot produce a
+plausible answer: scetool either opens the file or produces nothing. Where it
+produces nothing the run stops, having read and written nothing, and says which
+title ID it was.
 
 Nothing is written without a verified backup first. The originals cannot be
 rebuilt from the patched copies and cannot be downloaded from anywhere.
@@ -44,6 +52,13 @@ UNRECOGNISED = "unrecognised"
 # not there, which is a statement about this program.
 NOT_EXAMINED = "not examined"
 NO_SITE = "no patch site"
+# The file is one of this game's, and scetool could not unlock it with the
+# klicensee this game uses. Kept apart from all three of the above because it
+# asks something different of everyone reading it: nothing is wrong with the
+# user's console, nothing is missing from this program, and the file was not
+# misread. This release simply signs its binaries differently, which is only
+# discoverable by trying, and the title ID is the thing worth reporting.
+CANNOT_DECRYPT = "cannot decrypt"
 
 # The re-sign argument shapes, one per title, taken from the two repositories'
 # readmes. The differences between them are not derivable from anything: each
@@ -81,6 +96,31 @@ CARRIED_FIELDS = ("key_revision", "self_type", "app_type", "licence_type",
 
 class PatchFailed(Exception):
     """A stop with an explanation. Reported without a traceback."""
+
+
+def cannot_decrypt_detail(title_id, name, verified, reason=""):
+    """Why a file of a recognised release would not come open.
+
+    The title ID is in the sentence rather than only in the window behind it,
+    because it is the one piece of information that makes the difference
+    between somebody reporting "it did not work" and somebody reporting a
+    release that can then be added.
+    """
+    title_id = (title_id or "").upper()
+    if verified:
+        # This release has been done before, so the signing parameters are not
+        # the suspect. Something about this particular copy is.
+        return (f"{name} could not be unlocked, even though {title_id} is a "
+                f"release this fix has worked on before. The copy on the "
+                f"console may have been replaced or rebuilt by something "
+                f"else. Nothing has been changed"
+                + (f". {reason}" if reason else ""))
+    return (f"{name} could not be unlocked. {title_id} is a release of this "
+            f"game that signs its files differently from the ones this fix "
+            f"has been proved on, so this tool cannot patch it. Nothing is "
+            f"wrong with your console or your copy of the game, and nothing "
+            f"has been changed. Quote {title_id} if you report this"
+            + (f". {reason}" if reason else ""))
 
 
 def _sha1(data):
@@ -196,13 +236,17 @@ class FileScan:
 
 class ScanReport:
     def __init__(self, title_id, config=None, usrdir=""):
-        self.title_id = (title_id or "").upper()
+        self.title_id = titles.normalise(title_id)
         self.config = config
         self.title_key = config["key"] if config else None
         self.usrdir = usrdir
         self.files = []
         self.notes = []
         self.error = ""
+        # Whether anybody has watched the fix work on this exact release. False
+        # is not a refusal and must never be shown as one: it is the reason the
+        # screen says the fix is being attempted rather than applied.
+        self.verified = titles.is_verified(self.title_id)
 
     @property
     def ok(self):
@@ -225,6 +269,10 @@ class ScanReport:
         return [item for item in self.files if item.state == NOT_EXAMINED]
 
     @property
+    def cannot_decrypt(self):
+        return [item for item in self.files if item.state == CANNOT_DECRYPT]
+
+    @property
     def missing(self):
         return [item.name for item in self.files
                 if not item.present and item.site]
@@ -240,7 +288,8 @@ class ScanReport:
         stops the whole title.
         """
         return bool(self.ok and self.to_patch and not self.unrecognised
-                    and not self.not_examined and not self.missing)
+                    and not self.not_examined and not self.cannot_decrypt
+                    and not self.missing)
 
     def file_for(self, name):
         for item in self.files:
@@ -261,16 +310,15 @@ def scan(writer, tool, title_id, progress=None, workdir=None):
     Entering a patcher screen runs this with no user action, so it has to come
     back with something to show whatever the console does.
     """
-    title_id = (title_id or "").upper()
+    title_id = titles.normalise(title_id)
     config = titles.config_for(title_id)
     if config is None:
         report = ScanReport(title_id)
         report.error = (
-            f"{title_id} is not a title this tool will touch. The signing "
-            f"parameters for that SKU are not known, and re-signing a binary "
-            f"with another region's produces a file that is perfectly valid "
-            f"and will not boot. Nothing has been read and nothing will be "
-            f"written.")
+            f"{title_id} is not one of the games this tool fixes. It is not a "
+            f"published release of Black Ops II or of Modern Warfare 3, so "
+            f"there is nothing here for it. Nothing has been read and nothing "
+            f"will be written.")
         return report
 
     usrdir = titles.usrdir_for(title_id)
@@ -365,8 +413,13 @@ def _scan_one(writer, tool, config, item, workdir, states, index, total,
     try:
         image = tool.decrypt(local, image_path, item.record["klicensee"])
     except ScetoolError as exc:
-        item.state = UNRECOGNISED
-        item.detail = str(exc)
+        # The one place the attempt-and-see mechanism actually pays out. A
+        # klicensee that does not suit this release cannot produce a plausible
+        # binary, so this is where a release nobody has confirmed is found out,
+        # cheaply and before anything is written.
+        item.state = CANNOT_DECRYPT
+        item.detail = cannot_decrypt_detail(
+            report.title_id, item.name, report.verified, str(exc))
         return
     item.image_sha1 = _sha1(image)
 
@@ -433,6 +486,13 @@ def _cross_check(report):
         report.notes.append(f"{item.name} could not be checked by this "
                             f"program, so nothing will be patched: "
                             f"{item.detail}")
+    if report.cannot_decrypt:
+        # One note for the set rather than one per file. All three of Black
+        # Ops II's files fail together for the same single reason, and saying
+        # it three times reads as three separate faults.
+        names = ", ".join(item.name for item in report.cannot_decrypt)
+        report.notes.append(
+            f"could not be opened, so nothing will be patched: {names}")
 
 
 # --- applying the fix ------------------------------------------------------
@@ -518,7 +578,8 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
     folder = backups.folder_for(report.title_id, root, when)
     try:
         saved = backups.make(writer, report.usrdir, wanted, folder,
-                             progress=progress, reread=reread)
+                             progress=progress, reread=reread,
+                             title_id=report.title_id, when=when)
     except backups.BackupFailed as exc:
         out.error = str(exc)
         return out
@@ -875,3 +936,252 @@ def _known_ids(entries, title_key):
 def _reason(exc):
     text = str(exc).strip()
     return f"{exc.__class__.__name__}: {text}" if text else exc.__class__.__name__
+
+
+# --- putting the originals back --------------------------------------------
+#
+# The undo half of this program. Before this existed the only route back was a
+# hand-typed FTP session, which is not something the person this tool was
+# written for can do, and it was the route they were most likely to need: a
+# restore is what somebody reaches for when the game has stopped starting.
+#
+# The order matters as much as it does in patch(). Nothing is sent to the
+# console until the backup has been checked against its own manifest and the
+# title ID it was taken from has been matched against the one the console has
+# now. Sending the wrong game's binaries, or a file that has been altered on
+# the Desktop since, would produce exactly the install this tool exists to
+# repair.
+
+
+class RestoreReport:
+    """What was put back, and what stopped it if anything did."""
+
+    def __init__(self, title_id, backup=None):
+        self.title_id = titles.normalise(title_id)
+        self.backup = backup
+        self.restored = []
+        self.failed = []
+        self.notes = []
+        self.error = ""
+        #: True when the refusal happened before anything was sent anywhere
+        self.refused = False
+
+    @property
+    def ok(self):
+        return not self.error
+
+    @property
+    def folder(self):
+        return self.backup.folder if self.backup else ""
+
+
+def _refusal(out, reason):
+    """A stop with nothing sent. Always says that second part out loud."""
+    out.error = reason
+    out.refused = True
+    return out
+
+
+def restore_refusal(backup, title_id):
+    """Why this backup must not be put back, or "" if it may be.
+
+    Separate from restore() so that a screen can ask the question before it
+    offers the user a button, and so that every refusal is worded in one place
+    whether it is reached from the screen or from the flow. Touches nothing but
+    the local disk: no part of deciding this involves the console.
+    """
+    if backup is None:
+        return ("There is no backup here to put back. Nothing has been sent "
+                "to the console.")
+    # Asked before the emptiness below it: a folder with no record of its
+    # contents reads as empty, and the reason it is empty is the thing to say.
+    if backup.problem:
+        return (f"{backup.problem} Because of that, this folder cannot be "
+                f"checked before it is used, and files that cannot be checked "
+                f"are not sent to the console. Nothing has been changed. If "
+                f"you have another backup of this game, try that one.")
+    if not backup.entries:
+        return ("There is no backup here to put back. Nothing has been sent "
+                "to the console.")
+
+    wanted = titles.normalise(title_id)
+    if not wanted:
+        return ("This program does not know which game is on the console at "
+                "the moment, so it cannot tell whether this backup belongs to "
+                "it. Press Scan again first. Nothing has been sent to the "
+                "console.")
+    if titles.normalise(backup.title_id) != wanted:
+        # The one mistake that turns a rescue into a much worse problem. The
+        # files in a backup are one game's binaries, signed for the title they
+        # came from; on another title they are a game that will not start.
+        return (f"This backup was taken from "
+                f"{backup.title_id or 'another game'} and the console has "
+                f"{wanted} on it, so these are not that game's files. Putting "
+                f"them back would leave you with an install that will not "
+                f"start. Nothing has been sent to the console.\n\n"
+                f"Look for a backup folder whose name begins {wanted}.")
+
+    bad = [row for row in backups.verify(backup) if not row["ok"]]
+    if bad:
+        detail = "\n".join(f"    {row['name']}: {row['reason']}"
+                           for row in bad)
+        return (f"This backup does not match the record written when it was "
+                f"taken, so it is not safe to put back and nothing has been "
+                f"sent to the console:\n\n{detail}\n\n"
+                f"A file that has changed since it was copied is not the "
+                f"original any more, and sending it to the console would be a "
+                f"guess. If you have another backup of this game, try that "
+                f"one.")
+    return ""
+
+
+def restore(writer, backup, title_id, progress=None):
+    """Put a checked backup back on the console, and confirm every file landed.
+
+    Never raises. The caller is a screen in the middle of somebody's bad day,
+    and an exception out of here would replace a sentence they can act on with
+    a class name they cannot.
+    """
+    out = RestoreReport(title_id, backup)
+    reason = restore_refusal(backup, title_id)
+    if reason:
+        return _refusal(out, reason)
+
+    wanted = titles.normalise(title_id)
+    usrdir = titles.usrdir_for(wanted)
+    total = len(backup.entries)
+    for index, entry in enumerate(backup.entries):
+        name = entry["name"]
+        # Built from the title ID that was just matched rather than trusted
+        # from the manifest, so the path written to is the one the console
+        # actually has this game in.
+        remote = f"{usrdir}/{name}"
+
+        def step(message, **extra):
+            if progress:
+                progress(dict({"stage": "restore", "file": name, "done": index,
+                               "total": total, "message": message}, **extra))
+
+        step(f"putting the original {name} back")
+        try:
+            writer.store(entry["path"], remote,
+                         on_block=lambda sent, size: step(
+                             f"putting the original {name} back",
+                             bytes=sent, of=size))
+        except Exception as exc:                            # noqa: BLE001
+            out.failed.append((name, f"{exc.__class__.__name__}: {exc}"))
+            out.error = _restore_stopped(
+                out,
+                f"{name} could not be written to the console "
+                f"({exc.__class__.__name__}: {exc}).")
+            return out
+
+        step(f"checking {name} on the console")
+        try:
+            landed = writer.retrieve_bytes(remote)
+        except Exception as exc:                            # noqa: BLE001
+            out.failed.append((name, f"{exc.__class__.__name__}: {exc}"))
+            out.error = _restore_stopped(
+                out,
+                f"{name} was written to the console but could not be read "
+                f"back to check it ({exc.__class__.__name__}: {exc}).")
+            return out
+        if _sha1(landed) != entry["sha1"]:
+            out.failed.append((name, "what landed does not match the backup"))
+            out.error = _restore_stopped(
+                out,
+                f"{name} arrived on the console as something other than what "
+                f"was sent ({len(landed)} bytes arrived where "
+                f"{entry['size']} were sent), so the transfer did not finish.")
+            return out
+        out.restored.append(name)
+
+    if progress:
+        progress({"stage": "done", "file": "", "done": total, "total": total,
+                  "message": "finished"})
+    return out
+
+
+def _restore_stopped(out, reason):
+    """One sentence for what went wrong, and one for where that leaves them.
+
+    The second half is the important one. A restore that stopped partway has
+    left the console holding a mixture, and a user who is told only that
+    something failed does not know whether to run it again.
+    """
+    done = (", ".join(out.restored) if out.restored else "none of them")
+    return (f"{reason}\n\n"
+            f"Files put back before this: {done}. Your backup has not been "
+            f"touched and is still complete, so nothing has been lost. Check "
+            f"the console is switched on, sitting on its main menu with "
+            f"webMAN running, and press this again: putting the same files "
+            f"back a second time is safe and is the thing to do.")
+
+
+# --- which title update the fix was verified against -----------------------
+#
+# Deliberately not a freshness check. The question is not "is this what Sony
+# serves today", which changes without anyone here noticing and which would
+# start telling users their console is wrong the day a new update ships. The
+# question is "is this the build the patch offset was confirmed on", which is a
+# fact about this program and changes only when somebody verifies another one.
+
+#: the installed update is the one the fix was confirmed against
+UPDATE_MATCHES = "update_matches"
+#: the console has a different build from the one the fix was confirmed on
+UPDATE_DIFFERS = "update_differs"
+#: nobody has established a verified update for this release, so there is
+#: nothing to compare against and nothing may be claimed either way
+UPDATE_NOT_ESTABLISHED = "update_not_established"
+#: there is a verified update, and the installed version could not be read
+UPDATE_UNREADABLE = "update_unreadable"
+
+
+def _version(value):
+    """1.19 out of 01.19, so that the console's spelling and a person's match."""
+    text = str(value or "").strip()
+    return text.lstrip("0") if text and text[0] == "0" else text
+
+
+class UpdateCheck:
+    """Whether the installed title update is the one the fix was proved on."""
+
+    def __init__(self, verdict, title_id="", installed=None, verified=None):
+        self.verdict = verdict
+        self.title_id = titles.normalise(title_id)
+        #: what the console's PARAM.SFO said, or None if it could not be read
+        self.installed = installed
+        #: the update the fix was confirmed against, or None if there is none
+        self.verified = verified
+
+    @property
+    def blocks(self):
+        """Whether the fix must not be offered.
+
+        Only a version that was read and disagrees. A version that could not be
+        read is a different answer with a different remedy, and a release
+        nobody has verified has no expected version at all: telling either of
+        those users that their update is wrong would be a claim this program
+        cannot support.
+        """
+        return self.verdict == UPDATE_DIFFERS
+
+    def __repr__(self):
+        return (f"<UpdateCheck {self.verdict} installed={self.installed!r} "
+                f"verified={self.verified!r}>")
+
+
+def update_check(title_id, installed):
+    """Compare what is installed against the update the fix was verified on."""
+    verified = titles.verified_update_for(title_id)
+    if not verified:
+        # An unverified release. It has no known-good update version, so the
+        # only honest answer is silence: it is already handled as the release
+        # nobody has confirmed, and must never be routed into "your update is
+        # out of date", which is a different and unsupported claim.
+        return UpdateCheck(UPDATE_NOT_ESTABLISHED, title_id, installed, None)
+    if not installed:
+        return UpdateCheck(UPDATE_UNREADABLE, title_id, None, verified)
+    if _version(installed) == _version(verified):
+        return UpdateCheck(UPDATE_MATCHES, title_id, installed, verified)
+    return UpdateCheck(UPDATE_DIFFERS, title_id, installed, verified)

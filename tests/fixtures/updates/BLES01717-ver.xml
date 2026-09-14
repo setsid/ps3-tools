@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<titlepatch titleid="BLES01717">
+  <tag name="BLES01717-ver" popup="true" signoff="true">
+    <package version="01.05" size="104857600" sha1sum="1111111111111111111111111111111111111111" url="http://b0.ww.np.dl.playstation.net/tppkg/np/BLES01717/BLES01717_T5/1a2b-BLES01717_00-CODBLOPS2PATCH05.pkg" ps3_system_ver="0004002000000000">
+      <paramsfo>
+        <TITLE>Call of Duty: Black Ops II</TITLE>
+      </paramsfo>
+    </package>
+    <package version="01.19" size="419430400" sha1sum="2222222222222222222222222222222222222222" url="http://b0.ww.np.dl.playstation.net/tppkg/np/BLES01717/BLES01717_T9/9f8e-BLES01717_00-CODBLOPS2PATCH19.pkg" ps3_system_ver="0004002000000000">
+      <paramsfo>
+        <TITLE>Call of Duty: Black Ops II</TITLE>
+      </paramsfo>
+    </package>
+  </tag>
+</titlepatch>

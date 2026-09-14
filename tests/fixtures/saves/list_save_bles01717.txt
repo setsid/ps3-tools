@@ -1,0 +1,4 @@
+-rw-rw-rw-   1 root     root         2048 Sep 06 19:51 PARAM.SFO
+-rw-rw-rw-   1 root     root          640 Sep 06 19:51 PARAM.PFD
+-rw-rw-rw-   1 root     root        30512 Sep 06 19:51 ICON0.PNG
+-rw-rw-rw-   1 root     root       184320 Sep 06 19:51 DATA000.DAT

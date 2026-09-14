@@ -1,9 +1,18 @@
+<img src="icon.png" width="64" alt="">
+
 # PS3 Tools
 
-Three tools for a PS3 running custom firmware, in one Windows program: a
-diagnostic that reads the console and writes everything a helper needs into one
-file, and the two Call of Duty PSN fixes, applied to the console over the
-network rather than by hand. It replaces `bo2-psn-fix.exe` and `mw3-psn-fix.exe`.
+[![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
+[![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)
+![platform](https://img.shields.io/badge/platform-PS3-003791)
+
+Tools for a PS3 running custom firmware, in one Windows program. A diagnostic
+that reads the console and writes everything a helper needs into one file; the
+two Call of Duty PSN fixes, applied over the network rather than by hand; title
+updates fetched from Sony at full speed; a package installer; a save data
+backup; and a game transfer that resumes. It replaces `bo2-psn-fix.exe` and
+`mw3-psn-fix.exe`.
 
 ## What you need
 
@@ -13,8 +22,17 @@ address. Nothing else: there is nothing to install and nothing to configure.
 
 The address is on the console under Settings, Network Settings, Settings and
 Connection Status List, near the top. It is also at the top of the webMAN page
-if you can already reach that from a browser. Press **Find my PS3** and the
-program will look for it itself.
+if you can already reach that from a browser.
+
+Or press **Find my PS3** and it will look for the console itself, then connect
+to whatever it finds. If you would rather type the address in, put it in the
+box and press **Check IP**.
+
+Once it is connected, **Check IP** becomes **Disconnect**, and Find is switched
+off until you press it — so a search cannot go off and change the address out
+from under a tool that is halfway through something. Disconnecting sends
+nothing to the console; it only stops this program treating the address as
+live.
 
 webMAN's FTP server needs to be switched on. Without it about half of what the
 diagnostic collects is unavailable, and the patchers cannot work at all. The
@@ -104,7 +122,10 @@ because of your account or your network.
 | Symptom | Freezes while a PSN session is active | You reach a multiplayer lobby and are dropped back to the menu about a second later, on any account made after late 2018 |
 | Files changed | `EBOOT.BIN`, `t6_ps3f.self`, `t6mp_ps3f.self` | `default_mp.self` |
 | Left alone | | `default.self`, campaign and Spec Ops |
-| Title update | 1.19 | 1.24 |
+| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 |
+
+Other releases are attempted rather than refused. See
+[Which releases it will patch](#which-releases-it-will-patch).
 
 Black Ops II carries the same binary in three files and **all three are done**.
 Patching only the multiplayer one leaves campaign and zombies still freezing.
@@ -119,6 +140,24 @@ Desktop and verified against the console by size and hash. **No backup, no
 patch.** Keep them: they are the only way back, and an original cannot be
 rebuilt from a patched copy. After writing, each file is read back off the
 console and confirmed.
+
+### It checks your title update first
+
+The patch offsets were confirmed against one specific update of each game. Apply
+stays disabled until the installed version matches it, because patching a
+different build of a binary is how an install stops starting.
+
+If yours does not match, it says so and offers a route straight to **Game
+updates** for that title. Update, come back, rescan, and Apply enables itself.
+
+The check is *"is this the build the offset was confirmed on"*, not *"is this
+the newest Sony serves"*. Those happen to be the same today, because 1.19 and
+1.24 are the last updates either game received, but they are different
+questions and only the first one protects you.
+
+A version that could not be read does not block Apply — an unreadable version
+is not evidence of a wrong build, and the scan still reads the actual bytes at
+the patch site and refuses anything that does not fit.
 
 > ### Restart the console after patching
 >
@@ -138,6 +177,114 @@ read back off your own copy, rather than with a generic fake signature, so it
 boots where the original did without needing syscalls left switched on.
 
 ---
+
+## Game updates
+
+Downloads title updates from Sony at full speed and installs them, instead of
+leaving the console to fetch them at its own pace. On a real console the Black
+Ops II update took over two minutes to download and about ninety seconds to
+install. The same package pulls at around 18 MB/s to a PC, so the download half
+becomes seconds. The install is console-side and is not made any faster.
+
+The real gain is a console with a lot of games on it, where the alternative is
+launching each one and waiting.
+
+It scans what is installed, reads the version out of each game's `PARAM.SFO`,
+asks Sony what the latest is, and shows you the two side by side. Nothing is
+ticked to start with.
+
+**Every download is checked against the sha1 Sony publishes for it, and a
+mismatch stops everything before a single byte is uploaded.** That check is the
+reason downloading from somebody else and writing the result to your console is
+a reasonable thing to do at all.
+
+It uploads to `/dev_hdd0/packages/` and then asks webMAN to install. Because the
+install command installs **everything in that folder**, it lists the folder
+first and tells you if anything is already in there that it did not put there,
+rather than installing a stranger's package on your behalf.
+
+## Install packages
+
+The same thing for `.pkg` files you already have: DLC, homebrew, anything on
+your PC. Pick them, and they are uploaded and installed the same way.
+
+**This one has nothing to verify against.** Game updates checks what it
+downloads against a hash published by Sony. Here you chose the file, and there
+is no authority to check it against. The screen says so. It reads the package
+header to confirm the file really is a package and shows the title ID inside it,
+which is worth having as a guard against picking the wrong file, but that is a
+sanity check and not a safety guarantee. Only install packages you trust.
+
+## Transfer games
+
+Copies ISOs from your PC to the console, sorted into the right folder.
+
+**It will not make your console faster.** Over FTP this runs at roughly 4 MB/s,
+so a 36 GB disc image takes about two and a half hours and a large queue can run
+overnight. What it does is make the wait predictable and survivable: you get the
+estimate before you commit, real progress while it runs, and a transfer that
+picks up where it stopped rather than starting again.
+
+- **The platform is read out of the image, not guessed from the filename.** A
+  PS3 image goes to `PS3ISO` and a PS2 image to `PS2ISO`, and anything it cannot
+  identify is handed to you to decide rather than filed somewhere wrong.
+- **Files are renamed before upload.** Brackets, commas and ampersands come out.
+  An ampersand in a filename is what caused a real transfer to silently skip a
+  file, and long names list badly on the console. You are shown the new name
+  before anything starts.
+- **It shows what is already on the console**, and flags a queued file that
+  looks like it is already there, so you do not spend an evening copying
+  something you already have.
+- **Free space is checked against the whole queue before it starts**, rather
+  than filling the drive most of the way through.
+- **Pause and stop work mid-file**, and a stopped transfer leaves something the
+  next run resumes rather than something it mistakes for finished.
+
+### Making it less slow
+
+The bottleneck is mostly the console, so the gains here are modest and honest:
+
+- **A wired network connection rather than Wi-Fi.** This is the one that makes a
+  real difference.
+- **A faster hard drive, or an SSD, in the console.** Helps somewhat.
+- Leave the console on the main menu rather than running something, and stop
+  your PC going to sleep partway through.
+
+## Putting the originals back
+
+The patcher backs the original files up to `Desktop\PS3 Tools backups\<TITLEID>
+<date>` before it writes anything, and **Put the originals back**, next to Apply,
+puts them where they came from.
+
+It reads the manifest written alongside them, checks every file against the hash
+recorded when the backup was taken, and refuses a backup that does not verify or
+that came from a different title ID. It uploads, reads each file back off the
+console, and compares. Then it rescans, so what you see afterwards is read off
+the console rather than assumed.
+
+**Restart the console after restoring, the same as after patching.** The
+originals will not take effect until you do, and the game will hang on launch if
+you try it first. This is the one people hit, because restoring is what you
+reach for when something has already gone wrong.
+
+Restoring is safe, and you can patch again afterwards.
+
+## Back up save data
+
+Reads your saves off the console and writes them to
+`Desktop\PS3 Tools saves\<date>\` as a zip, with a manifest recording where
+each file came from and its hash.
+
+Pick everything, one user, or individual saves. Folder names carry the title ID,
+so it shows real game names where it can work them out and the folder name where
+it cannot.
+
+**This is one way only. It copies saves off the console and cannot put them
+back.** PS3 saves are often copy-protected and tied to the console or the
+account they were made on, so restoring is not simply the reverse of copying.
+Do not treat this as a two-way sync.
+
+It only reads. It is worth doing before you let anything write to your console.
 
 ## Support
 
@@ -174,6 +321,14 @@ Python 3.10 or newer.
 pip install PySide6==6.8.1
 pip install pyinstaller==6.22.3
 ```
+
+`certs/scei-dnas-root-05.pem` is not in this repository and you have to supply
+it. Sony's update endpoint presents a certificate from its own private CA,
+which is in no public trust store and never will be, so the update check
+verifies against that root specifically. See
+[`certs/README.md`](certs/README.md) for how to capture it. Without it the
+Game updates card says it cannot verify the connection and stops; it does not
+fall back to an unverified one.
 
 Both pins are exact, and the build refuses a different PyInstaller version
 rather than producing an exe nobody can reproduce.
@@ -218,23 +373,97 @@ two patch scripts in `tools/patchers/`.
 
 ---
 
+## Which releases it will patch
+
+It will **attempt any released version of either game**, and tells you honestly
+when it cannot read one, rather than refusing everything it has not seen before.
+
+The mechanism is attempt-and-verify, not a list of approved SKUs. Decryption is
+self-verifying: with the wrong key it fails outright rather than quietly
+producing something wrong. So the tool tries, and what happens next is one of
+three things:
+
+- **It decrypts and the patch site is where it was verified to be.** Patched.
+- **It decrypts but the site is somewhere else.** Reported as not recognised.
+  It will not patch at an unverified offset.
+- **It will not decrypt.** That release was signed with different parameters.
+  It says so, names the title ID, and stops.
+
+Re-signing needs no regional table: the content ID, application type, licence
+type and key revision are all read back off your own file.
+
+### Confirmed working on hardware
+
+| | |
+| --- | --- |
+| Black Ops II | **BLES01717**, title update 1.19 |
+| Modern Warfare 3 | **BLES01428**, title update 1.24 |
+
+Patched, written back, read off the console again and booted. The patch offsets
+come from these two, and any other release is checked against them.
+
+### Reference data recorded, not tested end to end
+
+`BLUS31011`, `BLES01718`, `BLUS31140`, `BLUS30838`. Stock file sizes and update
+hashes are known for these, so the tool can tell you which title update you are
+on. Nobody has run a full patch on one.
+
+### Recognised, entirely untested
+
+Every other release below. The tool knows they are the game and will try. Nobody
+has confirmed the klicensee is the same for them, which is exactly what the
+attempt establishes. **If one fails to decrypt, that is worth reporting** — it
+means that region needs different parameters, and the message names the title ID
+so you can say which.
+
+Some of these are demos or betas rather than the full game, and which is which
+has not been established.
+
+**Black Ops II**
+
+```
+BCKS10223  BCKS10232  BCUS91450
+BLES01717  BLES01718  BLES01719  BLES01720
+BLJM60548  BLJM60549  BLJM61109  BLJM61110  BLJM61230  BLJM61231
+BLUS31011  BLUS31080  BLUS31140  BLUS31141  BLUS41005
+NPEB01204  NPEB01205  NPEB01206  NPEB01207
+NPUB31055  NPUB31056
+```
+
+**Modern Warfare 3**
+
+```
+BCKS10195
+BLES01428  BLES01429  BLES01430  BLES01431  BLES01432  BLES01433  BLES01434
+BLJM60404  BLJM60422  BLJM60534  BLJM60535  BLJM61111  BLJM61112
+BLUS30838  BLUS30872  BLUS30887
+NPEB00964  NPEB00965  NPEB00966  NPEB00967  NPEB00968  NPEB00977  NPEB00978
+NPEB90450  NPEB90451
+NPUB30787  NPUB30788
+```
+
+Title IDs from [SerialStation](https://serialstation.com).
+
 ## Known limitations
 
-**It will only patch these:**
+**A lot of this has never run against real hardware.** The diagnostic half is
+well travelled: it has been run against a real console repeatedly and most of
+what it gets right was found that way. The rest is newer. Specifically, none of
+the following has been done once on a real PS3 at the time of writing:
 
-| Black Ops II | BLUS31011, BLES01717, BLES01718, BLUS31140 |
-| --- | --- |
-| **Modern Warfare 3** | BLUS30838, BLES01428 |
+- installing a package or a title update — `GET /install.ps3/dev_hdd0/packages`
+  has never been fired at a console, so whether webMAN accepts it, what it
+  answers, and whether it installs or only queues are all unknown
+- putting original files back from a backup
+- reading save data off a console
+- resuming an interrupted transfer, which depends on webMAN's FTP honouring
+  `REST` before `STOR`
 
-Anything else is refused rather than guessed at. Whether the klicensee is the
-same across regional SKUs is not established, and re-signing a binary with
-another region's signing parameters produces a file that will not boot. If you
-have a SKU that is not listed, say so rather than forcing it.
-
-The patch sites were verified against **Black Ops II title update 1.19** and
-**Modern Warfare 3 title update 1.24**. On any other update the site the search
-finds is checked against where it was confirmed to be, and a disagreement is
-reported as not recognised rather than patched at an unverified offset.
+Each of those is written carefully and tested against a mock that reproduces the
+console's quirks, and every one of them refuses rather than guesses when it
+cannot tell what is going on. But tested against a mock is not the same as
+having worked, and this section will shrink as things are confirmed rather than
+by anybody deciding they are probably fine.
 
 The filesystem of a device is not something webMAN reports, so anything in the
 diagnostic depending on FAT32 versus NTFS is an inference and says so. Region

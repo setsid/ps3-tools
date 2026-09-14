@@ -281,13 +281,25 @@ def _title_of(body):
 
 def scan(hosts, fetch, connect=None, workers=DEFAULT_WORKERS,
          connect_timeout=DEFAULT_CONNECT_TIMEOUT, on_progress=None,
-         should_stop=None):
+         should_stop=None, passes=2):
     """Returns the hosts that answered on 80 and looked like webMAN.
 
     connect(host) says whether port 80 accepts, fetch(host) returns the body of
     GET / or None. Both are parameters so the test suite can run the whole of
     this against a table of canned answers, and so the only code that can put a
     packet on the wire is the pair the GUI hands in.
+
+    A sweep that finds nothing is tried once more before giving up, which is
+    what passes controls. The first packet to a console nobody on this PC has
+    spoken to yet waits on an ARP exchange, and a console on Wi-Fi with power
+    saving can take most of a second to answer it -- long enough to miss a
+    short connect timeout. The first sweep leaves the address in the ARP cache,
+    so the second finds it immediately. That is why pressing Find twice worked
+    when pressing it once did not, and doing the second sweep here rather than
+    making the user do it is the whole of the fix.
+
+    Only a sweep that found nothing is repeated. A search that worked is not
+    made slower, and nothing is asked twice when there was an answer first time.
     """
     connect = connect or (lambda host: tcp_open(host, 80, connect_timeout))
     found = []
@@ -320,6 +332,15 @@ def scan(hosts, fetch, connect=None, workers=DEFAULT_WORKERS,
                 found.append(candidate)
             if on_progress:
                 on_progress(done, total, len(found))
+
+    if not found and passes > 1 and hosts and not (should_stop
+                                                   and should_stop()):
+        # Nothing answered, and the addresses are now in the ARP cache. One
+        # more sweep, and no further: two silent sweeps means it is not there.
+        return scan(hosts, fetch, connect=connect, workers=workers,
+                    connect_timeout=connect_timeout, on_progress=on_progress,
+                    should_stop=should_stop, passes=passes - 1)
+
     found.sort(key=lambda item: (-item.score, item.address))
     return found
 

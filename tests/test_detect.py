@@ -79,6 +79,12 @@ def listing(*parts):
     return fixture("detect", *parts)
 
 
+def folders(*names):
+    """A /dev_hdd0/game listing holding exactly these title folders."""
+    return "".join("drwxrwxrwx   1 root     root            0 Sep 06 19:51 "
+                   "%s\n" % name for name in names)
+
+
 class Ready(FixtureCase):
     """The happy case, driven through the real transport at a mock console."""
 
@@ -206,6 +212,52 @@ class States(FixtureCase):
         self.assertEqual({item.state for item in found}, {detect.READY})
         self.assertEqual({item.region for item in found},
                          {"Europe", "North America"})
+
+    def test_a_release_nobody_has_confirmed_is_found_and_flagged(self):
+        # BLES01719 is a published Black Ops II release with no verified
+        # record. The old table had no entry for it, so it came back as an
+        # unknown variant and was refused on sight. It is now found, named,
+        # and marked as one nobody has reported back on.
+        report = self.report({
+            GAME: folders("BLES01719"),
+            usrdir("BLES01719"): listing("list_usrdir_bo2.txt")})
+        found = report.for_title("bo2")
+        self.assertEqual([item.title_id for item in found], ["BLES01719"])
+        row = found[0]
+        self.assertEqual(row.state, detect.READY)
+        self.assertEqual(row.title_key, "bo2")
+        self.assertEqual(row.short, "Black Ops II")
+        self.assertFalse(row.verified)
+        # No verified SKU record means no region and no update hashes, and
+        # inventing either would be a guess dressed as a reading.
+        self.assertIsNone(row.region)
+        self.assertIsNone(titles.sku_for("BLES01719"))
+        self.assertTrue(any("nobody has confirmed" in note
+                            for note in report.notes), report.notes)
+
+    def test_a_confirmed_release_is_not_flagged_as_unconfirmed(self):
+        report = self.report({
+            GAME: folders("BLES01717"),
+            usrdir("BLES01717"): listing("list_usrdir_bo2.txt")})
+        row = report.for_title("bo2")[0]
+        self.assertTrue(row.verified)
+        self.assertEqual(row.region, "Europe")
+        self.assertFalse(any("nobody has confirmed" in note
+                             for note in report.notes), report.notes)
+
+    def test_a_title_id_in_neither_list_is_still_not_either_game(self):
+        # The lists grew; they did not become everything. A Call of Duty
+        # looking folder with an unheard-of title ID is still refused, and is
+        # still not attributed to either game.
+        report = self.report({
+            GAME: folders("BLJS10032"),
+            usrdir("BLJS10032"): listing("list_usrdir_bo2.txt")})
+        row = {item.title_id: item for item in report.installations}["BLJS10032"]
+        self.assertEqual(row.state, detect.UNKNOWN_VARIANT)
+        self.assertIsNone(row.title_key)
+        self.assertFalse(row.verified)
+        self.assertEqual(report.for_title("bo2")[0].state, detect.NOT_FOUND)
+        self.assertEqual(report.for_title("mw3")[0].state, detect.NOT_FOUND)
 
     def test_bljm61034_is_never_treated_as_black_ops_two(self):
         # It was in an earlier draft of the table and Sony's manifest returns

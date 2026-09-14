@@ -300,6 +300,21 @@ QPushButton[primary="true"]:disabled {
     color: %(text_dim)s;
     border-color: %(border)s;
 }
+/* Used by Disconnect, which is the one control in the bar that undoes
+   something rather than doing it. Red because it should not be pressed by
+   accident, not because anything bad happens: nothing is sent to the console
+   and pressing Check IP again puts it straight back. */
+QPushButton[danger="true"] {
+    background: %(error)s;
+    color: %(accent_text)s;
+    border: 1px solid %(error)s;
+    font-weight: 600;
+}
+QPushButton[danger="true"]:disabled {
+    background: %(surface_alt)s;
+    color: %(text_dim)s;
+    border-color: %(border)s;
+}
 /* Room on the left for the chevron, so the arrow and the words read as one
    control rather than as a picture next to some text. */
 QPushButton#backButton { padding: 6px 14px 6px 9px; font-weight: 600; }

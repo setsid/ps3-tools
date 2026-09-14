@@ -177,6 +177,39 @@ class TitleMatchingTests(unittest.TestCase):
         self.assertIn(("bo2", "BLUS31140"), found)
         self.assertIn(("mw3", "BLES01428"), found)
 
+    def test_every_published_release_is_matched_on_its_title_id(self):
+        # The title IDs the diagnostic half recognises and the ones the patcher
+        # half recognises are the same set, written out in both places because
+        # the read-only half is not allowed to import the other one. A drift
+        # between them shows up as a game the report cannot name.
+        for spec in patchstate.TITLES:
+            for title_id in spec.title_ids:
+                found, matched, how = patchstate._match(directory(title_id))
+                self.assertIs(found, spec, title_id)
+                self.assertEqual(matched, title_id)
+                self.assertEqual(how, "title ID")
+
+    def test_a_release_nobody_has_confirmed_is_recognised_but_not_verified(self):
+        record = patchstate.patch_state(
+            game_set([directory("BLES01430")]))["titles"][0]
+        self.assertEqual(record["fix_key"], "mw3")
+        self.assertEqual(record["title_id"], "BLES01430")
+        self.assertFalse(record["verified"])
+
+    def test_a_confirmed_release_says_so(self):
+        record = patchstate.patch_state(
+            game_set([directory("BLES01428")]))["titles"][0]
+        self.assertTrue(record["verified"])
+        self.assertTrue(patchstate.is_verified(patchstate.MW3, "BLES01428"))
+        self.assertFalse(patchstate.is_verified(patchstate.MW3, "BLES01430"))
+
+    def test_the_verified_releases_are_a_subset_of_the_recognised_ones(self):
+        for spec in patchstate.TITLES:
+            self.assertTrue(set(spec.verified_title_ids)
+                            <= set(spec.title_ids), spec.key)
+            self.assertLess(len(spec.verified_title_ids),
+                            len(spec.title_ids), spec.key)
+
     def test_a_console_without_either_title_reports_none(self):
         payload = patchstate.patch_state(game_set([directory("BLES01702")]))
         self.assertEqual(payload["titles"], [])
@@ -560,3 +593,54 @@ class AMissingPatcher(unittest.TestCase):
         patchstate._patchers.clear()
         out = patchstate.decrypted_state(b"\x00" * 64, "mw3")
         self.assertFalse(out.get("tool_fault"))
+
+
+class TheUpdateTheFixWasVerifiedOn(unittest.TestCase):
+    """titles.verified_update_for. A fact about this program, not about Sony.
+
+    The number this returns is the build somebody watched the fix work on. It
+    happens to be the newest update for both games today, which is exactly why
+    it is written down separately: the day another update ships, a check made
+    against the manifest would start telling every user their console is wrong,
+    and a check made against this would go on saying the only thing anyone here
+    can support.
+    """
+
+    def test_the_two_verified_releases_have_the_confirmed_build(self):
+        from ps3tools import titles
+        self.assertEqual(titles.verified_update_for("BLES01717"), "1.19")
+        self.assertEqual(titles.verified_update_for("BLES01428"), "1.24")
+
+    def test_it_is_written_down_and_not_read_off_the_manifest(self):
+        from ps3tools import titles
+        for key in ("bo2", "mw3"):
+            config = titles.TITLES[key]
+            self.assertIn("verified_update", config)
+            # Deliberately two keys with the same value today. They answer
+            # different questions and one of them is allowed to move on its
+            # own; a single key would make that impossible to express.
+            self.assertIn("latest_update", config)
+
+    def test_a_release_nobody_has_confirmed_has_no_expected_version(self):
+        from ps3tools import titles
+        for title_id in ("BLES01430", "NPEB01204", "BLJM60548"):
+            self.assertTrue(titles.is_recognised(title_id), title_id)
+            self.assertFalse(titles.is_verified(title_id), title_id)
+            # None means "nothing to compare against", never "out of date".
+            self.assertIsNone(titles.verified_update_for(title_id), title_id)
+
+    def test_a_title_id_that_is_neither_game_says_nothing(self):
+        from ps3tools import titles
+        self.assertIsNone(titles.verified_update_for("BLES01702"))
+        self.assertIsNone(titles.verified_update_for(""))
+        self.assertIsNone(titles.verified_update_for(None))
+
+    def test_every_verified_release_has_a_package_hash_for_that_build(self):
+        # The two tables are independent and a verified update with no entry in
+        # the SKU's update list would be a version this tool claims to have
+        # confirmed and cannot recognise.
+        from ps3tools import titles
+        for title_id in titles.VERIFIED_TITLE_IDS:
+            wanted = titles.verified_update_for(title_id)
+            self.assertIn(wanted, titles.sku_for(title_id)["updates"],
+                          title_id)

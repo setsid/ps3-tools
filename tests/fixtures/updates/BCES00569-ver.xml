@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<titlepatch titleid="BCES00569">
+  <tag name="BCES00569-ver" popup="true" signoff="true">
+    <package version="02.17" size="52428800" sha1sum="3333333333333333333333333333333333333333" url="http://b0.ww.np.dl.playstation.net/tppkg/np/BCES00569/BCES00569_T17/abcd-BCES00569_00-GT5PATCH0000217.pkg" ps3_system_ver="0004002000000000">
+      <paramsfo>
+        <TITLE>Gran Turismo 5</TITLE>
+      </paramsfo>
+    </package>
+  </tag>
+</titlepatch>

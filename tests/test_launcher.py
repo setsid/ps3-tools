@@ -14,15 +14,19 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
-from ps3tools.shell import icons, registry
-from ps3tools.shell.launcher import SUPPORT_ADDRESS, Launcher
-from ps3tools.shell.screen import Screen
+from mock_webman import MockWebmanHttp
+from ps3tools.shell import consolestats, icons, registry
+from ps3diag.transport import Response
+from ps3tools.shell.launcher import SUPPORT_ADDRESS, CardGrid, Launcher
+from ps3tools.shell.widgets import ToolCard
+from ps3tools.shell.screen import ConnectionState, Screen, Services
 from ps3tools.shell.theme import AppTheme
 
 application = None
@@ -306,6 +310,577 @@ class LauncherOnScreenTests(LauncherCase):
         self.assertFalse(self.launcher._grid_host.isVisible())
         self.assertTrue(any("No tools are registered" in text
                             for text in self.labels()))
+
+
+
+# --- four to a row ---------------------------------------------------------
+
+def card_screens(count):
+    """`count` throwaway screen classes, so a second row is a real case."""
+    made = []
+    for index in range(count):
+        made.append(type(f"Screen{index}", (FirstScreen,), {
+            "key": f"card{index}",
+            "title": f"Tool number {index}",
+            "blurb": "A card with a blurb about the length of a real one, "
+                     "which is two lines.",
+            "tile": f"T{index}",
+            "order": 10 + index,
+        }))
+    return made
+
+
+class CardGridTests(LauncherCase):
+    """Four columns, and the same gutter either side of the row.
+
+    A flow layout wrapped at whatever fitted and packed every row from the
+    left, so the leftover width all collected on the right and a row of four
+    looked shoved to one side. Both halves of that are checked here.
+    """
+
+    WIDE = 1500
+
+    def setUp(self):
+        super().setUp()
+        self.launcher.resize(self.WIDE, 900)
+        self.launcher.show()
+        self.addCleanup(self.launcher.hide)
+        self.settle()
+
+    def settle(self):
+        for _ in range(8):
+            application.processEvents()
+
+    def grid(self):
+        return self.launcher._grid_host
+
+    def test_a_row_holds_at_most_four_cards(self):
+        self.launcher.rebuild(card_screens(6))
+        self.settle()
+        rows = self.grid().rows()
+        self.assertEqual([len(row) for row in rows], [4, 2])
+        for row in rows:
+            self.assertLessEqual(len(row), CardGrid.COLUMNS)
+
+    def test_eight_cards_are_four_and_four(self):
+        self.launcher.rebuild(card_screens(8))
+        self.settle()
+        self.assertEqual([len(row) for row in self.grid().rows()], [4, 4])
+
+    def test_the_gutters_either_side_of_the_row_match(self):
+        self.launcher.rebuild(card_screens(6))
+        self.settle()
+        left, right = self.grid().gutters()
+        self.assertLessEqual(abs(left - right), 2, (left, right))
+
+    def test_a_part_row_starts_at_the_same_left_edge(self):
+        # Centring the last row on itself is the other way to get this wrong:
+        # the second row is a continuation of the grid, not a block of its own.
+        self.launcher.rebuild(card_screens(5))
+        self.settle()
+        rows = self.grid().rows()
+        self.assertEqual(rows[1][0].x(), rows[0][0].x())
+
+    def test_the_cards_in_a_row_do_not_overlap_or_leave_the_grid(self):
+        self.launcher.rebuild(card_screens(6))
+        self.settle()
+        grid = self.grid()
+        for row in grid.rows():
+            for left, right in zip(row, row[1:]):
+                self.assertLessEqual(left.geometry().right(), right.x())
+            self.assertGreaterEqual(row[0].x(), 0)
+            self.assertLessEqual(row[-1].geometry().right(), grid.width())
+
+    def test_every_card_in_a_row_is_the_same_size(self):
+        self.launcher.rebuild(card_screens(6))
+        self.settle()
+        sizes = {(card.width(), card.height())
+                 for card in self.launcher.cards}
+        self.assertEqual(len(sizes), 1, sizes)
+
+    def test_a_card_stops_growing_and_the_leftover_becomes_even_gutter(self):
+        self.launcher.resize(2600, 900)
+        self.launcher.rebuild(card_screens(4))
+        self.settle()
+        self.assertEqual(self.launcher.cards[0].width(),
+                         CardGrid.MAX_CARD_WIDTH)
+        left, right = self.grid().gutters()
+        self.assertGreater(left, 0)
+        self.assertLessEqual(abs(left - right), 2, (left, right))
+
+    def test_an_ordinary_window_fills_the_row_rather_than_centring_it(self):
+        # A block centred under a left aligned heading reads as a mistake, so
+        # the cards take the width up to the point where they stop growing.
+        for width in (1280, 1440, 1920):
+            columns, card_width, _height, left = CardGrid().metrics(width - 74)
+            self.assertEqual(columns, CardGrid.COLUMNS, width)
+            self.assertLessEqual(left, 2, (width, left))
+            self.assertGreaterEqual(card_width, CardGrid.MIN_CARD_WIDTH)
+
+    def test_a_narrow_card_is_given_a_line_for_its_blurb(self):
+        # The blurbs are written to fall in two lines at the design width.
+        self.launcher.resize(1440, 900)
+        self.launcher.rebuild(card_screens(4))
+        self.settle()
+        self.assertLess(self.launcher.cards[0].width(), ToolCard.CARD_WIDTH)
+        self.assertEqual(self.launcher.cards[0].height(),
+                         ToolCard.CARD_HEIGHT + CardGrid.EXTRA_LINE)
+
+    def test_a_narrow_window_drops_a_column_rather_than_clipping(self):
+        # Four cards below the minimum readable width would be four cards with
+        # their titles elided to nothing.
+        columns = CardGrid().metrics(700)[0]
+        self.assertLess(columns, CardGrid.COLUMNS)
+        self.assertGreaterEqual(
+            CardGrid().metrics(700)[1], CardGrid.MIN_CARD_WIDTH)
+
+    def test_the_default_window_still_gets_four(self):
+        # 1280 is what the window opens at, and the whole point of the change.
+        self.assertEqual(CardGrid().metrics(1280 - 64)[0], CardGrid.COLUMNS)
+
+    def test_the_grid_is_as_tall_as_the_rows_in_it(self):
+        self.launcher.rebuild(card_screens(6))
+        self.settle()
+        grid = self.grid()
+        card = self.launcher.cards[0]
+        self.assertEqual(grid.height(), 2 * card.height() + CardGrid.GAP)
+
+
+# --- the console stats strip -----------------------------------------------
+
+CPURSX_PARTIAL = """
+<html><body>
+CPU: 61&deg;C
+</body></html>
+"""
+
+CPURSX_HOT = """
+<html><body>
+CPU: 84&deg;C RSX: 72&deg;C
+Fan Speed: 77% (manual)
+</body></html>
+"""
+
+
+class Canned:
+    """A probe that answers from a dictionary. Never opens a socket."""
+
+    def __init__(self, bodies):
+        self.bodies = bodies
+        self.asked = []
+        self.host = None
+        self.timeout = None
+
+    def __call__(self, host, timeout=None):
+        self.host = host
+        self.timeout = timeout
+        return self
+
+    def get(self, path):
+        self.asked.append(path)
+        return Response(path, 200, self.bodies.get(path, ""), "text/html")
+
+
+class NoRealProbe:
+    """Stands in for ps3diag.transport.HttpProbe and refuses to be one.
+
+    The regression this exists for: a seam was added, nothing checked that it
+    was the only route out, an inert path went live inside the suite and the
+    tests started reaching the LAN. An injectable factory proves nothing on
+    its own; this does, because it is the real name and it records every
+    attempt to use it.
+    """
+
+    constructed = []
+
+    def __init__(self, *args, **kwargs):
+        NoRealProbe.constructed.append((args, kwargs))
+        raise AssertionError("the real HttpProbe was constructed by a test")
+
+
+class StatsCase(unittest.TestCase):
+    """Services, and a parent to hang a strip off.
+
+    The launcher is built by the tests that want one rather than here. A
+    launcher builds a strip of its own, wired to the real client, and a case
+    that then builds a second strip with a stub in it would have two strips
+    racing for the same connection -- with one of them fetching for real. The
+    guard below catches exactly that, which is how this arrangement was
+    arrived at.
+    """
+
+    def setUp(self):
+        self._saved = registry.screens()
+        registry.clear()
+        self.theme = AppTheme("light")
+        self.connection = ConnectionState("")
+        self.services = Services(self.connection, self.theme, {})
+        self.host = QWidget()
+        # Shown, because a strip only reads a console for a page somebody has
+        # in front of them.
+        self.host.show()
+        self.addCleanup(self.host.hide)
+        self.addCleanup(self.host.deleteLater)
+        self.addCleanup(self._restore)
+        # Added last so it runs first: a worker still out when the widget it
+        # will call back into is torn down is a RuntimeError in a slot, on
+        # somebody else's test.
+        self.addCleanup(self.services.wait, 10000)
+
+    def _restore(self):
+        registry.clear()
+        for screen_class in self._saved:
+            registry.register(screen_class)
+
+    def make_launcher(self, shown=True):
+        launcher = Launcher(self.theme, services=self.services)
+        self.addCleanup(launcher.deleteLater)
+        if shown:
+            launcher.resize(1400, 900)
+            launcher.show()
+            self.addCleanup(launcher.hide)
+            for _ in range(6):
+                application.processEvents()
+        return launcher
+
+    def settle(self):
+        self.assertTrue(self.services.wait(10000))
+        for _ in range(6):
+            application.processEvents()
+
+    def connect_to(self, host):
+        self.connection.set_host(host)
+        self.connection.set_connection("connected", "")
+        self.settle()
+
+    def values(self):
+        return {key: value for key, _label, value, _token
+                in self.strip.fields()}
+
+
+class StatsStripTests(StatsCase):
+    """The strip on a real home screen, against the loopback mock console."""
+
+    def setUp(self):
+        super().setUp()
+        self.launcher = self.make_launcher()
+        self.strip = self.launcher.stats
+
+    def test_the_strip_is_absent_with_no_address(self):
+        self.launcher.rebuild([FirstScreen])
+        self.assertIsNotNone(self.strip)
+        self.assertFalse(self.strip.isVisibleTo(self.launcher))
+        self.assertEqual(self.strip.fields(), ())
+
+    def test_the_strip_is_absent_when_the_console_cannot_be_reached(self):
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("unreachable", "nothing there")
+        self.settle()
+        self.assertFalse(self.strip.isVisibleTo(self.launcher))
+        self.assertEqual(self.strip.fields(), ())
+
+    def test_nothing_is_fetched_until_the_connection_is_made(self):
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("checking", "asking")
+        self.settle()
+        self.assertFalse(self.strip.busy)
+        self.assertEqual(self.strip.fields(), ())
+
+    def test_a_console_that_answers_puts_its_figures_on_the_page(self):
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connect_to(console.address)
+        values = self.values()
+        self.assertEqual(values.get("cpu"), "61 \u00b0C")
+        self.assertEqual(values.get("rsx"), "54 \u00b0C")
+        self.assertEqual(values.get("fan"), "41% manual")
+        self.assertEqual(values.get("firmware"), "4.93 CEX")
+        self.assertEqual(values.get("uptime"), "3h 42m")
+        self.assertTrue(self.strip.isVisibleTo(self.launcher))
+        # Only the two read-only pages, and only over GET.
+        self.assertEqual(sorted({path for _verb, path in console.requests}),
+                         ["/", "/cpursx.ps3"])
+        self.assertEqual({verb for verb, _path in console.requests}, {"GET"})
+
+    def test_a_console_that_goes_away_takes_the_strip_with_it(self):
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connect_to(console.address)
+        self.assertTrue(self.strip.fields())
+        self.connection.set_connection("unreachable", "gone")
+        self.settle()
+        self.assertEqual(self.strip.fields(), ())
+        self.assertFalse(self.strip.isVisibleTo(self.launcher))
+
+    def test_a_console_that_says_nothing_useful_shows_nothing_at_all(self):
+        console = MockWebmanHttp(routes={}).start()
+        self.addCleanup(console.stop)
+        self.connect_to(console.address)
+        self.assertEqual(self.strip.fields(), ())
+        self.assertFalse(self.strip.isVisibleTo(self.launcher))
+
+    def test_the_gap_under_the_strip_comes_and_goes_with_it(self):
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.assertFalse(self.launcher._stats_gap.isVisibleTo(self.launcher))
+        self.connect_to(console.address)
+        self.assertTrue(self.launcher._stats_gap.isVisibleTo(self.launcher))
+        self.connection.set_connection("unreachable", "gone")
+        self.settle()
+        self.assertFalse(self.launcher._stats_gap.isVisibleTo(self.launcher))
+
+    def test_the_manual_refresh_reads_the_console_again(self):
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connect_to(console.address)
+        before = len(console.requests)
+        self.strip._refresh.click()
+        self.settle()
+        self.assertGreater(len(console.requests), before)
+        self.assertTrue(self.strip.fields())
+
+    def test_there_is_no_timer_reading_the_console_behind_anyone_s_back(self):
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connect_to(console.address)
+        after_connect = len(console.requests)
+        for _ in range(40):
+            application.processEvents()
+        self.settle()
+        self.assertEqual(len(console.requests), after_connect)
+
+
+
+class OffScreenTests(StatsCase):
+    """A home screen nobody has open does not go and read anybody's console.
+
+    This is a network rule as much as a courtesy one. Several tests elsewhere
+    drive a window that was never shown as far as "connected", using invented
+    addresses on the real subnet; without this the strip would have answered
+    that signal with a request to a stranger's machine.
+    """
+
+    def test_connecting_behind_a_window_nobody_opened_reads_nothing(self):
+        launcher = self.make_launcher(shown=False)
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connection.set_host(console.address)
+        self.connection.set_connection("connected", "")
+        self.settle()
+        self.assertEqual(console.requests, [])
+        self.assertEqual(launcher.stats.fields(), ())
+
+    def test_the_reading_owed_is_taken_when_the_page_comes_up(self):
+        launcher = self.make_launcher(shown=False)
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connection.set_host(console.address)
+        self.connection.set_connection("connected", "")
+        self.settle()
+        launcher.resize(1400, 900)
+        launcher.show()
+        self.addCleanup(launcher.hide)
+        self.settle()
+        self.assertEqual(sorted({path for _verb, path in console.requests}),
+                         ["/", "/cpursx.ps3"])
+        self.assertTrue(launcher.stats.fields())
+
+    def test_coming_home_twice_over_does_not_read_it_twice(self):
+        launcher = self.make_launcher(shown=False)
+        console = MockWebmanHttp().start()
+        self.addCleanup(console.stop)
+        self.connection.set_host(console.address)
+        self.connection.set_connection("connected", "")
+        self.settle()
+        launcher.resize(1400, 900)
+        launcher.show()
+        self.addCleanup(launcher.hide)
+        self.settle()
+        taken = len(console.requests)
+        launcher.hide()
+        launcher.show()
+        self.settle()
+        self.assertEqual(len(console.requests), taken)
+
+
+class PartialDataTests(StatsCase):
+    """webMAN 1.47.48q does not report everything, and that is not an error."""
+
+    def strip_with(self, bodies):
+        probe = Canned(bodies)
+        strip = consolestats.ConsoleStats(self.services, self.host,
+                                          probe_factory=probe)
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("connected", "")
+        self.settle()
+        return strip, probe
+
+    def test_a_field_that_did_not_parse_is_left_out_not_blanked(self):
+        strip, _probe = self.strip_with({"/": "", "/cpursx.ps3":
+                                         CPURSX_PARTIAL})
+        keys = [key for key, _label, _value, _token in strip.fields()]
+        self.assertEqual(keys, ["cpu"])
+        self.assertEqual(strip.fields()[0][2], "61 \u00b0C")
+
+    def test_nothing_at_all_still_means_no_strip(self):
+        strip, _probe = self.strip_with({"/": "", "/cpursx.ps3": ""})
+        self.assertEqual(strip.fields(), ())
+        self.assertFalse(strip.isVisibleTo(self.host))
+
+    def test_a_fan_with_no_mode_does_not_trail_off(self):
+        self.assertEqual(
+            consolestats.read_fields({"fan_speed_percent": 41}),
+            (("fan", "Fan", "41%", "text"),))
+
+    def test_the_fields_keep_their_order_however_few_there_are(self):
+        facts = {"uptime": "3h", "cpu_temp_c": 61.0, "firmware": "4.93"}
+        keys = [key for key, _l, _v, _t in consolestats.read_fields(facts)]
+        self.assertEqual(keys, ["cpu", "firmware", "uptime"])
+
+
+class TemperatureColourTests(StatsCase):
+
+    def bands(self):
+        return {value: consolestats.temperature_token(value)
+                for value in (20.0, 69.9, 70.0, 79.9, 80.0, 80.1, 95.0)}
+
+    def test_the_bands_are_where_they_were_asked_to_be(self):
+        self.assertEqual(self.bands(), {
+            20.0: "ok", 69.9: "ok", 70.0: "warn", 79.9: "warn",
+            80.0: "warn", 80.1: "error", 95.0: "error"})
+
+    def test_a_hot_console_is_drawn_in_the_hot_tokens(self):
+        probe = Canned({"/": "", "/cpursx.ps3": CPURSX_HOT})
+        strip = consolestats.ConsoleStats(self.services, self.host,
+                                          probe_factory=probe)
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("connected", "")
+        self.settle()
+        self.assertEqual(strip.stat("cpu").token, "error")
+        self.assertEqual(strip.stat("rsx").token, "warn")
+        self.assertEqual(strip.stat("cpu").value_colour(),
+                         self.theme.colour("error"))
+        self.assertEqual(strip.stat("fan").value_colour(),
+                         self.theme.colour("text"))
+
+    def test_a_theme_change_repaints_the_figures(self):
+        probe = Canned({"/": "", "/cpursx.ps3": CPURSX_HOT})
+        strip = consolestats.ConsoleStats(self.services, self.host,
+                                          probe_factory=probe)
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("connected", "")
+        self.settle()
+        light = strip.stat("cpu").value.styleSheet()
+        self.assertIn(AppTheme("light").colour("error").lower(),
+                      light.lower())
+        self.theme.set_mode("dark")
+        application.processEvents()
+        dark = strip.stat("cpu").value.styleSheet()
+        self.assertNotEqual(dark, light)
+        self.assertEqual(strip.stat("cpu").value_colour(),
+                         self.theme.colour("error"))
+        self.assertIn(AppTheme("dark").colour("error").lower(), dark.lower())
+        # Still the same token; only what the token means has moved.
+        self.assertEqual(strip.stat("cpu").token, "error")
+
+
+class NothingReachesTheNetworkTests(StatsCase):
+    """The guard. Not the seam -- the proof that the seam is the only way out.
+
+    tests/check-no-network.py gates the release on this staying true, and it
+    can only catch a packet that was actually sent. This catches the probe
+    being constructed at all, which is one step earlier and does not depend on
+    anything being listening at the other end.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self._real = consolestats.HttpProbe
+        consolestats.HttpProbe = NoRealProbe
+        NoRealProbe.constructed = []
+        self.addCleanup(self._put_it_back)
+
+    def _put_it_back(self):
+        consolestats.HttpProbe = self._real
+
+    def test_building_and_driving_the_home_screen_constructs_no_probe(self):
+        self.launcher = self.make_launcher()
+        self.launcher.rebuild([FirstScreen, SecondScreen])
+        for _ in range(8):
+            application.processEvents()
+        # Everything the shell does to a launcher, short of reaching a console.
+        self.connection.set_host("192.168.1.42")
+        self.connection.set_connection("checking", "asking")
+        self.connection.set_connection("unreachable", "no answer")
+        self.connection.set_scan("scanning", "looking")
+        self.connection.set_scan("none", "nothing found")
+        self.theme.set_mode("dark")
+        self.launcher.rebuild([FirstScreen])
+        self.launcher.rebuild([FirstScreen, SecondScreen])
+        self.launcher.focus_first_card()
+        self.settle()
+        self.assertEqual(NoRealProbe.constructed, [])
+
+    def test_connecting_with_the_page_put_away_constructs_no_probe(self):
+        # The signal that does start a fetch, arriving at a strip nobody can
+        # see. This is the shape the shell tests are in.
+        launcher = self.make_launcher(shown=False)
+        self.connection.set_host("192.168.1.42")
+        self.connection.set_connection("connected", "webMAN answered")
+        self.settle()
+        self.assertEqual(NoRealProbe.constructed, [])
+        self.assertEqual(launcher.stats.fields(), ())
+
+    def test_the_guard_would_notice_a_fetch_it_was_not_meant_to_see(self):
+        # A guard that cannot fail is not a guard. Driving the home screen the
+        # way a user does -- on screen, connected -- goes through the seam
+        # every time, so the empty lists above are saying something.
+        seen = []
+        real = consolestats.make_probe
+        consolestats.make_probe = lambda host, timeout=None: seen.append(
+            host) or Canned({})(host, timeout)
+        try:
+            launcher = self.make_launcher()
+            self.connection.set_host("127.0.0.1:1")
+            self.connection.set_connection("connected", "")
+            self.settle()
+        finally:
+            consolestats.make_probe = real
+        self.assertEqual(seen, ["127.0.0.1:1"])
+        self.assertIsNotNone(launcher.stats)
+        self.assertEqual(NoRealProbe.constructed, [])
+
+    def test_a_fetch_goes_through_the_probe_it_was_given_and_no_other(self):
+        # The half that matters most: the strip really does fetch here, and
+        # the real client is still never touched.
+        probe = Canned({"/": "", "/cpursx.ps3": CPURSX_HOT})
+        strip = consolestats.ConsoleStats(self.services, self.host,
+                                          probe_factory=probe)
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("connected", "")
+        self.settle()
+        self.assertEqual(probe.asked, ["/", "/cpursx.ps3"])
+        self.assertTrue(strip.fields())
+        self.assertEqual(NoRealProbe.constructed, [])
+
+    def test_the_default_route_is_the_one_named_seam(self):
+        # So that replacing make_probe in the test above is replacing the
+        # thing the shipped code actually calls.
+        seen = []
+
+        def factory(host, timeout=None):
+            seen.append((host, timeout))
+            return Canned({})(host, timeout)
+
+        real = consolestats.make_probe
+        consolestats.make_probe = factory
+        try:
+            consolestats.read_console("127.0.0.1:1")
+        finally:
+            consolestats.make_probe = real
+        self.assertEqual(seen, [("127.0.0.1:1", consolestats.TIMEOUT)])
+        self.assertEqual(NoRealProbe.constructed, [])
+
 
 
 if __name__ == "__main__":

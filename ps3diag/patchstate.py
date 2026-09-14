@@ -30,9 +30,34 @@ from:
   * a SHA-1 of the whole file, if a collector ever computes one
 
 The reference sizes and hashes below cover exactly one title update per title,
-the one each repository was tested against, taken from its README. A file that
-does not match them is usually a different update rather than a patched file,
+the one each repository was tested against, taken from its README, plus the
+sizes this program's own patcher produces on that same update. A file that
+matches none of them is usually a different update rather than a patched file,
 so a size that is merely unfamiliar produces unknown and not unpatched.
+
+Why this does not just decrypt the file, when the patcher half does:
+
+The patcher has a console in front of it. It opens a connection, pulls the
+whole binary down, runs the scetool that ships alongside it and reads the
+patched instruction out of the decrypted image. That is definitive and this is
+not, and the two are still right to differ, because they are not doing the same
+job. patch_state() runs over an ArtefactSet, and an artefact set carries file
+names and sizes and never file contents. That is the schema, on purpose, so
+that a report zipped up on somebody's console can be read by a helper with no
+console anywhere near them. There are no bytes here to decrypt. Getting them
+would mean a live console, three downloads of six or seven megabytes apiece,
+and a check that quietly stopped working on every saved report, which is most
+of them. Decrypting is a thing the patcher does to a console; this is a thing
+the diagnostic does to a file somebody emailed.
+
+So the two halves know different things and say so. The patcher reads the
+instruction; this reports what a size and a plaintext header can support, and
+says out loud that it has not seen the instruction. Where they disagree the
+patcher is right. Making this one decrypt would take two changes nobody should
+make quietly: artefact sets would have to carry file contents, and the
+transport rule that allows small ranged reads but refuses whole-file downloads
+would have to be widened. Neither is worth it for a check whose honest answer
+is already available from the size.
 
 The strongest keyless inference available is this: re-signing with scetool does
 not reproduce Sony's own compression, so a re-signed file is a different size
@@ -72,6 +97,18 @@ UNPATCHED = "unpatched"
 UNKNOWN = "unknown"
 MISSING = "missing"
 
+# What a whole install is in, as opposed to what one file is in. A title update
+# that is not installed has no files to have a state, so it is answered here
+# rather than three times over with a file-level state that would have to mean
+# "this file does not exist and that is fine".
+INSTALLED = "installed"
+NO_UPDATE = "no_update"
+
+NO_UPDATE_NOTE = ("the game is here but its title update has not been "
+                  "installed. The fix changes files that arrive with the "
+                  "update, so there is nothing to patch until it has been "
+                  "installed. That is normal and nothing is wrong")
+
 HIGH = "high"
 LOW = "low"
 
@@ -87,12 +124,16 @@ Binary = namedtuple("Binary",
                     "name affected purpose key_revision app_type elf_size "
                     "references")
 Title = namedtuple("Title",
-                   "key title repo advice title_ids name_patterns binaries")
+                   "key title repo advice title_ids verified_title_ids "
+                   "name_patterns binaries")
 
 # Sizes and hashes are the reference values published in each repository's
-# README. The patched sizes are one person's build: re-signing with different
-# parameters gives a different size, so a patched size matching is evidence and
-# a patched size not matching is not.
+# README, plus the sizes this program's own patcher has been seen to produce.
+# Re-signing is what changes the size: the patched instruction is one word and
+# costs nothing, while rebuilding the compressed data section with scetool does
+# not reproduce Sony's own compression, so every signing setup lands on its own
+# stable size. A patched size matching is therefore evidence and a patched size
+# not matching is not.
 BO2 = Title(
     key="bo2",
     title="Call of Duty: Black Ops II",
@@ -104,31 +145,68 @@ BO2 = Title(
             "than depending on the extra custom firmware controls being left "
             "switched on. Keep the originals: they are the only way back, and "
             "one cannot be rebuilt from a patched copy."),
+    # Every title ID Black Ops II was published under, so that an install is
+    # named as the game it is wherever it came from. Recognising one of these
+    # says nothing about whether the fix suits it: that is verified_title_ids
+    # below, and the two are kept apart on purpose.
+    #
+    # ps3tools.titles holds the same list for the patcher. It is written out
+    # twice rather than imported because this package is the read-only
+    # diagnostic half and is not allowed to depend on the other half.
+    title_ids=(
+        "BCKS10223", "BCKS10232", "BCUS91450",
+        "BLES01717", "BLES01718", "BLES01719", "BLES01720",
+        "BLJM60548", "BLJM60549", "BLJM61109", "BLJM61110", "BLJM61230",
+        "BLJM61231",
+        "BLUS31011", "BLUS31080", "BLUS31140", "BLUS31141", "BLUS41005",
+        "NPEB01204", "NPEB01205", "NPEB01206", "NPEB01207",
+        "NPUB31055", "NPUB31056",
+    ),
     # BLES01717, BLES01718 and BLUS31011 are named in the README. BLUS31140 is
     # in the repository's own scetool fixtures, as the ContentID
-    # UP0002-BLUS31140_00-CODBLOPS2PATCH09. Other regions exist and are caught
-    # by name instead.
-    title_ids=("BLES01717", "BLES01718", "BLUS31011", "BLUS31140"),
+    # UP0002-BLUS31140_00-CODBLOPS2PATCH09. These four are the ones a working
+    # fix has actually been seen on, and the reference sizes below are theirs.
+    verified_title_ids=("BLES01717", "BLES01718", "BLUS31011", "BLUS31140"),
     name_patterns=(re.compile(r"(?i)\bblack\s*ops\s*(?:2|ii)\b"),
                    re.compile(r"(?i)\bbo\s*2\b"),
                    re.compile(r"(?i)\bblops\s*2\b")),
+    # Two patched sizes per file, from two signing routes, both kept.
+    #
+    # 6095184 and 7214528 are the standalone repository's own build, published
+    # in its README. 6096288, 6096288 and 7215488 are what this program's
+    # patcher produced on a real BLES01717 title update 1.19 and were read back
+    # off that console afterwards. Neither set is more correct than the other:
+    # a file patched by either route is patched, and which one did it only says
+    # who signed it. Without our own figures this tool could not recognise its
+    # own output and answered "cannot tell" about a console it had just fixed.
+    #
+    # t6_ps3f.self patched comes out the same size as EBOOT.BIN patched. That
+    # is an observation off a console, not a rule, and it is written out in
+    # full for that reason. The two decrypt to the same image but are signed
+    # separately, each with its own content ID and its own file name, so there
+    # is no guarantee the sizes track each other on another SKU or another
+    # update. Please do not tidy the repetition away by deriving one from the
+    # other: a future pair that differs would be data, not a bug.
     binaries=(
         Binary("EBOOT.BIN", True, "campaign and zombies", 0x1C, 0x21,
                11706540,
                (Reference(UNPATCHED, "BLES01717", "1.19", 6108656,
                           "fceadf136dd4fbb6d0cb72f7df4a1eb35f7a33cb"),
                 Reference(PATCHED, "BLES01717", "1.19", 6095184,
-                          "bf32afcbefe96e1424215ffa5036088007f8d10e"))),
+                          "bf32afcbefe96e1424215ffa5036088007f8d10e"),
+                Reference(PATCHED, "BLES01717", "1.19", 6096288, None))),
         Binary("t6_ps3f.self", True,
                "campaign and zombies, the copy the console often loads",
                0x1C, 0x20, 11706540,
                (Reference(UNPATCHED, "BLES01717", "1.19", 6108656,
-                          "457ba9131098a124b26e80b955722198e48dac35"),)),
+                          "457ba9131098a124b26e80b955722198e48dac35"),
+                Reference(PATCHED, "BLES01717", "1.19", 6096288, None))),
         Binary("t6mp_ps3f.self", True, "multiplayer", 0x1C, 0x20, 14215768,
                (Reference(UNPATCHED, "BLES01717", "1.19", 7254288,
                           "0099df2812e45fcc36642df0ac014c4e3d4641c9"),
                 Reference(PATCHED, "BLES01717", "1.19", 7214528,
-                          "8af1f859c9fc0a96aae7b2e23abf5dd19b2cdce7"))),
+                          "8af1f859c9fc0a96aae7b2e23abf5dd19b2cdce7"),
+                Reference(PATCHED, "BLES01717", "1.19", 7215488, None))),
     ))
 
 MW3 = Title(
@@ -137,10 +215,23 @@ MW3 = Title(
     repo="https://github.com/setsid/mw3-ps3-psn-fix",
     advice=("default.self is campaign and Spec Ops, is a separate binary, "
             "and the fix does not touch it."),
+    # Every title ID Modern Warfare 3 was published under. See the note on
+    # Black Ops II above: recognised is not the same as verified.
+    title_ids=(
+        "BCKS10195",
+        "BLES01428", "BLES01429", "BLES01430", "BLES01431", "BLES01432",
+        "BLES01433", "BLES01434",
+        "BLJM60404", "BLJM60422", "BLJM60534", "BLJM60535", "BLJM61111",
+        "BLJM61112",
+        "BLUS30838", "BLUS30872", "BLUS30887",
+        "NPEB00964", "NPEB00965", "NPEB00966", "NPEB00967", "NPEB00968",
+        "NPEB00977", "NPEB00978",
+        "NPEB90450", "NPEB90451",
+        "NPUB30787", "NPUB30788",
+    ),
     # BLES01428 is the tested one and is the ID in the README's ContentID.
-    # BLUS30838 is the North American release. Other regions are caught by
-    # name.
-    title_ids=("BLES01428", "BLUS30838"),
+    # BLUS30838 is the North American release.
+    verified_title_ids=("BLES01428", "BLUS30838"),
     name_patterns=(re.compile(r"(?i)\bmodern\s*warfare\s*3\b"),
                    re.compile(r"(?i)\bmw\s*3\b")),
     binaries=(
@@ -526,6 +617,17 @@ def _bo2_nop_site(module, data, start):
 # --- the inventory ---------------------------------------------------------
 
 
+def is_verified(spec, title_id):
+    """Whether a working fix has actually been seen on this exact release.
+
+    False does not mean the release is a stranger. It means this is one of the
+    published title IDs nobody has reported back on, so the reference sizes and
+    hashes above are somebody else's release and everything read here is that
+    much weaker. The patcher half attempts those; this half only says so.
+    """
+    return (title_id or "").upper() in spec.verified_title_ids
+
+
 def _match(entry):
     """(title spec, title ID, how it was matched) for one inventory row."""
     name = entry.get("name") or ""
@@ -539,25 +641,55 @@ def _match(entry):
     return None, None, None
 
 
-def collected_usrdir(artefact_set, title_id):
+def installed_titles(artefact_set):
+    """What is under /dev_hdd0/game, or None when that was never listed.
+
+    None and [] are different answers and the difference is the whole of the
+    third state below. [] means the console was asked and has no title update
+    installed for anything. None means nobody asked, because the category
+    failed or the report predates the collector recording it, and then nothing
+    at all can be said about title updates.
+    """
+    records = artefact_set.facts(CATEGORY).get("installed_titles")
+    if not isinstance(records, list):
+        return None
+    return [record for record in records if isinstance(record, dict)]
+
+
+def installed_entry(spec, records, title_id):
+    """The /dev_hdd0/game entry for one install, or None.
+
+    Matched on the title ID when the inventory row carried one. When it did not
+    - a disc image named "Modern Warfare 3 (Europe).iso" carries no ID in its
+    name, which is common - any of that release's published IDs being installed
+    is taken as the same game, because a console holding one title update for
+    Modern Warfare 3 and a separate disc of Modern Warfare 3 that it does not
+    belong to is not a case worth reporting a worse answer for.
+    """
+    for record in records or []:
+        found = (record.get("title_id") or "").upper()
+        if title_id and found == title_id:
+            return record
+        if not title_id and spec is not None and found in spec.title_ids:
+            return record
+    return None
+
+
+def collected_usrdir(artefact_set, title_id, spec=None):
     """(files, where they came from) for one title's USRDIR, or (None, "").
 
     Two shapes are accepted. A games/facts.json `installed_titles` list, which
-    is what a collector walking /dev_hdd0/game should produce, and a raw FTP
-    listing saved as games/<something with the title ID and USRDIR>.txt. Both
-    are read the same way so neither is privileged.
+    is what a collector walking /dev_hdd0/game produces, and a raw FTP listing
+    saved as games/<something with the title ID and USRDIR>.txt. Both are read
+    the same way so neither is privileged.
     """
-    if not title_id:
-        return None, ""
-    facts = artefact_set.facts("games")
-    for record in facts.get("installed_titles") or []:
-        if not isinstance(record, dict):
-            continue
-        if (record.get("title_id") or "").upper() != title_id:
-            continue
+    record = installed_entry(spec, installed_titles(artefact_set), title_id)
+    if record is not None:
         files = [item for item in record.get("files") or []
                  if isinstance(item, dict)]
         return files, (record.get("path") or "games/facts.json")
+    if not title_id:
+        return None, ""
     for name in artefact_set.names("games/*%s*" % title_id):
         lowered = name.lower()
         if not lowered.endswith(".txt") or "usrdir" not in lowered:
@@ -577,6 +709,22 @@ def _find_file(files, wanted):
 def _reference(binary, state):
     for reference in binary.references:
         if reference.state == state:
+            return reference
+    return None
+
+
+def _reference_for_size(binary, state, size):
+    """The reference of this state whose size is the one on disk, if any.
+
+    Every signing setup gives a patched file its own size, so one file has as
+    many patched references as there are known ways it gets patched. All of
+    them are asked rather than only the first, which is how this tool came to
+    say "cannot tell" about a file it had patched itself.
+    """
+    if size is None:
+        return None
+    for reference in binary.references:
+        if reference.state == state and reference.size == size:
             return reference
     return None
 
@@ -634,7 +782,6 @@ def _state_from_file(binary, record, header, title_id):
         size = None
     sha1 = (record.get("sha1") or "").lower()
     stock = _reference(binary, UNPATCHED)
-    patched = _reference(binary, PATCHED)
 
     if sha1:
         for reference in binary.references:
@@ -653,17 +800,20 @@ def _state_from_file(binary, record, header, title_id):
     same_build = header and binary.elf_size and \
         header.get("data_length") == binary.elf_size
 
+    patched = _reference_for_size(binary, PATCHED, size)
+
     if size is not None and stock and size == stock.size:
         notes.append("the file is %d bytes, exactly the stock size for %s "
                      "title update %s" % (size, stock.title_id, stock.update))
         notes.extend(header_notes)
         notes.append(NO_KEYS)
         return UNPATCHED, LOW, notes
-    if size is not None and patched and size == patched.size:
-        notes.append("the file is %d bytes, the size of the published patched "
-                     "build for %s title update %s"
+    if patched:
+        notes.append("the file is %d bytes, which is the size this file comes "
+                     "out at once the fix has been applied to %s title update "
+                     "%s and it has been signed again"
                      % (size, patched.title_id, patched.update))
-        notes.append("a patched file re-signed with different parameters is a "
+        notes.append("a patched file signed with different parameters is a "
                      "different size again, so this matching is evidence and "
                      "not proof")
         notes.extend(header_notes)
@@ -702,7 +852,11 @@ def _sentences(notes):
 def _binary_record(spec, binary, usrdir, files, source, title_id):
     out = {
         "name": binary.name,
-        "path": "%s/%s" % (usrdir, binary.name),
+        # No folder, no path. A path was once built out of whatever the
+        # inventory row was called, which on a disc image produced
+        # "....iso/default_mp.self" and told the reader their game files were
+        # inside a file. The name on its own says less and says nothing wrong.
+        "path": "%s/%s" % (usrdir, binary.name) if usrdir else binary.name,
         "size": 0,
         "state": UNKNOWN,
         "evidence": "",
@@ -716,19 +870,20 @@ def _binary_record(spec, binary, usrdir, files, source, title_id):
         out["evidence"] = ("the fix does not touch this file, so there is no "
                            "patch state to report for it.")
         return out
+    where = usrdir or "the folder the title update installs to"
     if files is None:
-        out["headline"] = "%s was not listed" % usrdir
+        out["headline"] = "%s was not listed" % where
         out["evidence"] = ("no listing of %s was collected, so it is not known "
                            "whether this file is even there. %s"
-                           % (usrdir, NO_KEYS))
+                           % (where, NO_KEYS))
         return out
     record = _find_file(files, binary.name)
     if record is None:
         out["state"] = MISSING
         out["confidence"] = HIGH
-        out["headline"] = "not in the listing of %s" % usrdir
+        out["headline"] = "not in the listing of %s" % where
         out["evidence"] = ("%s is not in the listing of %s taken from %s."
-                           % (binary.name, usrdir, source))
+                           % (binary.name, where, source))
         return out
     size = record.get("size")
     out["size"] = size if isinstance(size, int) else 0
@@ -768,26 +923,57 @@ def _title_record(artefact_set, spec, entry, title_id):
     folder = entry.get("folder") or ""
     name = entry.get("name") or ""
     location = "/" + "/".join(part for part in (device, folder, name) if part)
-    usrdir = GAME_DIR % title_id if title_id else location
-    files, source = collected_usrdir(artefact_set, title_id)
+    # Where the game itself sits and where the files the fix patches sit are
+    # two different places, and only the second is a folder this tool can list.
+    # An inventory row can be a disc image, so it is never turned into one.
+    records = installed_titles(artefact_set)
+    installed = installed_entry(spec, records, title_id)
+    if installed is not None and not title_id:
+        title_id = (installed.get("title_id") or "").upper()
+    usrdir = GAME_DIR % title_id if title_id else ""
+    files, source = collected_usrdir(artefact_set, title_id, spec)
+    # Three answers, and the third one is the ordinary one. The files the fix
+    # patches arrive with the title update, so a game that has never been run
+    # online has none of them and there is nothing to patch yet. That is not
+    # the same as not having looked, which is what a report with no listing of
+    # /dev_hdd0/game at all means, so the two are kept apart.
+    if files is not None:
+        update_state = INSTALLED
+    elif records is not None:
+        update_state = NO_UPDATE
+    else:
+        update_state = UNKNOWN
     record = {
         "fix_key": spec.key,
         "title_id": title_id or "",
         "title": spec.title,
+        # Recognised is not verified. Anything quoting the states below has to
+        # be able to say which of the two this install is, because the
+        # reference figures they are read against belong to the verified
+        # releases and to no others.
+        "verified": is_verified(spec, title_id),
         "location": location,
         "install_kind": entry.get("kind") or "",
         "usrdir": usrdir,
         "listing_source": source,
+        "update_state": update_state,
         "repo": spec.repo,
         "advice": spec.advice,
-        "binaries": [_binary_record(spec, binary, usrdir, files, source,
+        # Nothing per file when the title update is not installed: naming three
+        # files and their state would say they are somewhere, and they are not
+        # anywhere yet.
+        "binaries": [] if update_state == NO_UPDATE else
+                    [_binary_record(spec, binary, usrdir, files, source,
                                     title_id)
                      for binary in spec.binaries],
     }
-    if entry.get("kind") == "file":
+    if update_state == NO_UPDATE:
+        record["note"] = NO_UPDATE_NOTE
+    elif entry.get("kind") == "file":
         record["note"] = ("this title is an image file. Its USRDIR is inside "
                           "the image and is not listed, and the fix patches "
-                          "the copy in %s in any case" % usrdir)
+                          "the copy that the title update installs to "
+                          "/dev_hdd0/game in any case")
     return record
 
 
@@ -817,9 +1003,15 @@ def patch_state(artefact_set):
             record["matched_by"] = how
             if how == "name":
                 record.setdefault("note", "")
+                # Saying the title update "is not known" in front of a record
+                # that goes on to say no title update is installed reads as a
+                # contradiction, so only the part that is still true is said.
+                unknowns = ("the region and title update are not known"
+                            if record.get("update_state") != NO_UPDATE
+                            else "which region this copy is cannot be said")
                 record["note"] = ("matched on the name rather than a known "
-                                  "title ID, so the region and title update "
-                                  "are not known. " + record["note"]).strip()
+                                  "title ID, so %s. %s"
+                                  % (unknowns, record["note"])).strip()
             payload["titles"].append(record)
         if not payload["titles"]:
             payload["notes"].append(
@@ -905,6 +1097,8 @@ def _installs(records):
 
 
 def _fix_findings(spec, records):
+    pending = [record for record in records
+               if record.get("update_state") == NO_UPDATE]
     unpatched = _collect(records, (UNPATCHED,))
     unresolved = _collect(records, (UNKNOWN, MISSING))
     applied = _collect(records, (PATCHED,))
@@ -962,6 +1156,26 @@ def _fix_findings(spec, records):
             fix=("If the game does that, the fix and how to check it by hand "
                  "are at %s." % spec.repo),
             evidence=_evidence(unresolved),
+            category=CATEGORY))
+
+    if pending:
+        out.append(Finding(
+            rule_id="%s-title-update-not-installed" % spec.key,
+            severity="info",
+            title="%s is installed but its update has not been downloaded yet"
+                  % spec.title,
+            explanation=("%s The fix for that changes files that only arrive "
+                         "when the game downloads its own update, and this "
+                         "console has not downloaded it for this game yet, so "
+                         "there is nothing to fix at the moment. Nothing is "
+                         "wrong with the game." % FREEZE.get(spec.key, "")),
+            fix=("Start the game once with the console connected to the "
+                 "internet and let it install its update, then run this check "
+                 "again. If the fix is needed by then it will be reported."),
+            evidence=["%s: no title update in /dev_hdd0/game"
+                      % (record.get("location")
+                         or record.get("title_id") or spec.title)
+                      for record in pending],
             category=CATEGORY))
 
     if applied and not unpatched and not unresolved:

@@ -38,6 +38,11 @@ REPOSITORIES = (
      "https://github.com/setsid/mw3-ps3-psn-fix"),
     (f"{APP_NAME} (this program)",
      f"https://github.com/{update.REPOSITORY}"),
+    # Not used by this program, but the same console and the same audience:
+    # somebody here for a PSN fix is often the same person wondering what else
+    # the machine will do.
+    ("Linux on the PS3's internal drive",
+     "https://github.com/setsid/ps3-linux-internal-ssd"),
 )
 
 # Written out in full rather than summarised as "we respect your privacy",
@@ -286,8 +291,10 @@ class AboutScreen(Screen):
 
         # The same widget the shell shows at launch, reused rather than a
         # second way of saying the same thing that could drift from it.
+        # compact=False: this copy is not competing with a tool for the
+        # window, so it may take a second line to say how a download went.
         self.banner = UpdateBanner(self.services, fetcher=self._fetcher,
-                                   opener=self._opener)
+                                   opener=self._opener, compact=False)
         self.column.addWidget(self.banner)
 
     def _build_network(self):

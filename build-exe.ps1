@@ -33,7 +33,8 @@ try {
         # a patcher screen comes back "not recognised" on a console that is
         # perfectly fine, because nothing can read the patch site.
         "tools\patchers\patch-bo2.py",
-        "tools\patchers\patch-mw3.py"
+        "tools\patchers\patch-mw3.py",
+        "certs\scei-dnas-root-05.pem"
     )
     foreach ($item in $required) {
         if (-not (Test-Path -LiteralPath $item)) {
@@ -84,10 +85,28 @@ and Modern Warfare 3 are signed with; that is checked separately below.
                "deliberately moving the pin.")
     }
 
+    # The pinned root is the only thing standing between the update check and
+    # trusting whatever answers. Checked as a certificate, not as a file: a PEM
+    # re-wrapped is the same certificate and is fine, a different certificate
+    # is not, whatever the file is called.
+    $fingerprint = (python -c "import sys; sys.path.insert(0, '.'); from ps3tools import updates; print(updates.certificate_fingerprint('certs/scei-dnas-root-05.pem'))" 2>$null)
+    if ($LASTEXITCODE -ne 0) {
+        throw "certs\scei-dnas-root-05.pem could not be read as a certificate. See certs\README.md."
+    }
+    $expected = (python -c "import sys; sys.path.insert(0, '.'); from ps3tools import updates; print(updates.CERT_SHA256)")
+    if ($fingerprint.Trim() -ne $expected.Trim()) {
+        throw ("The bundled root is not the expected certificate.`n`n" +
+               "  expected  $($expected.Trim())`n" +
+               "  found     $($fingerprint.Trim())`n`n" +
+               "That should be SCEI DNAS Root 05, self-signed, CN=SCEI DNAS " +
+               "Root 05. Do not build with a substituted certificate.")
+    }
+
     python -c "import PySide6" 2>$null
     if ($LASTEXITCODE -ne 0) {
         throw "PySide6 is not installed. Run: pip install PySide6==6.8.1"
     }
+
 
     # The icons are drawn rather than kept, so a fresh checkout has neither.
     if (-not ((Test-Path -LiteralPath "icon.ico") -and (Test-Path -LiteralPath "icon.png"))) {
@@ -122,6 +141,14 @@ and Modern Warfare 3 are signed with; that is checked separately below.
         "ps3tools.screens.diagnostics",
         "ps3tools.screens.patcher",
         "ps3tools.screens.about",
+        "ps3tools.screens.gameupdates",
+        "ps3tools.screens.installpkg",
+        "ps3tools.screens.saves",
+        "ps3tools.screens.transfer",
+        "ps3tools.transfer",
+        "ps3tools.updates",
+        "ps3tools.consoleactions",
+        "ps3tools.savedata",
         "ps3tools.shell.icons",
         "ps3tools.shell.updatebanner",
         "ps3tools.update",
@@ -136,6 +163,7 @@ and Modern Warfare 3 are signed with; that is checked separately below.
         "--add-data", "icon.png;.",
         "--add-data", "tools\scetool;tools/scetool",
         "--add-data", "tools\patchers;tools/patchers",
+        "--add-data", "certs;certs",
         # PyQt5 is on some development machines and PyInstaller will happily
         # bundle both toolkits if it finds them, which doubles the size and can
         # crash at start up when two Qt builds load into one process.

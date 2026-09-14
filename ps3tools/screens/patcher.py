@@ -22,17 +22,36 @@ already fixed. The green panel and the restart notice are the screen saying
 "this worked", and the only thing that entitles it to say so is having read the
 files off the console afterwards. A patch that wrote its bytes and then could
 not be confirmed says exactly that instead, and is not dressed up.
+
+Undoing sits beside applying, on the same screen and the same row of buttons.
+The backups on the Desktop were described everywhere as the only way back, and
+the only way back was a hand-typed FTP session; a patcher whose undo needs a
+command line is not one a non-technical person should be asked to run. The
+restore takes the same route as the patch -- checked before anything is sent,
+uploaded, read back off the console, then the table redrawn from what is
+actually there -- and ends in the same restart notice, because the console goes
+on running the module it loaded whichever direction the files moved in.
+
+The fix is offered only on the build it was checked on. The change it makes is
+at one exact place inside a binary and that place moves between versions, so
+the installed title update is compared against the one somebody watched the fix
+work on before Apply comes alive. That is a different question from whether the
+update is the newest one, and a release nobody has verified has no answer to it
+at all rather than a bad one.
 """
 
-from PySide6.QtCore import Qt
+import os
+
+from PySide6.QtCore import QMetaMethod, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel,
-                               QMessageBox, QProgressBar, QPushButton,
-                               QSizePolicy, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout,
+                               QInputDialog, QLabel, QMessageBox, QProgressBar,
+                               QPushButton, QSizePolicy, QTreeWidget,
+                               QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from ps3diag import transport
 from ps3tools import titles
+from ps3tools.patching import backup as backups
 from ps3tools.patching import flow
 from ps3tools.patching.ftpwrite import FtpWriter
 from ps3tools.patching.scetool import Scetool
@@ -61,6 +80,15 @@ RESTART_NOTICE = (
 
 # Said only after the console has been read back and every file on it came back
 # already fixed. Two sentences: what happened, and how this program knows.
+# The same instruction, for the other direction. The console holds the module
+# it loaded either way, so a restore needs the restart as much as a patch does
+# -- and this is the one people will hit in a panic, having just watched a game
+# fail to start, so it must not be left for them to work out.
+RESTART_AFTER_RESTORE = (
+    "Restart your PlayStation 3 before launching the game. The original files "
+    "will not take effect until you do, and the game will hang on launch if "
+    "you try it first.")
+
 SUCCESS_HEADING = "The fix is on the console"
 SUCCESS_BODY = (
     "The files were replaced and then read back off the console. Every one of "
@@ -71,6 +99,7 @@ STATE_TOKENS = {
     flow.NOT_PATCHED: "warn",
     flow.UNRECOGNISED: "error",
     flow.NOT_EXAMINED: "warn",
+    flow.CANNOT_DECRYPT: "warn",
     flow.NO_SITE: "text_dim",
 }
 
@@ -81,6 +110,10 @@ STATE_WORDS = {
     # Deliberately not "not recognised". Nothing was read out of this file, so
     # the column must not suggest anything was found wrong with it.
     flow.NOT_EXAMINED: "not checked",
+    # Also deliberately not "not recognised". The file was read and is exactly
+    # what it should be; this tool has not got what it takes to open this
+    # release, which is this tool's limit and not a fault in the file.
+    flow.CANNOT_DECRYPT: "cannot be opened",
     flow.NO_SITE: "not affected",
 }
 
@@ -142,11 +175,13 @@ def _state_message(location, name):
     if state == flow.UNKNOWN_VARIANT:
         return ("warn", "This version of the game is not one this tool knows", (
             f"{title_id or 'The copy on the console'} is a Call of Duty "
-            f"installation, but it is not one of the versions this tool has "
-            f"been checked against.\n\n"
-            f"The settings needed to rebuild that version's files are not "
-            f"known, and guessing them produces a game that will not start at "
-            f"all. So nothing will be read and nothing will be changed.\n\n"
+            f"installation, but it is not one of the releases of the two "
+            f"games this tool fixes. Every release of those two is known to "
+            f"this tool by its title ID, and this is not one of them.\n\n"
+            f"There is nothing here that could say what this game is, and the "
+            f"settings needed to rebuild a file it knows nothing about are a "
+            f"guess that produces a game that will not start at all. So "
+            f"nothing will be read and nothing will be changed.\n\n"
             f"This is a refusal, not a failure: the copy on your console is "
             f"exactly as it was."))
 
@@ -174,6 +209,26 @@ def _all_fixed(report):
                for item in report.files)
 
 
+def _listening(owner, name):
+    """Whether anything is connected to a signal, by name. False if not sure.
+
+    The shell decides which signals it wires, and this screen is written to be
+    useful in a shell that has not wired this one. Asking is the difference
+    between a button that leads somewhere and a button that silently does
+    nothing.
+    """
+    try:
+        meta = owner.metaObject()
+        for index in range(meta.methodCount()):
+            method = meta.method(index)
+            if (method.methodType() == QMetaMethod.Signal
+                    and bytes(method.name()).decode() == name):
+                return owner.isSignalConnected(method)
+    except (AttributeError, RuntimeError, TypeError, UnicodeDecodeError):
+        return False
+    return False
+
+
 def _as_id(title_id):
     return f" as {title_id}" if title_id else ""
 
@@ -195,6 +250,12 @@ class PatcherScreen(Screen):
     #: which entry in ps3tools.titles this card is for
     title_key = ""
 
+    #: ask the shell to open another tool, pre-filtered to one title.
+    #: (screen key, title key). The shell owns navigation between screens and
+    #: this screen must not reach into it; when nothing is connected the button
+    #: falls back to request_home, which at least lands the user on the card.
+    request_tool = Signal(str, str)
+
     def __init__(self, services, parent=None):
         super().__init__(services, parent)
         self.config = titles.TITLES.get(self.title_key, {})
@@ -212,6 +273,19 @@ class PatcherScreen(Screen):
         # the label, because the read-back rewrites that label and a result
         # that disappears a second after it arrives was never reported.
         self._patch_message = ""
+        # What the last restore said, kept for the same reason as the line
+        # above: the read-back that follows a restore redraws the label.
+        self._restore_message = ""
+        # The words the last scan put underneath, so that a restore refusal can
+        # be added above them without throwing them away.
+        self._scan_text = ""
+        self._restoring = False
+        self._restored_ok = False
+        self._update_state = None
+        # Where the backups are looked for. None means the user's Desktop,
+        # which is the only answer in the built program; tests point it at a
+        # folder of their own so that nothing reads a real Desktop.
+        self._backup_root = None
         self._title_id = ""
         self._build()
         if self.theme is not None:
@@ -294,6 +368,38 @@ class PatcherScreen(Screen):
         restart.addWidget(self._restart_text)
         self._restart.hide()
         layout.addWidget(self._restart)
+
+        # Why the fix is not being offered, and the way out of it. It sits
+        # above the file table rather than replacing it, because the table is
+        # still true: those really are the files, and this really is their
+        # state. What has changed is only whether this program is willing to
+        # write to them. The route to the other card is in the panel itself, so
+        # that the instruction and the way to follow it are one thing.
+        self._update = QFrame()
+        self._update.setObjectName("updatenotice")
+        update = QVBoxLayout(self._update)
+        update.setContentsMargins(16, 14, 16, 14)
+        update.setSpacing(6)
+        self._update_heading = QLabel("")
+        self._update_heading.setWordWrap(True)
+        update_font = self._update_heading.font()
+        update_font.setPointSize(update_font.pointSize() + 2)
+        update_font.setBold(True)
+        self._update_heading.setFont(update_font)
+        update.addWidget(self._update_heading)
+        self._update_body = QLabel("")
+        self._update_body.setWordWrap(True)
+        self._update_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        update.addWidget(self._update_body)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 4, 0, 0)
+        self._updates_button = QPushButton("Go to Game updates")
+        self._updates_button.clicked.connect(self._on_open_updates)
+        row.addWidget(self._updates_button)
+        row.addStretch(1)
+        update.addLayout(row)
+        self._update.hide()
+        layout.addWidget(self._update)
 
         # The state of the console, said once and said loudly. It is the whole
         # answer in every case except a successful scan, so it sits above the
@@ -379,6 +485,13 @@ class PatcherScreen(Screen):
         self._rescan = QPushButton("Scan again")
         self._rescan.clicked.connect(lambda: self.start_scan())
         buttons.addWidget(self._rescan)
+        # Beside Apply rather than in a card of its own. Undoing is the other
+        # half of applying, it is wanted at the same moment and by the same
+        # person, and a user looking for the way back will look where the way
+        # forward was.
+        self._restore = QPushButton("Put the originals back")
+        self._restore.clicked.connect(self._on_restore)
+        buttons.addWidget(self._restore)
         self._patch = QPushButton("Apply the fix")
         self._patch.setDefault(True)
         self._patch.setEnabled(False)
@@ -433,18 +546,24 @@ class PatcherScreen(Screen):
                 "its own address in webMAN, and it usually starts 192.168.")
             self._files.clear()
             self._patch.setEnabled(False)
+            self._restore.setEnabled(False)
             return None
 
         self._files.clear()
-        # Anything a previous patch said belongs to a previous patch, unless
-        # this is the read-back of that very patch.
+        # Anything a previous patch or restore said belongs to it, unless this
+        # is the read-back of that very run.
         if not self._reading_back:
             self._patch_message = ""
+            self._restore_message = ""
+            self._restored_ok = False
             self._hide_success()
-        self._detail.setText(self._patch_message)
+        self._scan_text = ""
+        self._detail.setText(self._compose(""))
+        self._hide_update()
         self._clear_state()
         self._patch.setEnabled(False)
         self._rescan.setEnabled(False)
+        self._restore.setEnabled(False)
         self._set_busy(True, "Reading the console back"
                        if self._reading_back else "Looking at the console")
         title_key = self.title_key
@@ -495,10 +614,12 @@ class PatcherScreen(Screen):
         self._location = location
         self._task = None
         self._rescan.setEnabled(True)
+        self._restore.setEnabled(True)
         self._where.setText(where)
         self._files.clear()
         if report is None:
             self._patch.setEnabled(False)
+            self._hide_update()
             if self._reading_back:
                 # The usual panel for this says nothing has been changed on the
                 # console, and a moment ago something was. Say what happened
@@ -527,8 +648,16 @@ class PatcherScreen(Screen):
         for column in range(4):
             self._files.resizeColumnToContents(column)
 
-        self._detail.setText(self._compose(self._verdict(report)))
-        self._patch.setEnabled(report.can_patch)
+        self._scan_text = self._verdict(report)
+        self._detail.setText(self._compose(self._scan_text))
+        # The gate. A fix confirmed on one build of the game is a fix for that
+        # build, and offering it on another is how an install stops starting,
+        # so the button is not enabled until the two agree.
+        self._update_state = flow.update_check(report.title_id,
+                                               self._installed_version())
+        self._show_update(self._update_state)
+        self._patch.setEnabled(report.can_patch
+                               and not self._update_state.blocks)
         # The one place the screen is allowed to call a patch a success: a
         # read-back of a patch this session applied, which came back with every
         # file on the console already fixed. Anything else -- a file still
@@ -537,6 +666,11 @@ class PatcherScreen(Screen):
         # are, hidden, and the wording underneath says what is actually known.
         if self._reading_back and self._patch_message and _all_fixed(report):
             self._show_success()
+        # A restore needs the restart for the same reason a patch does: the
+        # console is still running the module it loaded, so until it has been
+        # off and on again the files just put back are not the ones in use.
+        if self._reading_back and self._restored_ok:
+            self._show_restart_notice(RESTART_AFTER_RESTORE)
         self.status_message.emit(
             f"{report.title_id}: " +
             (f"{len(report.to_patch)} file(s) to fix" if report.to_patch
@@ -646,7 +780,21 @@ class PatcherScreen(Screen):
         if report.error:
             return report.error
         lines = []
-        if report.not_examined:
+        if report.cannot_decrypt:
+            # Said before anything else and in the plainest words available.
+            # This is the release nobody has confirmed, found out at the only
+            # point it can be found out, and the user has done nothing wrong.
+            lines.append(
+                f"This copy of the game cannot be opened by this tool, so "
+                f"nothing will be changed. {report.title_id} is one of the "
+                f"releases of this game that locks its files differently from "
+                f"the ones the fix has been proved on, and without opening "
+                f"them there is no way to fix them.\n\n"
+                f"Nothing is wrong with your console, your game or your "
+                f"connection, and the game is installed: it is this tool that "
+                f"cannot do anything with this release. If you want to report "
+                f"it, the thing to quote is {report.title_id}.")
+        elif report.not_examined:
             # Says plainly whose fault it is. The sentence that used to appear
             # here described a file mismatch, which had the user checking a
             # console that was fine while the missing piece was in this build
@@ -677,7 +825,31 @@ class PatcherScreen(Screen):
                          f"copied to the Desktop first, and put back "
                          f"automatically if anything goes wrong.")
             lines.append(self.config.get("advice", ""))
-        lines.extend(report.notes)
+        if not report.verified and not report.cannot_decrypt:
+            if report.unrecognised:
+                # The other way an unconfirmed release can turn out. The files
+                # opened, so the key was right, but what is inside them is not
+                # the build the fix was written against.
+                lines.append(
+                    f"{report.title_id} is a release nobody has confirmed "
+                    f"this fix on yet, and this is where that shows: the "
+                    f"files opened, but what is inside them is not the build "
+                    f"the fix was written for. Quote {report.title_id} if you "
+                    f"report this.")
+            elif not report.not_examined:
+                # The honest caveat, and it belongs under the plan rather than
+                # over it: the scan has already opened the files and found
+                # what it expected, so the fix suits this release as far as
+                # anything can be checked from here. Nobody has simply watched
+                # it work on this one yet.
+                lines.append(
+                    f"{report.title_id} is a release nobody has confirmed "
+                    f"this fix on yet. Its files opened and their contents "
+                    f"are what the fix expects, which is the check that "
+                    f"matters, but you would be the first to report back on "
+                    f"this release.")
+        lines.extend(note for note in report.notes
+                     if note not in lines)
         for item in report.files:
             if item.state in (flow.UNRECOGNISED, flow.NOT_EXAMINED):
                 lines.append(f"{item.name}: {item.detail} "
@@ -688,6 +860,11 @@ class PatcherScreen(Screen):
 
     def _on_patch(self):
         if self._scan is None or not self._scan.can_patch:
+            return
+        # The button is disabled in this case, so reaching here means something
+        # else did. Refused rather than trusted: this is the one check standing
+        # between a user and a patch built for another version of the game.
+        if self._update_state is not None and self._update_state.blocks:
             return
         names = ", ".join(item.name for item in self._scan.to_patch)
         answer = QMessageBox.question(
@@ -742,8 +919,10 @@ class PatcherScreen(Screen):
             # No scan could be started at all, so there is nothing to wait for.
             self._reading_back = False
             self._read_back_failed("")
+        self._restoring = False
         self._back.setEnabled(True)
         self._rescan.setEnabled(True)
+        self._restore.setEnabled(True)
         self._set_busy(False)
 
     def _on_patched(self, result):
@@ -801,8 +980,8 @@ class PatcherScreen(Screen):
         self._success.show()
         self._show_restart_notice()
 
-    def _show_restart_notice(self):
-        self._restart_text.setText(RESTART_NOTICE)
+    def _show_restart_notice(self, text=RESTART_NOTICE):
+        self._restart_text.setText(text)
         self._paint_restart()
         self._restart.show()
 
@@ -828,6 +1007,7 @@ class PatcherScreen(Screen):
         # has been read back off the console, and "it worked" is a claim only
         # that read can make.
         self._hide_success()
+        self._hide_update()
         self._files.clear()
         self._files.setVisible(False)
         self._filler.setVisible(True)
@@ -843,10 +1023,268 @@ class PatcherScreen(Screen):
         self._detail.setText(self._compose("\n\n".join(lines)))
         self.status_message.emit("Applied, but not read back")
 
+    # -- the title update the fix was verified against
+
+    def _installed_version(self):
+        """The APP_VER the detection step read, or None if it could not be.
+
+        Read from the installation the search already produced rather than
+        fetched again. There is exactly one reader of PARAM.SFO in this
+        program, in ps3tools.detect, and a second one here would be a second
+        answer to a question that must only have one.
+        """
+        installation = getattr(self._location, "installation", None)
+        return getattr(installation, "tu_version", None)
+
+    def _update_words(self, check):
+        """(heading, body) for a title update that is not the verified one."""
+        name = self.config.get("short", self.config.get("name", self.title))
+        if check.verdict == flow.UPDATE_DIFFERS:
+            return (
+                "This copy of the game is not the version the fix was "
+                "checked on",
+                f"The fix for {name} was checked on update {check.verified}, "
+                f"and this console has update {check.installed} installed. "
+                f"The change it makes is at one exact place inside the game's "
+                f"files, and that place moves between versions, so applying "
+                f"it to a different version is how an install stops "
+                f"starting.\n\n"
+                f"Nothing is wrong with your console or your game, and "
+                f"nothing has been changed. Install update "
+                f"{check.verified} for {name}, come back here and press Scan "
+                f"again, and the fix will be offered normally.")
+        return (
+            "This program could not tell which version of the game is "
+            "installed",
+            f"The fix for {name} was checked on update {check.verified}. The "
+            f"console did not give up the version it has installed, so this "
+            f"program cannot confirm you are on that one.\n\n"
+            f"Nothing is wrong with your game. The files themselves are read "
+            f"and checked before anything is written, and a version the fix "
+            f"does not fit is refused at that point, so the fix is still "
+            f"offered. If you know the game has not been updated, install "
+            f"update {check.verified} first.")
+
+    def _show_update(self, check):
+        """The panel, but only where this program has something it can stand on.
+
+        Never shown for a release with no verified update of its own. There is
+        no expected version for one of those, so there is nothing the installed
+        version can disagree with, and saying "your update is out of date"
+        would be a claim about a table that has no entry for this release. That
+        case is already answered, in its own words, as the release nobody has
+        confirmed.
+        """
+        if check is None or check.verdict in (flow.UPDATE_MATCHES,
+                                              flow.UPDATE_NOT_ESTABLISHED):
+            self._hide_update()
+            return
+        heading, body = self._update_words(check)
+        self._update_heading.setText(heading)
+        self._update_body.setText(body)
+        self._paint_update()
+        self._update.show()
+
+    def _hide_update(self):
+        self._update.hide()
+
+    def _paint_update(self):
+        accent = self._colour_name("warn") or self._colour_name("text")
+        surface = self._colour_name("surface_alt") or self._colour_name("surface")
+        text = self._colour_name("text")
+        if not (accent and surface and text):
+            return
+        self._update.setStyleSheet(
+            f"QFrame#updatenotice {{ background-color: {surface};"
+            f" border: 1px solid {accent};"
+            f" border-left: 6px solid {accent};"
+            f" border-radius: 6px; }}")
+        self._update_heading.setStyleSheet(f"color: {accent}; border: none;")
+        self._update_body.setStyleSheet(f"color: {text}; border: none;")
+
+    def _on_open_updates(self):
+        """Hand the user to the Game updates card, on this title.
+
+        Navigation belongs to the shell. This asks for it and does not reach
+        for it, and if nothing is listening it falls back to the launcher
+        rather than leaving a button that does nothing at all.
+        """
+        if not self.can_leave():
+            return
+        if _listening(self, "request_tool"):
+            self.request_tool.emit("updates", self.title_key)
+            return
+        self.request_home.emit()
+
+    # -- putting the originals back
+
+    def _backups(self, title_id):
+        """Every backup of this title on the Desktop, newest first."""
+        return backups.find(title_id, root=self._backup_root)
+
+    def _choose_backup(self, found):
+        """Which one to put back. The newest unless the user says otherwise.
+
+        Overridden in tests so that nothing here opens a modal dialog on a
+        machine with no display.
+        """
+        if len(found) == 1:
+            return found[0]
+        labels = [item.label for item in found]
+        chosen, agreed = QInputDialog.getItem(
+            self, "Which backup?",
+            "There is more than one backup of this game. The most recent is "
+            "at the top.", labels, 0, False)
+        if not agreed:
+            return None
+        return found[labels.index(chosen)] if chosen in labels else None
+
+    def _backup_contents(self, checks):
+        """The files, their sizes, their dates and whether each one checks out."""
+        lines = []
+        for row in checks:
+            when = row["modified"].strftime("%d %B %Y at %H:%M") \
+                if row["modified"] else "date unknown"
+            state = ("checked and unchanged" if row["ok"]
+                     else row["reason"] or "cannot be checked")
+            lines.append(f"    {row['name']}  -  {_human(row['size'])}  -  "
+                         f"{when}  -  {state}")
+        return "\n".join(lines)
+
+    def _confirm_restore(self, chosen, checks):
+        """The last word before anything is sent. Overridden in tests."""
+        return QMessageBox.question(
+            self, "Put the originals back",
+            f"These files will be copied back onto the console, over the "
+            f"patched ones:\n\n{self._backup_contents(checks)}\n\n"
+            f"They are from {chosen.folder}, taken on {chosen.taken_text}, "
+            f"and every one of them has been checked against the record "
+            f"written when the copy was made.\n\n"
+            f"This is safe. Your backup is not changed by this and you can "
+            f"apply the fix again afterwards whenever you like. Close the "
+            f"game completely before continuing.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
+
+    def _say_restore(self, text, status=""):
+        """Put a restore's answer above whatever the scan is saying."""
+        self._restore_message = text
+        self._detail.setText(self._compose(self._scan_text))
+        self.status_message.emit(status or "Nothing has been put back")
+
+    def _on_restore(self):
+        if self._writing or self._reading_back:
+            return
+        title_id = (self._scan.title_id if self._scan is not None
+                    else (self._location.title_id if self._location else ""))
+        if not title_id:
+            self._say_restore(
+                "This program does not know yet which game is on the console, "
+                "so it cannot tell which backup belongs to it. Press Scan "
+                "again first. Nothing has been sent to the console.")
+            return
+
+        if not os.path.isdir(backups.root_folder(self._backup_root)):
+            self._say_restore(
+                f"There are no backups on this computer yet, so there is "
+                f"nothing to put back.\n\n"
+                f"Every time this program applies the fix it copies your "
+                f"original files to a folder called "
+                f"\u201c{backups.FOLDER_NAME}\u201d on the Desktop first. "
+                f"That folder is not there, which means the fix has not been "
+                f"applied from this computer. Nothing has been changed.")
+            return
+
+        found = self._backups(title_id)
+        if not found:
+            self._say_restore(
+                f"There is no backup of {title_id} on this computer, so there "
+                f"is nothing to put back for this game.\n\n"
+                f"The backups this program makes are in a folder called "
+                f"\u201c{backups.FOLDER_NAME}\u201d on the Desktop, and each "
+                f"one is named after the game it came from. If you made a "
+                f"backup on another computer, copy that folder into this one "
+                f"and press this again. Nothing has been changed.")
+            return
+
+        chosen = self._choose_backup(found)
+        if chosen is None:
+            return
+
+        # Asked before the user is offered anything, so that a backup that
+        # cannot be trusted is refused with its reason rather than confirmed
+        # and then refused. flow.restore asks again on its own account: this is
+        # the screen being polite, that is the rule being enforced.
+        reason = flow.restore_refusal(chosen, title_id)
+        if reason:
+            self._say_restore(reason, "Nothing has been put back")
+            return
+
+        checks = backups.verify(chosen)
+        if not self._confirm_restore(chosen, checks):
+            return
+
+        host = self.connection.host
+        self._writing = True
+        self._restoring = True
+        self._read_back_wanted = False
+        self._restored_ok = False
+        self._patch.setEnabled(False)
+        self._rescan.setEnabled(False)
+        self._restore.setEnabled(False)
+        self._back.setEnabled(False)
+        self._hide_success()
+        self._hide_update()
+        self._set_busy(True, "Putting your original files back")
+
+        open_writer = self._writer
+
+        def work(control):
+            with open_writer(host) as writer:
+                return flow.restore(writer, chosen, title_id,
+                                    progress=control.progress)
+
+        task = self.submit(work)
+        task.progress.connect(self._on_progress)
+        task.finished.connect(self._on_restored)
+        task.failed.connect(self._on_failed)
+        task.done.connect(self._finished_writing)
+        self._task = task
+
+    def _on_restored(self, result):
+        lines = []
+        if result.restored:
+            lines.append("Put back: " + ", ".join(result.restored) + ".")
+            lines.append(
+                "Each file was read back off the console afterwards and came "
+                "back matching the backup, so this is confirmed rather than "
+                "assumed.")
+            lines.append(
+                f"Your backup in {result.folder} has not been changed. You "
+                f"can apply the fix again whenever you like.")
+        if result.error:
+            lines.append(result.error)
+        lines.extend(result.notes)
+        message = "\n\n".join(line for line in lines if line)
+        worked = bool(result.ok and result.restored)
+        self._restore_message = message
+        if worked:
+            # Whatever the last patch said is now describing files that are no
+            # longer on the console.
+            self._patch_message = ""
+        self._restored_ok = worked
+        self._detail.setText(message)
+        self.status_message.emit(
+            "The originals are back on the console" if worked
+            else "Nothing has been put back")
+        # Same rule as a patch: what the table says next is read off the
+        # console, never worked out from what this program set out to do.
+        self._read_back_wanted = worked
+
     def _compose(self, text):
-        """The patch result first, then whatever this scan has to add."""
-        return "\n\n".join(line for line in (self._patch_message, text)
-                            if line)
+        """The last thing the user did, first. Then whatever this scan adds."""
+        return "\n\n".join(
+            line for line in (self._restore_message, self._patch_message, text)
+            if line)
 
     # -- shared
 
@@ -878,9 +1316,24 @@ class PatcherScreen(Screen):
     def _on_failed(self, message):
         self._task = None
         self._rescan.setEnabled(True)
+        self._restore.setEnabled(True)
         self._patch.setEnabled(False)
         if self._reading_back:
             self._read_back_failed(message)
+            return
+        if self._restoring:
+            # Said separately from the patch case below. "Nothing has been
+            # changed" is the wrong sentence here: a restore that stopped may
+            # have put some of the files back already, and the user has to be
+            # told to run it again rather than left thinking it did nothing.
+            self._restore_message = (
+                f"Putting the originals back stopped: {message}. Your backup "
+                f"folder has not been changed and is still complete. Check "
+                f"the console is switched on with webMAN running, then press "
+                f"Put the originals back again: doing it a second time is "
+                f"safe.")
+            self._detail.setText(self._compose(self._scan_text))
+            self.status_message.emit("Stopped")
             return
         if self._writing:
             # Mid-write, the panel would cover the file table that says which
@@ -953,6 +1406,8 @@ class PatcherScreen(Screen):
             self._paint_success()
         if not self._restart.isHidden():
             self._paint_restart()
+        if not self._update.isHidden():
+            self._paint_update()
         if self._writing:
             return
         if self._panel_token:

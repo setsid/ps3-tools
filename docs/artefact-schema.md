@@ -224,6 +224,19 @@ because rules read it.
 | `analysis/findings.json` | rules engine | `{"schema_version": 1, "findings": [...], "broken_rules": [...]}` |
 | `games/iso-identity.json` | ISO identification | `{"schema_version": 1, "isos": [...]}` |
 | `patches/patch-state.json` | patch-state detection | `{"schema_version": 1, "titles": [...]}` |
+
+Each title in `patches/patch-state.json` carries an `update_state`:
+
+| Value | Meaning |
+| --- | --- |
+| `installed` | The title update is installed, so the binaries exist and were checked. |
+| `no_update` | The game is present but its title update has not been downloaded. The patch targets live in `/dev_hdd0/game/<TITLEID>/USRDIR/`, which only exists once the update has installed, so there is nothing to patch yet. **Not an error**, and no per-file rows are reported: claiming a state for files that are not there is how this went wrong before. |
+| `unknown` | `installed_titles` was not collected, so nothing can be said either way. Distinct from `no_update`, and collapsing the two is the bug that made a diagnostic report an ISO as though it were a folder. |
+
+Binaries are read from the `games` facts' `installed_titles` and from nowhere
+else. **A path is never constructed from an inventory row**: an inventory entry
+may be an `.iso`, which is a file, and appending a binary name to it produces a
+path that cannot exist.
 | `psn/safety.json` | PSN safety check | `{"schema_version": 1, "assessment": {...}}` |
 
 ## Finding

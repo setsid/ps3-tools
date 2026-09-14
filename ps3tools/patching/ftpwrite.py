@@ -31,6 +31,11 @@ DEFAULT_TIMEOUT = 60.0
 # that a progress bar still moves on a console that is being slow.
 BLOCK = 32768
 
+# For disc images rather than SELFs. A 36 GB file at 32 KB a block is a million
+# callbacks and a million checks of a stop flag; a megabyte still updates a
+# progress bar four times a second at the speed a PS3 manages.
+UPLOAD_BLOCK = 1 << 20
+
 
 class TransferFailed(Exception):
     """A transfer that did not finish. The message is fit to show a user."""
@@ -227,6 +232,89 @@ class FtpWriter:
         if self.log:
             self.log.event("ftp_store", path=path, bytes=sent)
         return sent
+
+    def store_resumable(self, source, path, on_block=None,
+                        should_continue=None, resume_from=None,
+                        blocksize=UPLOAD_BLOCK):
+        """Upload that can carry on from where a previous one stopped.
+
+        Added for the transfer card and additive on purpose: store() above is
+        another agent's path and is not touched. The two differ in what they
+        are for. store() sends a seven megabyte SELF, where restarting costs a
+        second and the simplest code wins. This sends a thirty-six gigabyte
+        disc image, where restarting costs nine hours, and so the two things
+        store() does not do both matter:
+
+        REST before STOR. The bytes already on the console are kept and the
+        transfer picks up at that offset, which turns a failure at 90% of a
+        long file into seconds of work rather than an evening of it.
+
+        A stop between blocks. storbinary() loops inside ftplib and the only
+        way out of it is an exception, so the loop is written out here instead
+        and the caller is asked between every block whether to keep going. A
+        stop button that waits for the current file to finish is not a stop
+        button on a file this size.
+
+        Returns {"bytes", "sent", "offset", "complete"}: what should now be on
+        the console, what this call put there, where it started, and whether
+        the local file was sent to its end. A run that stopped early leaves a
+        short file, which is exactly what the next run needs to see to resume.
+        """
+        total_size = os.path.getsize(source)
+        offset = resume_from
+        if offset is None:
+            remote = self.size(path)
+            offset = remote if isinstance(remote, int) and remote > 0 else 0
+        # Longer than the local file means what is there is not an unfinished
+        # copy of it, whatever it is. Appending to it would produce a file that
+        # is neither. Start again from nothing.
+        if offset < 0 or offset > total_size:
+            offset = 0
+        if offset == total_size and total_size:
+            return {"bytes": total_size, "sent": 0, "offset": offset,
+                    "complete": True}
+
+        def run(ftp):
+            sent = 0
+            stopped = False
+            # Opened inside run so that a reconnect starts from the recorded
+            # offset rather than from wherever the dead attempt happened to be.
+            with open(source, "rb") as handle:
+                handle.seek(offset)
+                ftp.voidcmd("TYPE I")
+                # rest=None rather than rest=0 for a fresh upload: REST 0 is
+                # legal and pointless, and there is no reason to find out how
+                # webMANftpd feels about it on a file this size.
+                connection = ftp.transfercmd(f"STOR {path}",
+                                             rest=offset or None)
+                try:
+                    while True:
+                        if should_continue is not None and \
+                                not should_continue():
+                            stopped = True
+                            break
+                        block = handle.read(blocksize)
+                        if not block:
+                            break
+                        connection.sendall(block)
+                        sent += len(block)
+                        if on_block:
+                            on_block(offset + sent, total_size)
+                finally:
+                    connection.close()
+                # Closing the data connection is how a transfer ends either
+                # way, so the server answers 226 to a stop as readily as to a
+                # finished file. The short file left behind is the point.
+                ftp.voidresp()
+            return {"bytes": offset + sent, "sent": sent, "offset": offset,
+                    "complete": not stopped}
+
+        result = self._command(run)
+        if self.log:
+            self.log.event("ftp_store_resumable", path=path,
+                           bytes=result["sent"], offset=result["offset"],
+                           complete=result["complete"])
+        return result
 
     def make_dir(self, path):
         """MKD, treating "it is already there" as success."""

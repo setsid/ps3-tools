@@ -18,6 +18,7 @@ works is not the interesting case: the interesting case is the console being
 switched off halfway through somebody's only copy of a game binary.
 """
 
+import datetime
 import ftplib
 import hashlib
 import importlib.util
@@ -267,7 +268,7 @@ class TheScan(ConsoleCase):
                                                          "default_mp.self")})
         report = flow.scan(self.writer(), FakeScetool(), "BLJM61034")
         self.assertFalse(report.ok)
-        self.assertIn("signing parameters", report.error)
+        self.assertIn("not one of the games this tool fixes", report.error)
         self.assertFalse(report.can_patch)
         self.assertEqual(self.server.commands, [])
 
@@ -276,6 +277,110 @@ class TheScan(ConsoleCase):
             self.assertIsNotNone(titles.config_for(title_id), title_id)
         for title_id in titles.NOT_A_TITLE + ("BLES01702", "", "BLUS99999"):
             self.assertIsNone(titles.config_for(title_id), title_id)
+
+    def test_a_release_nobody_has_confirmed_is_attempted_not_refused(self):
+        # The whole of the change. BLES01430 is a published Modern Warfare 3
+        # release with no verified record, and the old table would have stopped
+        # at the title ID without reading a byte. It is now scanned like any
+        # other, and the files come back understood.
+        self.assertFalse(titles.is_verified("BLES01430"))
+        self.assertTrue(titles.is_recognised("BLES01430"))
+        content = "EP0002-BLES01430_00-MW3P000000000124"
+        self.start("BLES01430",
+                   {"default_mp.self": self_file("mw3", "default_mp.self",
+                                                 content_id=content),
+                    "default.self": self_file("mw3", "default.self",
+                                              content_id=content)})
+        report = self.scan("BLES01430")
+        self.assertTrue(report.ok, report.error)
+        self.assertFalse(report.verified)
+        self.assertEqual(report.file_for("default_mp.self").state,
+                         flow.NOT_PATCHED)
+        self.assertTrue(report.can_patch)
+
+    def test_an_unverified_release_still_has_its_offset_cross_checked(self):
+        # Decryption succeeding is not permission to patch wherever the fix
+        # points. The site still has to be where the verified table says, and
+        # a release nobody has confirmed gets no latitude on that.
+        record = next(item for item in titles.MW3_BINARIES
+                      if item["name"] == "default_mp.self")
+        odd = images.wrap(
+            images.info_for("EP0002-BLES01430_00-MW3P000000000124", "USPRX",
+                            "default_mp.self", key_revision="0019",
+                            fw_version="0004000000000000"),
+            record["klicensee"],
+            images.mw3_image("stock", offset=0x2000))
+        self.start("BLES01430", {"default_mp.self": odd})
+        report = self.scan("BLES01430")
+        item = report.file_for("default_mp.self")
+        self.assertEqual(item.state, flow.UNRECOGNISED)
+        self.assertIn("00330D20", item.detail)
+        self.assertFalse(report.can_patch)
+
+    def test_a_release_whose_files_will_not_open_is_its_own_answer(self):
+        # The failure the attempt exists to find. Nothing here is the user's
+        # doing, nothing is missing from this program, and the file was not
+        # misread, so it must not be told as any of those three.
+        record = next(item for item in titles.MW3_BINARIES
+                      if item["name"] == "default_mp.self")
+        locked = images.wrap(
+            images.info_for("EP0002-BLES01430_00-MW3P000000000124", "USPRX",
+                            "default_mp.self", key_revision="0019",
+                            fw_version="0004000000000000"),
+            record["klicensee"][::-1], images.mw3_image("stock"))
+        self.start("BLES01430", {"default_mp.self": locked})
+        report = self.scan("BLES01430")
+        item = report.file_for("default_mp.self")
+        self.assertEqual(item.state, flow.CANNOT_DECRYPT)
+        self.assertNotEqual(item.state, flow.UNRECOGNISED)
+        self.assertNotEqual(item.state, flow.NOT_EXAMINED)
+        # The title ID is the one thing worth reporting, so it is in the words
+        # the user sees rather than only in the window behind them.
+        self.assertIn("BLES01430", item.detail)
+        self.assertFalse(report.can_patch)
+        self.assertEqual(report.unrecognised, [])
+        self.assertEqual(report.not_examined, [])
+        for forbidden in ("not installed", "your fault", "fault in this "
+                          "program"):
+            self.assertNotIn(forbidden, item.detail.lower())
+        self.assertEqual(self.server.written, {})
+
+    def test_the_verified_and_unverified_distinction_is_queryable(self):
+        self.assertTrue(titles.is_verified(MW3_ID))
+        self.assertTrue(titles.is_verified(BO2_ID))
+        self.assertFalse(titles.is_verified("BLES01430"))
+        # Every verified release is a recognised one. The reverse is the
+        # common case now and must not quietly become the same set again.
+        self.assertTrue(set(titles.VERIFIED_TITLE_IDS)
+                        <= set(titles.KNOWN_TITLE_IDS))
+        self.assertLess(len(titles.VERIFIED_TITLE_IDS),
+                        len(titles.KNOWN_TITLE_IDS))
+        for title_id, key in titles.VERIFIED_TITLE_IDS.items():
+            self.assertEqual(titles.KNOWN_TITLE_IDS[title_id], key)
+            self.assertIsNotNone(titles.sku_for(title_id), title_id)
+
+    def test_the_two_halves_recognise_exactly_the_same_releases(self):
+        # The list is written out twice: once here for the patcher and once in
+        # ps3diag.patchstate for the read-only half, which is not allowed to
+        # import this one. Drift between them is a game the report cannot name
+        # and the patcher can, so it is caught here rather than on a console.
+        for spec in patchstate.TITLES:
+            mine = sorted(title_id
+                          for title_id, key in titles.KNOWN_TITLE_IDS.items()
+                          if key == spec.key)
+            self.assertEqual(sorted(spec.title_ids), mine, spec.key)
+            self.assertEqual(
+                sorted(spec.verified_title_ids),
+                sorted(title_id
+                       for title_id, key in titles.VERIFIED_TITLE_IDS.items()
+                       if key == spec.key), spec.key)
+
+    def test_a_title_id_in_neither_list_is_neither_game(self):
+        for title_id in ("BLJS10032", "BLES01702", "BLUS99999", "NPEB02143",
+                         "BLJM61034"):
+            self.assertFalse(titles.is_recognised(title_id), title_id)
+            self.assertIsNone(titles.config_for(title_id), title_id)
+            self.assertFalse(titles.is_verified(title_id), title_id)
 
     def test_state_comes_from_the_bytes_and_not_from_the_size(self):
         stock = self_file("mw3", "default_mp.self", "stock")
@@ -347,6 +452,52 @@ class TheScan(ConsoleCase):
         self.assertIn("00330D20", item.detail)
         self.assertFalse(report.can_patch)
 
+    def test_black_ops_two_stops_as_a_whole_when_its_files_will_not_open(self):
+        # Two of the three files need the klicensee; EBOOT.BIN does not and
+        # opens regardless. Patching that one alone is exactly the half-fixed
+        # install the readme warns about, so the title has to stop together.
+        files = {"EBOOT.BIN": self_file("bo2", "EBOOT.BIN")}
+        for name in ("t6_ps3f.self", "t6mp_ps3f.self"):
+            record = next(item for item in titles.BO2_BINARIES
+                          if item["name"] == name)
+            site = titles.site_for(record)
+            files[name] = images.wrap(
+                images.info_for("EP0002-BLES01720_00-CODBLOPS2PATCH09",
+                                "USPRX", name, key_revision="001C",
+                                fw_version="0004002000000000"),
+                record["klicensee"][::-1],
+                images.bo2_image("stock", offset=site["file_offset"]))
+        self.start("BLES01720", files)
+        report = self.scan("BLES01720")
+        self.assertEqual(sorted(item.name for item in report.cannot_decrypt),
+                         ["t6_ps3f.self", "t6mp_ps3f.self"])
+        self.assertEqual([item.name for item in report.to_patch],
+                         ["EBOOT.BIN"])
+        self.assertFalse(report.can_patch)
+        result = flow.patch(self.writer(), FakeScetool(), report,
+                            root=self.workspace())
+        self.assertFalse(result.ok)
+        self.assertEqual(self.server.written, {})
+
+    def test_the_wrong_klicensee_on_a_verified_release_blames_nobody(self):
+        # Same failure on a release the fix has worked on before, where the
+        # signing parameters are not the suspect. It is still the same state:
+        # this program cannot open the file and will not touch it.
+        record = next(item for item in titles.MW3_BINARIES
+                      if item["name"] == "default_mp.self")
+        wrong = images.wrap(
+            images.info_for(MW3_CONTENT, "USPRX", "default_mp.self",
+                            key_revision="0019",
+                            fw_version="0004000000000000"),
+            record["klicensee"][::-1], images.mw3_image("stock"))
+        self.start(MW3_ID, {"default_mp.self": wrong})
+        report = self.scan(MW3_ID)
+        item = report.file_for("default_mp.self")
+        self.assertEqual(item.state, flow.CANNOT_DECRYPT)
+        self.assertIn(MW3_ID, item.detail)
+        self.assertIn("worked on before", item.detail)
+        self.assertFalse(report.can_patch)
+
     def test_the_wrong_klicensee_is_reported_rather_than_guessed_at(self):
         record = next(item for item in titles.MW3_BINARIES
                       if item["name"] == "default_mp.self")
@@ -357,10 +508,12 @@ class TheScan(ConsoleCase):
             record["klicensee"][::-1], images.mw3_image("stock"))
         self.start(MW3_ID, {"default_mp.self": wrong})
         report = self.scan(MW3_ID)
-        self.assertEqual(report.file_for("default_mp.self").state,
-                         flow.UNRECOGNISED)
-        self.assertIn("klicensee",
-                      report.file_for("default_mp.self").detail)
+        item = report.file_for("default_mp.self")
+        # Not unrecognised: nothing in the file was read and found wrong. What
+        # happened is that it would not open, and that has its own state.
+        self.assertEqual(item.state, flow.CANNOT_DECRYPT)
+        self.assertIn("klicensee", item.detail)
+        self.assertFalse(report.can_patch)
 
     def test_black_ops_two_scans_all_three_files(self):
         self.start(BO2_ID, {name: self_file("bo2", name)
@@ -808,13 +961,15 @@ class StubLister:
         pass
 
 
-def installation(state, title_id=BO2_ID, key="bo2"):
+def installation(state, title_id=BO2_ID, key="bo2", tu_version=None):
     config = titles.TITLES[key]
     return detection.Installation(
         title_id=title_id, title_key=key if state != "unknown_variant" else None,
         name=config["name"], short=config["short"],
         path=f"/dev_hdd0/game/{title_id}",
-        usrdir=titles.usrdir_for(title_id), state=state, config=config)
+        usrdir=titles.usrdir_for(title_id), state=state, config=config,
+        tu_version=tu_version,
+        verified=titles.is_verified(title_id))
 
 
 def detector_for(*found, notes=()):
@@ -1598,3 +1753,736 @@ class TheProgressReadout(ScreenCase):
         screen._set_busy(False)
         self.assertEqual(screen._count.text(), "")
         self.assertFalse(screen._count.isVisibleTo(screen))
+
+
+# --- a release nobody has confirmed ----------------------------------------
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class AReleaseNobodyHasConfirmed(ScreenCase):
+    """What the screen says about a SKU the fix has never been proved on.
+
+    The old table refused these outright. Now they are attempted, and the two
+    outcomes have to read completely differently: one is a fix about to be
+    applied with an honest caveat under it, the other is this tool admitting it
+    cannot do anything with this release. Neither may read as the user having
+    done something wrong, and neither may read as the game not being there.
+    """
+
+    TITLE_ID = "BLES01430"
+    CONTENT = "EP0002-BLES01430_00-MW3P000000000124"
+
+    def multiplayer(self, klicensee=None):
+        record = next(item for item in titles.MW3_BINARIES
+                      if item["name"] == "default_mp.self")
+        return images.wrap(
+            images.info_for(self.CONTENT, "USPRX", "default_mp.self",
+                            key_revision="0019",
+                            fw_version="0004000000000000"),
+            record["klicensee"] if klicensee is None else klicensee,
+            images.mw3_image("stock"))
+
+    def screen_for(self, files):
+        self.start(self.TITLE_ID, files)
+        screen, services = self.build(patcher.ModernWarfareThreePatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(installation("ready", self.TITLE_ID, "mw3")))})
+        screen.on_enter()
+        self.settle(services)
+        return screen
+
+    def states(self, screen):
+        return [screen._files.topLevelItem(row).text(3)
+                for row in range(screen._files.topLevelItemCount())]
+
+    def test_files_that_open_are_offered_the_fix_with_the_caveat_said(self):
+        screen = self.screen_for({"default_mp.self": self.multiplayer()})
+        self.assertEqual(self.states(screen)[0], "needs fixing")
+        self.assertTrue(screen._patch.isEnabled())
+        words = screen._detail.text()
+        self.assertIn(self.TITLE_ID, words)
+        self.assertIn("nobody has confirmed", words)
+        self.assertEqual(self.server.written, {})
+
+    def test_files_that_will_not_open_are_not_blamed_on_the_user(self):
+        record = next(item for item in titles.MW3_BINARIES
+                      if item["name"] == "default_mp.self")
+        screen = self.screen_for(
+            {"default_mp.self": self.multiplayer(record["klicensee"][::-1])})
+        self.assertEqual(self.states(screen)[0], "cannot be opened")
+        self.assertFalse(screen._patch.isEnabled())
+        words = screen._detail.text()
+        self.assertIn(self.TITLE_ID, words)
+        self.assertIn("Nothing is wrong with your console", words)
+        # It is a limit of this tool. It is not the file being wrong, not a
+        # piece of this program being absent, and not the game being missing.
+        self.assertNotIn("not recognised", words)
+        self.assertNotIn("fault in this program", words)
+        self.assertNotIn("not installed", words)
+        self.assertEqual(self.server.written, {})
+
+
+# --- the backup manifest ---------------------------------------------------
+#
+# A backup that cannot be verified is not a backup. Everything below turns on
+# that: the sizes and hashes were known and checked against the console at the
+# moment the copy was taken, and if they are not written down beside the files
+# then nothing afterwards can answer the only question that matters about a
+# folder of originals, which is whether it is still exactly what came off the
+# console.
+
+def backup_on_disk(root, title_id, files, when=None, folder_name=None,
+                   manifest=True, title_in_manifest=None):
+    """A backup folder exactly as make() leaves one, without a console.
+
+    Written by hand rather than by taking one, so that a test can age it, break
+    it, or leave the record out of it.
+    """
+    when = when or datetime.datetime(2026, 9, 1, 12, 0, 0)
+    folder = os.path.join(root, backups.FOLDER_NAME,
+                          folder_name or f"{title_id} {when:%Y-%m-%d}")
+    os.makedirs(folder, exist_ok=True)
+    usrdir = titles.usrdir_for(title_id)
+    saved = backups.Backup(folder, title_in_manifest or title_id, usrdir, when)
+    for name, body in files.items():
+        path = os.path.join(folder, name)
+        with open(path, "wb") as handle:
+            handle.write(body)
+        saved.entries.append({"name": name, "path": path,
+                              "remote": f"{usrdir}/{name}",
+                              "size": len(body),
+                              "sha1": hashlib.sha1(body).hexdigest()})
+    if manifest:
+        backups.write_manifest(saved)
+    return folder
+
+
+class TheBackupManifest(ConsoleCase):
+    def setUp(self):
+        self.files = {"default_mp.self": self_file("mw3", "default_mp.self")}
+        self.start(MW3_ID, self.files)
+
+    def take_one(self):
+        folder = os.path.join(self.workspace(), "backup")
+        return backups.make(self.writer(), titles.usrdir_for(MW3_ID),
+                            ["default_mp.self"], folder, title_id=MW3_ID)
+
+    def test_taking_a_backup_writes_down_what_it_contains(self):
+        saved = self.take_one()
+        read = backups.read_manifest(saved.folder)
+        self.assertEqual(read.problem, "")
+        self.assertEqual(read.title_id, MW3_ID)
+        self.assertEqual(read.names, ["default_mp.self"])
+        entry = read.entry_for("default_mp.self")
+        self.assertEqual(entry["sha1"],
+                         hashlib.sha1(self.files["default_mp.self"]).hexdigest())
+        self.assertEqual(entry["size"], len(self.files["default_mp.self"]))
+        self.assertEqual(entry["remote"],
+                         f"{titles.usrdir_for(MW3_ID)}/default_mp.self")
+        self.assertIsNotNone(read.taken)
+
+    def test_the_title_it_came_from_is_recorded_even_without_being_told(self):
+        # The usrdir carries it, and a manifest without it could not refuse a
+        # restore onto the wrong game.
+        folder = os.path.join(self.workspace(), "backup")
+        saved = backups.make(self.writer(), titles.usrdir_for(MW3_ID),
+                             ["default_mp.self"], folder)
+        self.assertEqual(backups.read_manifest(saved.folder).title_id, MW3_ID)
+
+    def test_an_untouched_backup_checks_out(self):
+        read = backups.read_manifest(self.take_one().folder)
+        results = backups.verify(read)
+        self.assertTrue(backups.all_good(results))
+        self.assertEqual(results[0]["name"], "default_mp.self")
+        self.assertIsNotNone(results[0]["modified"])
+        self.assertEqual(results[0]["size"],
+                         len(self.files["default_mp.self"]))
+
+    def test_a_file_changed_since_it_was_copied_stops_checking_out(self):
+        read = backups.read_manifest(self.take_one().folder)
+        path = read.entry_for("default_mp.self")["path"]
+        with open(path, "r+b") as handle:
+            handle.seek(0x40)
+            handle.write(b"\x00\x00\x00\x00")
+        results = backups.verify(read)
+        self.assertFalse(backups.all_good(results))
+        self.assertIn("changed it", results[0]["reason"])
+
+    def test_a_file_that_has_gone_missing_is_said_to_be_missing(self):
+        read = backups.read_manifest(self.take_one().folder)
+        os.remove(read.entry_for("default_mp.self")["path"])
+        results = backups.verify(read)
+        self.assertFalse(backups.all_good(results))
+        self.assertIn("not in the backup folder", results[0]["reason"])
+
+    def test_a_truncated_file_is_caught_on_its_size_alone(self):
+        read = backups.read_manifest(self.take_one().folder)
+        path = read.entry_for("default_mp.self")["path"]
+        with open(path, "r+b") as handle:
+            handle.truncate(16)
+        results = backups.verify(read)
+        self.assertFalse(backups.all_good(results))
+        self.assertIn("bytes", results[0]["reason"])
+
+    def test_a_folder_with_no_record_says_so_rather_than_looking_usable(self):
+        folder = self.take_one().folder
+        os.remove(backups.manifest_path(folder))
+        read = backups.read_manifest(folder)
+        self.assertIn("no record", read.problem)
+        self.assertEqual(read.entries, [])
+
+    def test_a_record_that_will_not_parse_is_not_read_as_an_empty_backup(self):
+        folder = self.take_one().folder
+        with open(backups.manifest_path(folder), "w", encoding="utf-8") as out:
+            out.write("{not json at all")
+        read = backups.read_manifest(folder)
+        self.assertTrue(read.problem)
+        self.assertEqual(read.entries, [])
+
+
+class FindingABackup(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ps3tools-test-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.body = b"the original file" * 8
+
+    def make(self, title_id, when, folder_name=None, **extra):
+        return backup_on_disk(self.root, title_id, {"EBOOT.BIN": self.body},
+                              when=when, folder_name=folder_name, **extra)
+
+    def test_a_desktop_with_no_backup_folder_is_not_an_error(self):
+        empty = os.path.join(self.root, "nothing-here")
+        self.assertEqual(backups.find(BO2_ID, root=empty), [])
+        self.assertFalse(os.path.isdir(backups.root_folder(empty)))
+
+    def test_the_most_recent_comes_first(self):
+        self.make(BO2_ID, datetime.datetime(2026, 1, 1, 9, 0),
+                  folder_name="BLES01717 2026-01-01")
+        self.make(BO2_ID, datetime.datetime(2026, 8, 30, 9, 0),
+                  folder_name="BLES01717 2026-08-30")
+        self.make(BO2_ID, datetime.datetime(2026, 4, 4, 9, 0),
+                  folder_name="BLES01717 2026-04-04")
+        found = backups.find(BO2_ID, root=self.root)
+        self.assertEqual([item.taken.date().isoformat() for item in found],
+                         ["2026-08-30", "2026-04-04", "2026-01-01"])
+
+    def test_only_this_title_is_offered(self):
+        self.make(BO2_ID, datetime.datetime(2026, 1, 1, 9, 0))
+        self.make(MW3_ID, datetime.datetime(2026, 2, 2, 9, 0))
+        found = backups.find(BO2_ID, root=self.root)
+        self.assertEqual([item.title_id for item in found], [BO2_ID])
+
+    def test_a_renamed_folder_is_matched_on_what_is_inside_it(self):
+        # The folder name is the one part of a backup nothing ever verified.
+        self.make(BO2_ID, datetime.datetime(2026, 1, 1, 9, 0),
+                  folder_name="my black ops backup")
+        found = backups.find(BO2_ID, root=self.root)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].title_id, BO2_ID)
+
+    def test_a_folder_with_no_record_is_still_listed_and_still_unusable(self):
+        # Silence about a folder sitting on the Desktop looking like a backup
+        # is worse than a sentence saying why it cannot be used.
+        self.make(BO2_ID, datetime.datetime(2026, 1, 1, 9, 0), manifest=False)
+        found = backups.find(BO2_ID, root=self.root)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].problem)
+
+
+# --- putting the originals back --------------------------------------------
+
+class PuttingTheOriginalsBack(ConsoleCase):
+    """flow.restore. The undo half, and the one people reach for in a panic."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ps3tools-test-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.stock = {"default_mp.self": self_file("mw3", "default_mp.self"),
+                      "default.self": self_file("mw3", "default.self")}
+        self.patched = dict(self.stock)
+        self.patched["default_mp.self"] = self_file("mw3", "default_mp.self",
+                                                    "patched")
+
+    def console_and_backup(self, title_id=MW3_ID, saved=None, **extra):
+        self.start(title_id, dict(self.patched))
+        folder = backup_on_disk(
+            self.root, title_id,
+            saved if saved is not None
+            else {"default_mp.self": self.stock["default_mp.self"]},
+            **extra)
+        return backups.read_manifest(folder)
+
+    def test_the_originals_go_back_and_are_confirmed_off_the_console(self):
+        backup = self.console_and_backup()
+        result = flow.restore(self.writer(), backup, MW3_ID)
+        self.assertTrue(result.ok, result.error)
+        self.assertEqual(result.restored, ["default_mp.self"])
+        self.assertEqual(self.server.files[self.remote("default_mp.self")],
+                         self.stock["default_mp.self"])
+
+    def test_it_writes_where_the_console_has_this_game(self):
+        backup = self.console_and_backup()
+        flow.restore(self.writer(), backup, MW3_ID)
+        self.assertIn(self.remote("default_mp.self"), self.server.written)
+
+    def test_a_backup_of_another_game_is_refused_and_says_why(self):
+        backup = self.console_and_backup(title_in_manifest=BO2_ID)
+        result = flow.restore(self.writer(), backup, MW3_ID)
+        self.assertFalse(result.ok)
+        self.assertTrue(result.refused)
+        self.assertIn(BO2_ID, result.error)
+        self.assertIn(MW3_ID, result.error)
+        self.assertIn("not that game's files", result.error)
+        self.assertEqual(self.server.written, {})
+
+    def test_a_backup_whose_files_have_changed_is_refused(self):
+        backup = self.console_and_backup()
+        path = backup.entry_for("default_mp.self")["path"]
+        with open(path, "r+b") as handle:
+            handle.seek(0x40)
+            handle.write(b"\xff\xff\xff\xff")
+        result = flow.restore(self.writer(), backup, MW3_ID)
+        self.assertFalse(result.ok)
+        self.assertTrue(result.refused)
+        self.assertIn("default_mp.self", result.error)
+        self.assertIn("not the original", result.error)
+        self.assertEqual(self.server.written, {})
+
+    def test_a_backup_with_no_record_of_itself_is_refused(self):
+        backup = self.console_and_backup(manifest=False)
+        result = flow.restore(self.writer(), backup, MW3_ID)
+        self.assertFalse(result.ok)
+        self.assertIn("no record", result.error)
+        self.assertEqual(self.server.written, {})
+
+    def test_no_refusal_ever_reaches_the_console(self):
+        """The seam, proved by taking it away.
+
+        Every refusal is decided from the local disk, so a write client that
+        explodes on touch must never be touched at all. This is the guard
+        against a future change quietly moving one of these checks to after
+        the first command.
+        """
+        class Exploding:
+            def __getattr__(self, name):
+                raise AssertionError(
+                    f"a refused restore reached the console: {name}")
+
+        backup = self.console_and_backup(title_in_manifest=BO2_ID)
+        result = flow.restore(Exploding(), backup, MW3_ID)
+        self.assertTrue(result.refused)
+        self.assertEqual(self.server.written, {})
+
+    def test_a_console_that_disappears_partway_says_where_that_leaves_you(self):
+        backup = self.console_and_backup(saved=dict(self.stock))
+        self.server.fault = lambda verb, argument: (
+            "DROP" if verb == "STOR" else None)
+        result = flow.restore(self.writer(), backup, MW3_ID)
+        self.assertFalse(result.ok)
+        self.assertFalse(result.refused)
+        self.assertIn("could not be written to the console", result.error)
+        # The two sentences that stop this being a dead end.
+        self.assertIn("backup has not been touched", result.error)
+        self.assertIn("safe", result.error)
+
+    def test_a_file_that_does_not_land_whole_is_caught_on_the_read_back(self):
+        backup = self.console_and_backup()
+        holder = self
+
+        class Corrupting(FtpWriter):
+            """226, and something else on the disk. What a console out of room
+            actually does."""
+
+            def store(self, source, path, on_block=None):
+                sent = super().store(source, path, on_block)
+                holder.server.files[path] = \
+                    holder.server.files[path][:-4]
+                return sent
+
+        result = flow.restore(self.writer(cls=Corrupting), backup, MW3_ID)
+        self.assertFalse(result.ok)
+        self.assertIn("other than what was sent", result.error)
+        self.assertEqual(result.restored, [])
+        self.assertEqual(result.failed[0][0], "default_mp.self")
+
+    def test_a_console_that_will_not_be_read_back_is_not_called_a_success(self):
+        backup = self.console_and_backup()
+        self.server.fault = lambda verb, argument: (
+            "550 gone" if verb == "RETR" else None)
+        result = flow.restore(self.writer(), backup, MW3_ID)
+        self.assertFalse(result.ok)
+        self.assertIn("could not be read back", result.error)
+        self.assertEqual(result.restored, [])
+
+    def test_progress_says_which_file_is_going_back(self):
+        backup = self.console_and_backup()
+        seen = []
+        flow.restore(self.writer(), backup, MW3_ID, progress=seen.append)
+        stages = {event["stage"] for event in seen}
+        self.assertIn("restore", stages)
+        self.assertIn("done", stages)
+        self.assertTrue(any("default_mp.self" in event["message"]
+                            for event in seen))
+
+
+# --- the restore, from the screen ------------------------------------------
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class RestoringFromTheScreen(ScreenCase):
+    """The button next to Apply, and everything it refuses to do.
+
+    The README called the backups the only way back and the only way back was a
+    hand-typed FTP session, which is not something the person this tool was
+    written for can do. These are the cases they will actually meet.
+    """
+
+    BO2_FILES = ("EBOOT.BIN", "t6_ps3f.self", "t6mp_ps3f.self")
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ps3tools-test-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.stock = {name: self_file("bo2", name) for name in self.BO2_FILES}
+
+    def scanned_screen(self, state="patched", title_id=BO2_ID,
+                       tu_version="1.19"):
+        self.start(title_id, {name: self_file("bo2", name, state)
+                              for name in self.BO2_FILES})
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(installation("ready", title_id, "bo2",
+                                      tu_version=tu_version)))})
+        screen._backup_root = self.root
+        screen._confirm_restore = lambda *args: True
+        screen.on_enter()
+        self.settle(services)
+        return screen, services
+
+    def settle_twice(self, services):
+        """A restore, then the read-back it starts. Two turns of the loop."""
+        for _ in range(3):
+            self.settle(services)
+
+    def states(self, screen):
+        return [screen._files.topLevelItem(row).text(3)
+                for row in range(screen._files.topLevelItemCount())]
+
+    # -- nothing to put back
+
+    def test_with_no_backup_folder_it_says_there_is_nothing_to_put_back(self):
+        screen, services = self.scanned_screen()
+        screen._on_restore()
+        self.settle(services)
+        self.assertIn("no backups on this computer yet", screen._detail.text())
+        self.assertIn(backups.FOLDER_NAME, screen._detail.text())
+        self.assertEqual(self.server.written, {})
+
+    def test_with_no_backup_of_this_game_it_says_which_game_it_looked_for(self):
+        backup_on_disk(self.root, MW3_ID,
+                       {"default_mp.self": self_file("mw3",
+                                                     "default_mp.self")})
+        screen, services = self.scanned_screen()
+        screen._on_restore()
+        self.settle(services)
+        self.assertIn(f"no backup of {BO2_ID}", screen._detail.text())
+        self.assertEqual(self.server.written, {})
+
+    # -- refusals
+
+    def test_a_backup_that_does_not_check_out_is_refused_on_screen(self):
+        folder = backup_on_disk(self.root, BO2_ID, self.stock)
+        with open(os.path.join(folder, "EBOOT.BIN"), "r+b") as handle:
+            handle.seek(0x40)
+            handle.write(b"\xff\xff\xff\xff")
+        screen, services = self.scanned_screen()
+        screen._on_restore()
+        self.settle(services)
+        self.assertIn("EBOOT.BIN", screen._detail.text())
+        self.assertIn("not the original", screen._detail.text())
+        self.assertEqual(self.server.written, {})
+
+    def test_a_backup_of_another_game_is_refused_on_screen(self):
+        backup_on_disk(self.root, BO2_ID, self.stock,
+                       title_in_manifest=MW3_ID)
+        screen, services = self.scanned_screen()
+        screen._on_restore()
+        self.settle(services)
+        self.assertIn("not that game's files", screen._detail.text())
+        self.assertEqual(self.server.written, {})
+
+    def test_a_refused_restore_never_asks_the_user_to_confirm_anything(self):
+        backup_on_disk(self.root, BO2_ID, self.stock,
+                       title_in_manifest=MW3_ID)
+        screen, services = self.scanned_screen()
+        asked = []
+        screen._confirm_restore = lambda *args: asked.append(args) or True
+        screen._on_restore()
+        self.settle(services)
+        self.assertEqual(asked, [])
+
+    def test_what_is_in_the_backup_is_shown_before_anything_is_sent(self):
+        """Names, sizes, dates and whether each file still checks out.
+
+        A user restoring in a panic is being asked to overwrite the game they
+        have; they are entitled to see what is about to overwrite it.
+        """
+        backup_on_disk(self.root, BO2_ID, self.stock)
+        screen, services = self.scanned_screen()
+        shown = []
+
+        def refuse(chosen, checks):
+            shown.append((chosen, screen._backup_contents(checks)))
+            return False
+
+        screen._confirm_restore = refuse
+        screen._on_restore()
+        self.settle(services)
+        chosen, text = shown[0]
+        for name in self.BO2_FILES:
+            self.assertIn(name, text)
+        self.assertEqual(text.count("checked and unchanged"), 3)
+        self.assertIn("2026", text)
+        self.assertRegex(text, r"\d+(\.\d+)? (B|KB|MB|GB)")
+        self.assertEqual(chosen.title_id, BO2_ID)
+        # Said no, so nothing happened.
+        self.assertEqual(self.server.written, {})
+        self.assertTrue(screen._restart.isHidden())
+
+    # -- the good case
+
+    def test_putting_them_back_reads_the_console_and_says_to_restart_it(self):
+        backup_on_disk(self.root, BO2_ID, self.stock)
+        screen, services = self.scanned_screen()
+        self.assertEqual(self.states(screen), ["already fixed"] * 3)
+
+        screen._on_restore()
+        self.settle_twice(services)
+
+        for name in self.BO2_FILES:
+            self.assertEqual(self.server.files[self.remote(name)],
+                             self.stock[name])
+        # Read off the console afterwards, not worked out from what was sent.
+        self.assertEqual(self.states(screen), ["needs fixing"] * 3)
+        self.assertIn("Put back", screen._detail.text())
+        self.assertFalse(screen._restart.isHidden())
+        self.assertIn("Restart your PlayStation 3", screen._restart_text.text())
+        # It has to be plain that this can be undone in turn.
+        self.assertIn("apply the fix again", screen._detail.text())
+        self.assertTrue(screen._patch.isEnabled())
+
+    def test_the_success_panel_is_not_shown_for_a_restore(self):
+        # The green panel says the fix is on the console. It is not.
+        backup_on_disk(self.root, BO2_ID, self.stock)
+        screen, services = self.scanned_screen()
+        screen._on_restore()
+        self.settle_twice(services)
+        self.assertTrue(screen._success.isHidden())
+
+    def test_the_newest_backup_is_the_one_offered(self):
+        backup_on_disk(self.root, BO2_ID, self.stock,
+                       when=datetime.datetime(2026, 1, 1, 9, 0),
+                       folder_name="BLES01717 2026-01-01")
+        backup_on_disk(self.root, BO2_ID, self.stock,
+                       when=datetime.datetime(2026, 9, 1, 9, 0),
+                       folder_name="BLES01717 2026-09-01")
+        screen, _services = self.scanned_screen()
+        offered = screen._backups(BO2_ID)
+        self.assertEqual(offered[0].taken.date(), datetime.date(2026, 9, 1))
+        self.assertEqual(len(offered), 2)
+
+    def test_the_screen_cannot_be_left_while_files_are_going_back(self):
+        screen, _services = self.scanned_screen()
+        screen._writing = True
+        self.assertFalse(screen.can_leave())
+
+    # -- the seam
+
+    def test_the_restore_only_ever_goes_through_the_write_client_seam(self):
+        """Replace the client with one that raises, and nothing reaches a wire.
+
+        The guard against the regression this suite already had once: a path
+        that was inert in tests became live and the suite started talking to
+        the console on the network.
+        """
+        backup_on_disk(self.root, BO2_ID, self.stock)
+        screen, services = self.scanned_screen()
+
+        def refuse(host):
+            raise AssertionError("the real write client was used")
+
+        screen._writer = refuse
+        screen._on_restore()
+        self.settle_twice(services)
+        self.assertIn("the real write client was used", screen._detail.text())
+        self.assertIn("backup folder has not been changed",
+                      screen._detail.text())
+        self.assertEqual(self.server.written, {})
+        self.assertTrue(screen._restart.isHidden())
+
+    def test_a_console_that_goes_away_mid_restore_says_to_try_again(self):
+        backup_on_disk(self.root, BO2_ID, self.stock)
+        screen, services = self.scanned_screen()
+        self.server.fault = lambda verb, argument: (
+            "DROP" if verb == "STOR" else None)
+        screen._on_restore()
+        self.settle_twice(services)
+        self.assertIn("could not be written to the console",
+                      screen._detail.text())
+        self.assertIn("safe", screen._detail.text())
+        self.assertTrue(screen._restart.isHidden())
+
+
+# --- the title update the fix was verified against -------------------------
+
+class TheVerifiedUpdateCheck(unittest.TestCase):
+    """flow.update_check. Verified, never latest, and never a guess."""
+
+    def test_the_verified_version_is_not_read_off_the_manifest(self):
+        # 1.19 and 1.24 happen to be the newest today. The check that protects
+        # the user is "is this the build the offset was confirmed on", and it
+        # must not become "is this what Sony serves", which changes without
+        # anybody here noticing.
+        self.assertEqual(titles.verified_update_for(BO2_ID), "1.19")
+        self.assertEqual(titles.verified_update_for(MW3_ID), "1.24")
+        for key in ("bo2", "mw3"):
+            self.assertIn("verified_update", titles.TITLES[key])
+
+    def test_the_installed_version_matching_is_the_ordinary_case(self):
+        found = flow.update_check(BO2_ID, "1.19")
+        self.assertEqual(found.verdict, flow.UPDATE_MATCHES)
+        self.assertFalse(found.blocks)
+
+    def test_the_console_spelling_and_a_person_s_are_the_same_version(self):
+        # The SFO stores 01.19 and a person writes 1.19.
+        self.assertEqual(flow.update_check(BO2_ID, "01.19").verdict,
+                         flow.UPDATE_MATCHES)
+
+    def test_another_version_blocks_and_keeps_both_numbers(self):
+        found = flow.update_check(BO2_ID, "1.09")
+        self.assertEqual(found.verdict, flow.UPDATE_DIFFERS)
+        self.assertTrue(found.blocks)
+        self.assertEqual((found.installed, found.verified), ("1.09", "1.19"))
+
+    def test_a_version_that_could_not_be_read_is_its_own_answer(self):
+        found = flow.update_check(BO2_ID, None)
+        self.assertEqual(found.verdict, flow.UPDATE_UNREADABLE)
+        self.assertIsNone(found.installed)
+        self.assertEqual(found.verified, "1.19")
+        # Distinct from a version that was read and disagreed: there is nothing
+        # here to tell the user to go and change.
+        self.assertFalse(found.blocks)
+
+    def test_an_unverified_release_has_nothing_to_compare_against(self):
+        unverified = "NPEB01204"
+        self.assertTrue(titles.is_recognised(unverified))
+        self.assertFalse(titles.is_verified(unverified))
+        self.assertIsNone(titles.verified_update_for(unverified))
+        found = flow.update_check(unverified, "1.09")
+        self.assertEqual(found.verdict, flow.UPDATE_NOT_ESTABLISHED)
+        self.assertFalse(found.blocks)
+        self.assertIsNone(found.verified)
+
+    def test_a_title_that_is_not_ours_at_all_claims_nothing(self):
+        found = flow.update_check("BLES99999", "1.00")
+        self.assertEqual(found.verdict, flow.UPDATE_NOT_ESTABLISHED)
+        self.assertFalse(found.blocks)
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class TheUpdateGateOnScreen(ScreenCase):
+    """Apply is not offered on a build nobody checked the fix against."""
+
+    BO2_FILES = ("EBOOT.BIN", "t6_ps3f.self", "t6mp_ps3f.self")
+
+    def scanned_screen(self, tu_version, title_id=BO2_ID):
+        content = f"EP0002-{title_id}_00-CODBLOPS2PATCH09"
+        self.start(title_id, {name: self_file("bo2", name,
+                                              content_id=content)
+                              for name in self.BO2_FILES})
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        self.detector = detector_for(installation("ready", title_id, "bo2",
+                                                  tu_version=tu_version))
+        patcher.detect = type("stub", (), {
+            "find_installations": staticmethod(
+                lambda lister: self.detector(lister))})
+        screen.on_enter()
+        self.settle(services)
+        return screen, services
+
+    def words(self, screen):
+        return " ".join([screen._update_heading.text(),
+                         screen._update_body.text(), screen._detail.text()])
+
+    def test_the_verified_version_is_offered_the_fix_as_before(self):
+        screen, _services = self.scanned_screen("1.19")
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertTrue(screen._update.isHidden())
+
+    def test_another_version_does_not_get_the_fix_offered(self):
+        screen, _services = self.scanned_screen("1.09")
+        self.assertFalse(screen._patch.isEnabled())
+        self.assertFalse(screen._update.isHidden())
+        said = self.words(screen)
+        self.assertIn("1.19", said)
+        self.assertIn("1.09", said)
+        self.assertIn("stops starting", said)
+        # Not the user's fault and not a broken console.
+        self.assertIn("Nothing is wrong with your console", said)
+
+    def test_pressing_apply_on_the_wrong_version_writes_nothing(self):
+        screen, services = self.scanned_screen("1.09")
+        screen._on_patch()
+        self.settle(services)
+        self.assertEqual(self.server.written, {})
+
+    def test_the_way_out_is_the_game_updates_card_on_this_title(self):
+        screen, _services = self.scanned_screen("1.09")
+        asked = []
+        screen.request_tool.connect(lambda key, title: asked.append((key,
+                                                                     title)))
+        screen._updates_button.click()
+        self.assertEqual(asked, [("updates", "bo2")])
+
+    def test_with_nothing_listening_the_button_still_goes_somewhere(self):
+        screen, _services = self.scanned_screen("1.09")
+        home = []
+        screen.request_home.connect(lambda: home.append(True))
+        screen._updates_button.click()
+        self.assertEqual(home, [True])
+
+    def test_updating_and_scanning_again_offers_the_fix(self):
+        screen, services = self.scanned_screen("1.09")
+        self.assertFalse(screen._patch.isEnabled())
+        self.detector = detector_for(installation("ready", BO2_ID, "bo2",
+                                                  tu_version="1.19"))
+        screen.start_scan()
+        self.settle(services)
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertTrue(screen._update.isHidden())
+
+    def test_a_version_that_could_not_be_read_is_not_called_the_wrong_one(self):
+        screen, _services = self.scanned_screen(None)
+        said = self.words(screen)
+        self.assertFalse(screen._update.isHidden())
+        self.assertIn("could not tell which version", said)
+        self.assertNotIn("has update None", said)
+        # A different case with a different remedy, so not the same sentence.
+        self.assertNotIn("is not the version the fix was checked on", said)
+        self.assertTrue(screen._patch.isEnabled())
+
+    def test_an_unverified_release_is_never_told_its_update_is_out_of_date(self):
+        # There is no verified update for this release, so there is nothing for
+        # the installed version to disagree with. It is already answered as the
+        # release nobody has confirmed, and must not be answered twice.
+        screen, _services = self.scanned_screen("1.09", title_id="NPEB01204")
+        self.assertTrue(screen._update.isHidden())
+        said = self.words(screen)
+        self.assertNotIn("stops starting", screen._update_body.text())
+        self.assertIn("nobody has confirmed", said)
+        self.assertTrue(screen._patch.isEnabled())
+
+    def test_no_colour_is_written_into_the_update_panel_by_hand(self):
+        screen, _services = self.scanned_screen("1.09")
+        sheet = screen._update.styleSheet() + screen._update_heading.styleSheet()
+        self.assertNotIn("#f", sheet.lower().replace("#808080", ""))

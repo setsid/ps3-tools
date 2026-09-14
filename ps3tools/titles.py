@@ -1,12 +1,31 @@
-"""The known-good table: which titles this tool will touch, and with what.
+"""The title table: which releases this tool recognises, and with what.
 
-Everything here was verified against a real console or against Sony's live
-update manifests. It is not to be re-derived, extended by pattern, or guessed
-at. A title ID that is not in this table is refused rather than patched with
-another region's parameters, because whether the klicensee is constant across
-regional SKUs is not established. The BO2 repository states that it is; that is
-one person's observation across the regions they had, and it is not enough to
-risk re-signing a stranger's binary with the wrong key.
+Two different questions are answered here and they must not be run together.
+
+  Recognised   the title ID is one of the published releases of one of the two
+               games. That is enough to detect it, name it on screen, and
+               attempt the fix on it. The lists below are every title ID either
+               game shipped under.
+
+  Verified     somebody has actually watched the fix work on that release, and
+               the update-package hashes for it have been read off Sony's live
+               manifests. Only a handful of releases are in that position, and
+               they are the ones with a `skus` entry.
+
+An unverified release is attempted rather than refused, because the attempt
+cannot go wrong quietly. The klicensee is either right, in which case scetool
+hands back a decrypted binary whose patch site is then cross-checked against
+the offset in PATCH_SITES, or it is wrong, in which case scetool produces
+nothing at all and the run stops there having read the file and written
+nothing. There is no third outcome where a wrong key produces a plausible
+binary. The signing parameters that rebuild the file are read back off the
+user's own copy rather than looked up here, so nothing about re-signing needs
+a per-release table either.
+
+What stays forbidden is patching at an offset nobody has checked. The fix finds
+its own site in the decrypted image and that answer has to agree with the
+verified offset below; a disagreement is a different build of the game and is
+refused.
 
 Two kinds of hash live here and they must never be confused:
 
@@ -108,6 +127,46 @@ MW3_BINARIES = (
 )
 
 
+# --- which releases are which game -----------------------------------------
+#
+# Every title ID each game was published under, normalised the way the rest of
+# the program spells them: upper case, no dash. Being in one of these lists
+# means the tool will say what the game is and will attempt the fix on it. It
+# does not mean anybody has watched the fix work on that release; that is the
+# skus table further down, and the two are deliberately separate.
+#
+# These are release identifiers and nothing more. Which of them are the full
+# game and which are something smaller is not recorded, because it is not known
+# here and a guess written down as a fact would be read as one.
+
+BO2_TITLE_IDS = (
+    "BCKS10223", "BCKS10232", "BCUS91450",
+    "BLES01717", "BLES01718", "BLES01719", "BLES01720",
+    "BLJM60548", "BLJM60549", "BLJM61109", "BLJM61110", "BLJM61230",
+    "BLJM61231",
+    "BLUS31011", "BLUS31080", "BLUS31140", "BLUS31141", "BLUS41005",
+    "NPEB01204", "NPEB01205", "NPEB01206", "NPEB01207",
+    "NPUB31055", "NPUB31056",
+)
+
+MW3_TITLE_IDS = (
+    "BCKS10195",
+    "BLES01428", "BLES01429", "BLES01430", "BLES01431", "BLES01432",
+    "BLES01433", "BLES01434",
+    "BLJM60404", "BLJM60422", "BLJM60534", "BLJM60535", "BLJM61111",
+    "BLJM61112",
+    "BLUS30838", "BLUS30872", "BLUS30887",
+    "NPEB00964", "NPEB00965", "NPEB00966", "NPEB00967", "NPEB00968",
+    "NPEB00977", "NPEB00978",
+    "NPEB90450", "NPEB90451",
+    "NPUB30787", "NPUB30788",
+)
+
+# BLJM61034 was in an earlier draft of this table. Sony's manifest returns
+# nothing for it: it is not a Black Ops II title ID and it is not included.
+NOT_A_TITLE = ("BLJM61034",)
+
+
 # --- titles ----------------------------------------------------------------
 #
 # updates maps a title update version to the sha1 of Sony's package for that
@@ -120,7 +179,16 @@ TITLES = {
         "name": "Call of Duty: Black Ops II",
         "short": "Black Ops II",
         "binaries": BO2_BINARIES,
+        "title_ids": BO2_TITLE_IDS,
         "latest_update": "1.19",
+        # The build the patch offset was confirmed on. Kept separate from
+        # latest_update even though the two say the same thing today: they
+        # answer different questions and they will part company the day Sony
+        # ships another update. latest_update is read off a manifest and says
+        # what is being served; this one says what somebody watched the fix
+        # work on, and is the only one a refusal may be based on. It changes
+        # when a person verifies another build and never automatically.
+        "verified_update": "1.19",
         "repo": "https://github.com/setsid/bo2-ps3-psn-freeze-fix",
         "symptom": ("The game freezes on PS3 while a PSN session is active. "
                     "It is a logging fault in the game, not a network "
@@ -173,7 +241,10 @@ TITLES = {
         "name": "Call of Duty: Modern Warfare 3",
         "short": "Modern Warfare 3",
         "binaries": MW3_BINARIES,
+        "title_ids": MW3_TITLE_IDS,
         "latest_update": "1.24",
+        # See the note on the same key above. Verified, not latest.
+        "verified_update": "1.24",
         "repo": "https://github.com/setsid/mw3-ps3-psn-fix",
         "symptom": ("You reach a multiplayer lobby and are dropped back to "
                     "the menu about a second later, on any PSN account made "
@@ -197,12 +268,20 @@ TITLES = {
     },
 }
 
-# BLJM61034 was in an earlier draft of this table. Sony's manifest returns
-# nothing for it: it is not a Black Ops II title ID and it is not included.
-NOT_A_TITLE = ("BLJM61034",)
-
-# Every title ID this tool will act on, and nothing else.
+# Every title ID this tool recognises as one of the two games. Being in here is
+# what gets a release detected, named, and attempted.
 KNOWN_TITLE_IDS = {
+    title_id: config["key"]
+    for config in TITLES.values()
+    for title_id in config["title_ids"]
+    if title_id not in NOT_A_TITLE
+}
+
+# The releases a working patch has actually been observed on, which is a much
+# shorter list. Kept apart from the one above so that a screen or a report can
+# tell the user which of the two situations they are in rather than implying
+# that every recognised release is a tested one.
+VERIFIED_TITLE_IDS = {
     title_id: config["key"]
     for config in TITLES.values()
     for title_id in config["skus"]
@@ -211,22 +290,76 @@ KNOWN_TITLE_IDS = {
 USRDIR = "/dev_hdd0/game/{title_id}/USRDIR"
 
 
-def config_for(title_id):
-    """The title configuration for a title ID, or None if it is not known.
+def normalise(title_id):
+    """A title ID the way this table spells them: upper case, no dash.
 
-    None means refuse. It does not mean "work it out from the region letter":
-    the signing parameters are per SKU until somebody establishes otherwise,
-    and re-signing with the wrong ones produces a binary that will not boot.
+    Users copy them off a box, a disc or a web page, where they are as often
+    BLES-01717 as BLES01717, and a lookup that missed on the punctuation would
+    tell somebody their own game was not recognised.
     """
-    key = KNOWN_TITLE_IDS.get((title_id or "").upper())
+    return "".join(character for character in (title_id or "").upper()
+                   if character.isalnum())
+
+
+def config_for(title_id):
+    """The title configuration for a title ID, or None if it is not one of ours.
+
+    None means this is not a release of either game, so nothing is read and
+    nothing is attempted. It is not a statement about signing parameters: a
+    recognised release whose klicensee turns out to be different is found out
+    at the decryption step, where the failure is plain and costs nothing.
+    """
+    key = KNOWN_TITLE_IDS.get(normalise(title_id))
     return TITLES.get(key) if key else None
 
 
+def is_recognised(title_id):
+    """Whether this title ID is a release of either game."""
+    return normalise(title_id) in KNOWN_TITLE_IDS
+
+
+def is_verified(title_id):
+    """Whether the fix has actually been observed working on this release.
+
+    False is not a refusal. It means nobody has reported back on this one, so
+    the tool will attempt it and say so rather than claim more than it knows.
+    """
+    return normalise(title_id) in VERIFIED_TITLE_IDS
+
+
 def sku_for(title_id):
+    """The verified SKU record for a title ID, or None if it is not verified.
+
+    A recognised release with no record here is the ordinary case now. Anything
+    reading this has to treat a missing record as "not established" rather than
+    as "not a real title".
+    """
     config = config_for(title_id)
     if not config:
         return None
-    return config["skus"].get(title_id.upper())
+    return config["skus"].get(normalise(title_id))
+
+
+def verified_update_for(title_id):
+    """The title update the fix was confirmed on for this release, or None.
+
+    None is the ordinary answer for a release nobody has verified, and it means
+    "there is nothing to compare against" rather than "the installed update is
+    wrong". Anything acting on this has to keep those apart: a user on an
+    unverified release told their title update is out of date has been told
+    something this table does not know.
+
+    Never the latest update. The two happen to coincide for both games today,
+    but the question this answers is which build the patch offset was proved
+    against, and that changes only when a person verifies another one.
+    """
+    sku = sku_for(title_id)
+    if not sku:
+        return None
+    # A per-SKU override is allowed for the day a region is verified on a
+    # different build from the rest of its game.
+    config = config_for(title_id)
+    return sku.get("verified_update") or (config or {}).get("verified_update")
 
 
 def site_for(binary_record):
@@ -239,7 +372,7 @@ def binaries_for(title_id):
 
 
 def usrdir_for(title_id):
-    return USRDIR.format(title_id=title_id.upper())
+    return USRDIR.format(title_id=normalise(title_id))
 
 
 def update_for(title_id, sha1):
@@ -250,6 +383,9 @@ def update_for(title_id, sha1):
     """
     sku = sku_for(title_id)
     if not sku:
+        # No verified record for this release, so there is no table of update
+        # hashes to match against and nothing can be said about which title
+        # update is installed. Silence is the correct answer here.
         return None
     wanted = (sha1 or "").lower()
     for version, digest in sku.get("updates", {}).items():

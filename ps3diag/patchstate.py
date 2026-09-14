@@ -1,0 +1,993 @@
+"""Patch state for the two known Call of Duty PSN fixes.
+
+Two titles have a published fix for a fault that takes PSN down. Black Ops II
+freezes the whole console whenever a PSN session becomes active. Modern Warfare
+3 throws you out of every online lobby on an account made after 2018. Both
+fixes replace one instruction inside the game's own executable. This module
+works out, from an artefact set, whether those titles are installed and whether
+the fix looks as though it has been applied.
+
+What cannot be determined from here, said first because a confident wrong
+answer costs somebody their install:
+
+The files both fixes touch are encrypted SELF binaries. The patched bytes sit
+inside the encrypted, compressed data section. Decrypting needs scetool and the
+appldr keys, which this tool does not ship and will not ship, so the patched
+instruction is never visible to it. Nothing below claims to have seen it. Where
+the answer is "cannot tell", the answer is unknown, and unknown is the common
+case rather than a failure.
+
+What can be read with no keys at all, and is what the states below are built
+from:
+
+  * the size of the file on disk, from a directory listing
+  * the SCE header: magic, version, key revision, header type, header length,
+    and the data length, which is the size of the decrypted ELF and therefore
+    pins down which build of the game this is
+  * the NPDRM control info, which is stored in the clear: licence type,
+    application type, the ContentID, which carries the title ID and the title
+    update, and the CID_FN hash
+  * a SHA-1 of the whole file, if a collector ever computes one
+
+The reference sizes and hashes below cover exactly one title update per title,
+the one each repository was tested against, taken from its README. A file that
+does not match them is usually a different update rather than a patched file,
+so a size that is merely unfamiliar produces unknown and not unpatched.
+
+The strongest keyless inference available is this: re-signing with scetool does
+not reproduce Sony's own compression, so a re-signed file is a different size
+from the stock file while its decrypted data length stays the same. A file
+whose data length matches a known build but whose size does not match that
+build's stock size has been rebuilt by somebody. That is consistent with the
+fix, and it is not proof of it, so it is still reported as unknown with the
+evidence spelled out.
+
+If a decrypted binary ever becomes available, decrypted_state() answers
+properly. It does not restate either patcher's signatures: it imports
+patch-bo2.py and patch-mw3.py and calls their own site finding, so there is one
+definition of where the patch site is and it lives in the repository that owns
+the fix.
+"""
+
+import base64
+import binascii
+import importlib.util
+import json
+import os
+import re
+import struct
+from collections import namedtuple
+
+from . import config
+from .findings import Finding
+from .parsers import parse_ftp_list
+from .regioncodes import find_title_id
+
+SCHEMA_VERSION = 1
+ARTEFACT_NAME = "patches/patch-state.json"
+CATEGORY = "games"
+
+PATCHED = "patched"
+UNPATCHED = "unpatched"
+UNKNOWN = "unknown"
+MISSING = "missing"
+
+HIGH = "high"
+LOW = "low"
+
+NO_KEYS = ("The patch is inside the encrypted part of the file and ps3-diag "
+           "has no keys, so the instruction itself was not checked.")
+
+# Title updates install to /dev_hdd0/game/<TITLE ID>/USRDIR wherever the game
+# itself lives, and that is the copy both fixes patch.
+GAME_DIR = "/dev_hdd0/game/%s/USRDIR"
+
+Reference = namedtuple("Reference", "state title_id update size sha1")
+Binary = namedtuple("Binary",
+                    "name affected purpose key_revision app_type elf_size "
+                    "references")
+Title = namedtuple("Title",
+                   "key title repo advice title_ids name_patterns binaries")
+
+# Sizes and hashes are the reference values published in each repository's
+# README. The patched sizes are one person's build: re-signing with different
+# parameters gives a different size, so a patched size matching is evidence and
+# a patched size not matching is not.
+BO2 = Title(
+    key="bo2",
+    title="Call of Duty: Black Ops II",
+    repo="https://github.com/setsid/bo2-ps3-psn-freeze-fix",
+    advice=("All three have to be done: fixing only the multiplayer binary "
+            "leaves campaign and zombies freezing. Each file is re-signed "
+            "with the content ID, application type and key revision read back "
+            "off your own copy, so it boots the way the original did rather "
+            "than depending on the extra custom firmware controls being left "
+            "switched on. Keep the originals: they are the only way back, and "
+            "one cannot be rebuilt from a patched copy."),
+    # BLES01717, BLES01718 and BLUS31011 are named in the README. BLUS31140 is
+    # in the repository's own scetool fixtures, as the ContentID
+    # UP0002-BLUS31140_00-CODBLOPS2PATCH09. Other regions exist and are caught
+    # by name instead.
+    title_ids=("BLES01717", "BLES01718", "BLUS31011", "BLUS31140"),
+    name_patterns=(re.compile(r"(?i)\bblack\s*ops\s*(?:2|ii)\b"),
+                   re.compile(r"(?i)\bbo\s*2\b"),
+                   re.compile(r"(?i)\bblops\s*2\b")),
+    binaries=(
+        Binary("EBOOT.BIN", True, "campaign and zombies", 0x1C, 0x21,
+               11706540,
+               (Reference(UNPATCHED, "BLES01717", "1.19", 6108656,
+                          "fceadf136dd4fbb6d0cb72f7df4a1eb35f7a33cb"),
+                Reference(PATCHED, "BLES01717", "1.19", 6095184,
+                          "bf32afcbefe96e1424215ffa5036088007f8d10e"))),
+        Binary("t6_ps3f.self", True,
+               "campaign and zombies, the copy the console often loads",
+               0x1C, 0x20, 11706540,
+               (Reference(UNPATCHED, "BLES01717", "1.19", 6108656,
+                          "457ba9131098a124b26e80b955722198e48dac35"),)),
+        Binary("t6mp_ps3f.self", True, "multiplayer", 0x1C, 0x20, 14215768,
+               (Reference(UNPATCHED, "BLES01717", "1.19", 7254288,
+                          "0099df2812e45fcc36642df0ac014c4e3d4641c9"),
+                Reference(PATCHED, "BLES01717", "1.19", 7214528,
+                          "8af1f859c9fc0a96aae7b2e23abf5dd19b2cdce7"))),
+    ))
+
+MW3 = Title(
+    key="mw3",
+    title="Call of Duty: Modern Warfare 3",
+    repo="https://github.com/setsid/mw3-ps3-psn-fix",
+    advice=("default.self is campaign and Spec Ops, is a separate binary, "
+            "and the fix does not touch it."),
+    # BLES01428 is the tested one and is the ID in the README's ContentID.
+    # BLUS30838 is the North American release. Other regions are caught by
+    # name.
+    title_ids=("BLES01428", "BLUS30838"),
+    name_patterns=(re.compile(r"(?i)\bmodern\s*warfare\s*3\b"),
+                   re.compile(r"(?i)\bmw\s*3\b")),
+    binaries=(
+        Binary("default_mp.self", True, "multiplayer", 0x19, 0x20, 7578328,
+               (Reference(UNPATCHED, "BLES01428", "1.24", 7581072,
+                          "1b02160e9daa943789ba5eda7258d1ce47d2df10"),)),
+        Binary("default.self", False, "campaign and Spec Ops", None, None,
+               None, ()),
+    ))
+
+TITLES = (BO2, MW3)
+
+
+# --- the encrypted file ----------------------------------------------------
+
+SCE_MAGIC = 0x53434500
+NPDRM_MAGIC = 0x4E504400
+ELF_MAGIC = b"\x7fELF"
+
+HEADER_TYPES = {1: "SELF", 2: "RVK", 3: "PKG", 4: "SPP"}
+# Licence type as scetool prints it. 3 is what both of these titles carry.
+LICENCE_TYPES = {1: "network", 2: "local", 3: "free"}
+
+
+def _u16(data, offset):
+    return struct.unpack_from(">H", data, offset)[0]
+
+
+def _u32(data, offset):
+    return struct.unpack_from(">I", data, offset)[0]
+
+
+def _u64(data, offset):
+    return struct.unpack_from(">Q", data, offset)[0]
+
+
+def header_bytes(record):
+    """The captured head of a file, from whichever encoding it arrived in.
+
+    Artefacts are UTF-8 text, so a collector that captures the first few KB of
+    a binary records it as hex or base64 and names the encoding. Both are
+    accepted here. Anything unreadable comes back as None rather than as a
+    partial buffer that would be parsed as though it were real.
+    """
+    if not isinstance(record, dict):
+        return None
+    raw = record.get("header_hex")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return bytes.fromhex(re.sub(r"\s+", "", raw))
+        except ValueError:
+            return None
+    raw = record.get("header_base64")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return base64.b64decode(raw, validate=False)
+        except (binascii.Error, ValueError):
+            return None
+    return None
+
+
+def read_self_header(data):
+    """Everything the plaintext head of a SELF says about itself.
+
+    Returns a dict always. `kind` is one of self, elf, short or other, and
+    every field that could not be read is absent rather than zero, because a
+    zero here reads as a real value and would be acted on.
+    """
+    out = {"kind": "other", "notes": []}
+    if not isinstance(data, (bytes, bytearray)):
+        return out
+    data = bytes(data)
+    out["captured_bytes"] = len(data)
+    if data[:4] == ELF_MAGIC:
+        out["kind"] = "elf"
+        out["notes"].append("starts with an ELF header, so it is not signed")
+        return out
+    if len(data) < 0x20:
+        out["kind"] = "short"
+        out["notes"].append("too short to hold an SCE header")
+        return out
+    try:
+        magic = _u32(data, 0)
+        if magic != SCE_MAGIC:
+            out["notes"].append("no SCE magic at the start of the file")
+            return out
+        out["kind"] = "self"
+        out["version"] = _u32(data, 0x04)
+        out["key_revision"] = _u16(data, 0x08)
+        header_type = _u16(data, 0x0A)
+        out["header_type"] = header_type
+        out["header_type_name"] = HEADER_TYPES.get(header_type)
+        out["metadata_offset"] = _u32(data, 0x0C)
+        out["header_length"] = _u64(data, 0x10)
+        out["data_length"] = _u64(data, 0x18)
+    except struct.error:
+        out["notes"].append("SCE header is truncated")
+        return out
+    if header_type != 1:
+        out["notes"].append("not a SELF: header type %s"
+                            % out["header_type_name"] or header_type)
+        return out
+    try:
+        control_offset = _u64(data, 0x58)
+        control_size = _u64(data, 0x60)
+        out["app_info_offset"] = _u64(data, 0x28)
+        out["control_info_offset"] = control_offset
+        out["control_info_size"] = control_size
+    except struct.error:
+        out["notes"].append("SELF header is truncated")
+        return out
+    app = _read_app_info(data, out.get("app_info_offset"))
+    if app:
+        out["app_info"] = app
+    npdrm, note = _read_control_info(data, control_offset, control_size)
+    if npdrm:
+        out["npdrm"] = npdrm
+    if note:
+        out["notes"].append(note)
+    return out
+
+
+# scetool spells self_type out; only the values these two titles use are named,
+# and an unrecognised one is reported as its number rather than guessed at.
+SELF_TYPES = {1: "LV0", 2: "LV1", 3: "LV2", 4: "application", 5: "isoldr",
+              6: "ldr", 8: "NPDRM application"}
+
+
+def _read_app_info(data, offset):
+    if not offset or offset + 0x20 > len(data):
+        return {}
+    try:
+        self_type = _u32(data, offset + 0x0C)
+        return {
+            "auth_id": "%016X" % _u64(data, offset),
+            "vendor_id": "%08X" % _u32(data, offset + 0x08),
+            "self_type": self_type,
+            "self_type_name": SELF_TYPES.get(self_type),
+            "version": "%016X" % _u64(data, offset + 0x10),
+        }
+    except struct.error:
+        return {}
+
+
+def _read_control_info(data, offset, size):
+    """The NPDRM block out of the control info, which is not encrypted.
+
+    Walks the chain rather than assuming NPDRM is third, because it is third on
+    a retail file and not on everything.
+    """
+    if not offset or not size:
+        return {}, None
+    end = min(len(data), offset + size)
+    if offset + 0x10 > end:
+        return {}, ("control info starts at 0x%X, past the %d bytes captured"
+                    % (offset, len(data)))
+    position = offset
+    while position + 0x10 <= end:
+        try:
+            entry_type = _u32(data, position)
+            entry_size = _u32(data, position + 0x04)
+            has_next = _u64(data, position + 0x08)
+        except struct.error:
+            return {}, "control info is truncated"
+        if entry_size < 0x10:
+            return {}, "control info entry size is not believable"
+        if entry_type == 3:
+            return _read_npdrm(data, position + 0x10, position + entry_size)
+        if not has_next:
+            break
+        position += entry_size
+    return {}, None
+
+
+def _read_npdrm(data, start, end):
+    if start + 0x60 > min(end, len(data)):
+        return {}, "NPDRM control info is past the end of what was captured"
+    try:
+        magic = _u32(data, start)
+        licence_type = _u32(data, start + 0x08)
+        app_type = _u32(data, start + 0x0C)
+        content_id = data[start + 0x10:start + 0x40]
+        cid_fn = data[start + 0x50:start + 0x60]
+    except struct.error:
+        return {}, "NPDRM control info is truncated"
+    if magic != NPDRM_MAGIC:
+        return {}, "NPDRM control info has the wrong magic"
+    text = content_id.split(b"\x00", 1)[0].decode("ascii", errors="replace")
+    # EP0002-BLES01428_00-MW3P000000000124: the underscore is a word character
+    # and swallows the boundary the title ID patterns need.
+    return {
+        "licence_type": licence_type,
+        "licence_type_name": LICENCE_TYPES.get(licence_type),
+        "app_type": app_type,
+        "content_id": text,
+        "title_id": find_title_id(text.replace("_", " ")),
+        "cid_fn_hash": cid_fn.hex(),
+    }, None
+
+
+# --- the decrypted file, using each patcher's own site finding -------------
+
+# Set either of these to the patcher script if the copy that ships is not the
+# one you want used. Nothing here ever fetches them: a missing patcher means
+# the decrypted path answers unknown, which is the honest answer anyway.
+PATCHER_ENV = {"bo2": "PS3DIAG_BO2_PATCHER", "mw3": "PS3DIAG_MW3_PATCHER"}
+
+# The vendored copies, which are what an exe has. They are the same scripts the
+# two repositories publish, kept here because those repositories are not on the
+# machine the exe runs on. Without them every file on the patcher screen came
+# back "not recognised" on a console that was perfectly fine.
+PATCHER_FILES = {"bo2": "patch-bo2.py", "mw3": "patch-mw3.py"}
+BUNDLED_DIR = os.path.join("tools", "patchers")
+
+# Sibling checkouts, still searched so that a developer working on one of the
+# fixes gets their working tree rather than the vendored snapshot.
+PATCHER_PATHS = {"bo2": ("bo2/repo/patch-bo2.py", "bo2/patch-bo2.py",
+                         "bo2-ps3-psn-freeze-fix/patch-bo2.py"),
+                 "mw3": ("mw3-psn-fix/patch-mw3.py",
+                         "mw3-ps3-psn-fix/patch-mw3.py")}
+
+_patchers = {}
+
+
+def _search_roots():
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return (os.path.dirname(here), os.path.expanduser("~"), here)
+
+
+def _bundled_candidates(kind):
+    """tools/patchers/<script> wherever this program's own files are.
+
+    Three places, all of which are the same directory in a source checkout:
+    where PyInstaller unpacks the bundle, the folder the exe sits in, and the
+    repository root. config already works all three out for scetool and the
+    icons, so the answer comes from there rather than from a second guess.
+    """
+    name = PATCHER_FILES.get(kind)
+    if not name:
+        return []
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    roots = []
+    for root in (config.bundle_dir(), config.app_dir(), here):
+        if root and root not in roots:
+            roots.append(root)
+    return [os.path.join(root, BUNDLED_DIR, name) for root in roots]
+
+
+def patcher_module(kind):
+    """patch-bo2.py or patch-mw3.py as a module, or None if not to hand.
+
+    Imported rather than copied so that the definition of where the patch site
+    is stays in the script that owns the fix. Both scripts guard their main(),
+    so importing one does nothing.
+    """
+    if kind in _patchers:
+        return _patchers[kind]
+    _patchers[kind] = None
+    candidates = []
+    # An override that loses to the bundled copy is not an override, so it goes
+    # first even though the bundled copy is what nearly every run will use.
+    env = os.environ.get(PATCHER_ENV.get(kind, ""), "")
+    if env:
+        candidates.append(env)
+    candidates.extend(_bundled_candidates(kind))
+    for root in _search_roots():
+        for tail in PATCHER_PATHS.get(kind, ()):
+            candidates.append(os.path.join(root, tail))
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            name = "ps3diag_patcher_%s" % kind
+            spec = importlib.util.spec_from_file_location(name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception:
+            continue
+        module.__ps3diag_path__ = path
+        _patchers[kind] = module
+        return module
+    return None
+
+
+def decrypted_state(data, kind):
+    """Patch state of a DECRYPTED binary, from the patcher's own site finding.
+
+    Nothing in an artefact set is decrypted, so this is not on the path any
+    live run takes. It is here so that the day somebody does have a decrypted
+    ELF, or a collector grows the ability to produce one, the answer comes from
+    the same code that applies the patch rather than from a second opinion
+    written here.
+    """
+    out = {"state": UNKNOWN, "confidence": LOW, "evidence": ""}
+    module = patcher_module(kind)
+    if module is None:
+        # Flagged rather than only worded, because a caller has to be able to
+        # tell "we looked and the bytes were strange" from "this program could
+        # not look at all". Only the first says anything about the user's file.
+        out["tool_fault"] = True
+        out["missing"] = PATCHER_FILES.get(kind, "the %s patcher" % kind)
+        out["evidence"] = ("%s is missing from this program, so the decrypted "
+                           "binary was not examined"
+                           % out["missing"])
+        return out
+    if not isinstance(data, (bytes, bytearray)):
+        out["evidence"] = "no binary to examine"
+        return out
+    data = bytearray(data)
+    try:
+        if kind == "mw3":
+            return _mw3_decrypted(module, data)
+        if kind == "bo2":
+            return _bo2_decrypted(module, data)
+    except SystemExit as error:
+        out["evidence"] = "the patcher stopped: %s" % (error or "no reason")
+        return out
+    except Exception as error:
+        out["evidence"] = "could not examine the binary: %s" % error
+        return out
+    out["evidence"] = "no patch site is defined for %s" % kind
+    return out
+
+
+def _mw3_decrypted(module, data):
+    offset, state = module.find_site(data)
+    if offset is None:
+        return {"state": UNKNOWN, "confidence": LOW,
+                "evidence": ("the patch site was not found, so this is not "
+                             "the MW3 multiplayer binary the fix was written "
+                             "for")}
+    return {"state": UNPATCHED if state == "stock" else PATCHED,
+            "confidence": HIGH, "offset": offset,
+            "evidence": ("the patcher's own signature matches at file offset "
+                         "%08X and reads as %s" % (offset, state))}
+
+
+def _bo2_decrypted(module, data):
+    address = module.find_format_string(data)
+    sites = module.find_construct(data, address)
+    if len(sites) != 1:
+        return {"state": UNKNOWN, "confidence": LOW,
+                "evidence": ("the format string address is built in %d places, "
+                             "so the patch site is ambiguous" % len(sites))}
+    try:
+        call = module.find_call(data, sites[0])
+    except SystemExit:
+        call = None
+    if call is not None:
+        return {"state": UNPATCHED, "confidence": HIGH, "offset": call,
+                "evidence": ("the snprintf call the fix removes is still at "
+                             "file offset %08X" % call)}
+    site = _bo2_nop_site(module, data, sites[0])
+    if site is None:
+        return {"state": UNKNOWN, "confidence": LOW,
+                "evidence": ("the call site could not be read, so this may "
+                             "not be a Black Ops II binary")}
+    return {"state": PATCHED, "confidence": HIGH, "offset": site,
+            "evidence": ("the call at file offset %08X has been replaced with "
+                         "a nop" % site)}
+
+
+def _bo2_nop_site(module, data, start):
+    """Where find_call would have found a call, if a nop sits there instead.
+
+    The patcher has no already-patched case: it looks for a branch and stops if
+    there is not one. The window and the two constants are its own.
+    """
+    seen_size = False
+    for step in range(0, 16):
+        position = start + 4 * step
+        if position + 4 > len(data):
+            return None
+        word = module.u32(data, position)
+        if word == module.LI_R4_1B8:
+            seen_size = True
+            continue
+        if seen_size and word == module.NOP:
+            return position
+    return None
+
+
+# --- the inventory ---------------------------------------------------------
+
+
+def _match(entry):
+    """(title spec, title ID, how it was matched) for one inventory row."""
+    name = entry.get("name") or ""
+    title_id = (entry.get("title_id") or find_title_id(name) or "").upper()
+    for spec in TITLES:
+        if title_id and title_id in spec.title_ids:
+            return spec, title_id, "title ID"
+    for spec in TITLES:
+        if any(pattern.search(name) for pattern in spec.name_patterns):
+            return spec, title_id or None, "name"
+    return None, None, None
+
+
+def collected_usrdir(artefact_set, title_id):
+    """(files, where they came from) for one title's USRDIR, or (None, "").
+
+    Two shapes are accepted. A games/facts.json `installed_titles` list, which
+    is what a collector walking /dev_hdd0/game should produce, and a raw FTP
+    listing saved as games/<something with the title ID and USRDIR>.txt. Both
+    are read the same way so neither is privileged.
+    """
+    if not title_id:
+        return None, ""
+    facts = artefact_set.facts("games")
+    for record in facts.get("installed_titles") or []:
+        if not isinstance(record, dict):
+            continue
+        if (record.get("title_id") or "").upper() != title_id:
+            continue
+        files = [item for item in record.get("files") or []
+                 if isinstance(item, dict)]
+        return files, (record.get("path") or "games/facts.json")
+    for name in artefact_set.names("games/*%s*" % title_id):
+        lowered = name.lower()
+        if not lowered.endswith(".txt") or "usrdir" not in lowered:
+            continue
+        entries, _unparsed = parse_ftp_list(artefact_set.text(name, ""))
+        return entries, name
+    return None, ""
+
+
+def _find_file(files, wanted):
+    for record in files:
+        if (record.get("name") or "").lower() == wanted.lower():
+            return record
+    return None
+
+
+def _reference(binary, state):
+    for reference in binary.references:
+        if reference.state == state:
+            return reference
+    return None
+
+
+def _header_notes(binary, header, title_id):
+    """Everything the plaintext header says, and whether it says anything
+    wrong. Returns (notes, problem)."""
+    notes = []
+    problem = None
+    if header.get("kind") != "self":
+        for note in header.get("notes", ()):
+            notes.append(note)
+        return notes, problem
+    revision = header.get("key_revision")
+    if revision is not None:
+        notes.append("key revision 0x%04X" % revision)
+        if binary.key_revision is not None and revision != binary.key_revision:
+            notes.append("the fix was tested against key revision 0x%04X"
+                         % binary.key_revision)
+    npdrm = header.get("npdrm") or {}
+    if npdrm.get("content_id"):
+        notes.append("ContentID %s" % npdrm["content_id"])
+    if npdrm.get("app_type") is not None:
+        notes.append("application type 0x%02X" % npdrm["app_type"])
+        if binary.app_type is not None and npdrm["app_type"] != binary.app_type:
+            problem = ("%s is application type 0x%02X where this file should "
+                       "be 0x%02X. A file signed with the wrong application "
+                       "type is valid and will not load."
+                       % (binary.name, npdrm["app_type"], binary.app_type))
+    if npdrm.get("title_id") and title_id and npdrm["title_id"] != title_id:
+        notes.append("the ContentID is for %s, not %s"
+                     % (npdrm["title_id"], title_id))
+    length = header.get("data_length")
+    if length is not None and binary.elf_size:
+        if length == binary.elf_size:
+            notes.append("the decrypted image is %d bytes, which is the build "
+                         "the fix was tested on" % length)
+        else:
+            notes.append("the decrypted image is %d bytes where the tested "
+                         "build is %d, so this is a different title update"
+                         % (length, binary.elf_size))
+    return notes, problem
+
+
+def _state_from_file(binary, record, header, title_id):
+    """Patch state of one file that is present, and why.
+
+    The order is deliberate: a hash settles it, a size against a known build is
+    evidence, and a header on its own never decides the state, only describes
+    the file.
+    """
+    notes = []
+    size = record.get("size")
+    if not isinstance(size, int):
+        size = None
+    sha1 = (record.get("sha1") or "").lower()
+    stock = _reference(binary, UNPATCHED)
+    patched = _reference(binary, PATCHED)
+
+    if sha1:
+        for reference in binary.references:
+            if reference.sha1 and sha1 == reference.sha1:
+                word = ("the stock file" if reference.state == UNPATCHED
+                        else "the reference patched build")
+                return reference.state, HIGH, [
+                    "SHA-1 %s matches %s for %s title update %s exactly"
+                    % (sha1, word, reference.title_id, reference.update)]
+        notes.append("SHA-1 %s matches neither reference build" % sha1)
+
+    header_notes = []
+    problem = None
+    if header:
+        header_notes, problem = _header_notes(binary, header, title_id)
+    same_build = header and binary.elf_size and \
+        header.get("data_length") == binary.elf_size
+
+    if size is not None and stock and size == stock.size:
+        notes.append("the file is %d bytes, exactly the stock size for %s "
+                     "title update %s" % (size, stock.title_id, stock.update))
+        notes.extend(header_notes)
+        notes.append(NO_KEYS)
+        return UNPATCHED, LOW, notes
+    if size is not None and patched and size == patched.size:
+        notes.append("the file is %d bytes, the size of the published patched "
+                     "build for %s title update %s"
+                     % (size, patched.title_id, patched.update))
+        notes.append("a patched file re-signed with different parameters is a "
+                     "different size again, so this matching is evidence and "
+                     "not proof")
+        notes.extend(header_notes)
+        notes.append(NO_KEYS)
+        return PATCHED, LOW, notes
+    if size is not None and same_build and stock:
+        notes.append("the file is %d bytes where the stock file for this build "
+                     "is %d, and the decrypted image is the size of the build "
+                     "the fix was tested on" % (size, stock.size))
+        notes.append("that means somebody has rebuilt and re-signed this file, "
+                     "which is what applying the fix does, but the same is "
+                     "true of any other rebuild")
+        notes.extend(header_notes)
+        notes.append(NO_KEYS)
+        return UNKNOWN, LOW, notes
+    if size is not None:
+        if stock:
+            notes.append("the file is %d bytes and the only build with "
+                         "reference values is %s title update %s at %d bytes"
+                         % (size, stock.title_id, stock.update, stock.size))
+        else:
+            notes.append("the file is %d bytes and there are no reference "
+                         "values for it" % size)
+    notes.extend(header_notes)
+    notes.append(NO_KEYS)
+    if problem:
+        notes.append(problem)
+    return UNKNOWN, LOW, notes
+
+
+def _sentences(notes):
+    text = ". ".join(note.rstrip(".") for note in notes if note)
+    return text + "." if text else ""
+
+
+def _binary_record(spec, binary, usrdir, files, source, title_id):
+    out = {
+        "name": binary.name,
+        "path": "%s/%s" % (usrdir, binary.name),
+        "size": 0,
+        "state": UNKNOWN,
+        "evidence": "",
+        "headline": "",
+        "confidence": LOW,
+        "affected": bool(binary.affected),
+        "purpose": binary.purpose,
+    }
+    if not binary.affected:
+        out["headline"] = "not touched by the fix"
+        out["evidence"] = ("the fix does not touch this file, so there is no "
+                           "patch state to report for it.")
+        return out
+    if files is None:
+        out["headline"] = "%s was not listed" % usrdir
+        out["evidence"] = ("no listing of %s was collected, so it is not known "
+                           "whether this file is even there. %s"
+                           % (usrdir, NO_KEYS))
+        return out
+    record = _find_file(files, binary.name)
+    if record is None:
+        out["state"] = MISSING
+        out["confidence"] = HIGH
+        out["headline"] = "not in the listing of %s" % usrdir
+        out["evidence"] = ("%s is not in the listing of %s taken from %s."
+                           % (binary.name, usrdir, source))
+        return out
+    size = record.get("size")
+    out["size"] = size if isinstance(size, int) else 0
+    header = None
+    raw = header_bytes(record)
+    if raw is not None:
+        header = read_self_header(raw)
+        # A decrypted ELF left in the game folder is the one case where the
+        # patched instruction can actually be read, and only when the whole
+        # file was captured rather than its head.
+        if (header.get("kind") == "elf" and isinstance(size, int)
+                and len(raw) >= size > 0):
+            answer = decrypted_state(raw, spec.key)
+            out["state"] = answer["state"]
+            out["confidence"] = answer["confidence"]
+            out["headline"] = "decrypted ELF, %s" % answer["evidence"]
+            out["evidence"] = _sentences([
+                "this file is a decrypted ELF and not a signed SELF, so the "
+                "patch site itself was read", answer["evidence"]])
+            return out
+    state, confidence, notes = _state_from_file(binary, record, header,
+                                                title_id)
+    out["state"] = state
+    out["confidence"] = confidence
+    out["headline"] = notes[0] if notes else ""
+    out["evidence"] = _sentences(notes)
+    if header:
+        out["header"] = header
+        problem = _header_notes(binary, header, title_id)[1]
+        if problem:
+            out["header_problem"] = problem
+    return out
+
+
+def _title_record(artefact_set, spec, entry, title_id):
+    device = entry.get("device") or "dev_hdd0"
+    folder = entry.get("folder") or ""
+    name = entry.get("name") or ""
+    location = "/" + "/".join(part for part in (device, folder, name) if part)
+    usrdir = GAME_DIR % title_id if title_id else location
+    files, source = collected_usrdir(artefact_set, title_id)
+    record = {
+        "fix_key": spec.key,
+        "title_id": title_id or "",
+        "title": spec.title,
+        "location": location,
+        "install_kind": entry.get("kind") or "",
+        "usrdir": usrdir,
+        "listing_source": source,
+        "repo": spec.repo,
+        "advice": spec.advice,
+        "binaries": [_binary_record(spec, binary, usrdir, files, source,
+                                    title_id)
+                     for binary in spec.binaries],
+    }
+    if entry.get("kind") == "file":
+        record["note"] = ("this title is an image file. Its USRDIR is inside "
+                          "the image and is not listed, and the fix patches "
+                          "the copy in %s in any case" % usrdir)
+    return record
+
+
+def patch_state(artefact_set):
+    """The patches/patch-state.json payload. Never raises."""
+    payload = {"schema_version": SCHEMA_VERSION, "titles": [],
+               "notes": [NO_KEYS], "games_collected": False}
+    try:
+        payload["games_collected"] = bool(artefact_set.collected(CATEGORY))
+        if not payload["games_collected"]:
+            payload["notes"].append(
+                "the game inventory was not collected, so no conclusion is "
+                "drawn about any title being installed or not")
+            return payload
+        seen = set()
+        for entry in artefact_set.game_entries():
+            if not isinstance(entry, dict):
+                continue
+            spec, title_id, how = _match(entry)
+            if spec is None:
+                continue
+            key = (spec.key, title_id or "", entry.get("name") or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            record = _title_record(artefact_set, spec, entry, title_id)
+            record["matched_by"] = how
+            if how == "name":
+                record.setdefault("note", "")
+                record["note"] = ("matched on the name rather than a known "
+                                  "title ID, so the region and title update "
+                                  "are not known. " + record["note"]).strip()
+            payload["titles"].append(record)
+        if not payload["titles"]:
+            payload["notes"].append(
+                "neither title with a known PSN fix was found in the game "
+                "inventory")
+    except Exception as error:
+        payload["notes"].append("patch state detection failed: %s" % error)
+    return payload
+
+
+def patch_state_json(artefact_set):
+    return json.dumps(patch_state(artefact_set), indent=2, sort_keys=True)
+
+
+def record_into(artefact_set):
+    """Write the payload into the set under its reserved name."""
+    payload = patch_state(artefact_set)
+    artefact_set.put(ARTEFACT_NAME,
+                     json.dumps(payload, indent=2, sort_keys=True))
+    return payload
+
+
+# --- findings --------------------------------------------------------------
+
+FREEZE = {
+    "bo2": ("Black Ops II freezes the whole console when a PSN session becomes "
+            "active: at launch while signed in, on a mode switch, or on "
+            "signing in from inside multiplayer."),
+    "mw3": ("Modern Warfare 3 drops you back to the multiplayer menu about a "
+            "second after you reach a lobby, on any PSN account made after "
+            "late 2018."),
+}
+
+
+def findings(artefact_set):
+    """Findings for the rules and report layers. Never raises.
+
+    One finding per fix rather than one per install, because a console with the
+    same game in a folder and in an image has one problem and not two.
+    """
+    out = []
+    try:
+        payload = patch_state(artefact_set)
+        grouped = {}
+        for record in payload.get("titles", []):
+            grouped.setdefault(record.get("fix_key", ""), []).append(record)
+        for spec in TITLES:
+            records = grouped.get(spec.key)
+            if records:
+                out.extend(_fix_findings(spec, records))
+    except Exception:
+        return out
+    return out
+
+
+def _collect(records, wanted):
+    """Every affected binary across every install of one title in a state."""
+    out = []
+    for record in records:
+        for binary in record.get("binaries", []):
+            if binary.get("affected") and binary.get("state") in wanted:
+                out.append(binary)
+    return out
+
+
+def _named(binaries):
+    """File names, in the order the fix lists them, without repeats."""
+    out = []
+    for binary in binaries:
+        if binary["name"] not in out:
+            out.append(binary["name"])
+    return out
+
+
+def _evidence(binaries):
+    return ["%s: %s" % (binary["path"], binary["headline"] or binary["state"])
+            for binary in binaries]
+
+
+def _installs(records):
+    return ", ".join(sorted({record.get("title_id") or record["location"]
+                             for record in records}))
+
+
+def _fix_findings(spec, records):
+    unpatched = _collect(records, (UNPATCHED,))
+    unresolved = _collect(records, (UNKNOWN, MISSING))
+    applied = _collect(records, (PATCHED,))
+    problems = [binary for record in records
+                for binary in record.get("binaries", [])
+                if binary.get("header_problem")]
+    where = _installs(records)
+    out = []
+
+    if problems:
+        out.append(Finding(
+            rule_id="%s-self-wrong-app-type" % spec.key,
+            severity="error",
+            title="A %s game binary is signed in a way that will not load"
+                  % spec.title,
+            explanation=("One of the files the fix replaces has been signed "
+                         "with the wrong application type. A file like that is "
+                         "perfectly valid and the console still will not load "
+                         "it, so the game fails with nothing obviously wrong."),
+            fix=("Re-sign it with the same parameters as the original, or put "
+                 "your backup of it back. The tool at %s reads the parameters "
+                 "off your own file and does this for you." % spec.repo),
+            evidence=[binary["header_problem"] for binary in problems],
+            category=CATEGORY))
+
+    if unpatched:
+        names = _named(unpatched)
+        out.append(Finding(
+            rule_id="%s-psn-fix-not-applied" % spec.key,
+            severity="warn",
+            title="%s (%s) does not have the PSN fix applied" % (spec.title,
+                                                                 where),
+            explanation=("%s There is a fix for it, and these files are still "
+                         "the stock ones: %s."
+                         % (FREEZE.get(spec.key, ""), ", ".join(names))),
+            fix=("Apply the fix from %s to %s. %s Keep the originals: they are "
+                 "the only way back and they cannot be rebuilt from the "
+                 "patched copies." % (spec.repo, ", ".join(names),
+                                      spec.advice)),
+            evidence=_evidence(unpatched),
+            category=CATEGORY))
+
+    if unresolved and not unpatched:
+        names = _named(unresolved)
+        out.append(Finding(
+            rule_id="%s-psn-fix-state-unknown" % spec.key,
+            severity="info",
+            title="Cannot tell whether the PSN fix is applied to %s (%s)"
+                  % (spec.title, where),
+            explanation=("%s Whether the fix is in these files cannot be read "
+                         "from here: they are encrypted with keys this tool "
+                         "does not have, and %s."
+                         % (FREEZE.get(spec.key, ""),
+                            _unresolved_reason(unresolved))),
+            fix=("If the game does that, the fix and how to check it by hand "
+                 "are at %s." % spec.repo),
+            evidence=_evidence(unresolved),
+            category=CATEGORY))
+
+    if applied and not unpatched and not unresolved:
+        out.append(Finding(
+            rule_id="%s-psn-fix-applied" % spec.key,
+            severity="info",
+            title="%s (%s) looks as though the PSN fix has been applied"
+                  % (spec.title, where),
+            explanation=("The game files match the patched build rather than "
+                         "the stock one. That is read off the size and the "
+                         "plain part of the header of encrypted files, so it "
+                         "is an inference and not a reading of the patched "
+                         "instruction itself."),
+            fix="",
+            evidence=_evidence(applied),
+            category=CATEGORY))
+    return out
+
+
+def _unresolved_reason(binaries):
+    """Why nothing could be said, in the words of the commonest case."""
+    if all("was not listed" in (binary["headline"] or "")
+           for binary in binaries):
+        return ("the folder the fix patches was not listed, so it is not even "
+                "known whether they are there")
+    if any(binary["state"] == MISSING for binary in binaries):
+        return "some of them are not where the fix expects them"
+    return ("their size does not match either build there are reference "
+            "figures for")

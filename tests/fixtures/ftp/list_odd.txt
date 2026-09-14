@@ -1,0 +1,9 @@
+lrwxrwxrwx   1 root     root           12 Sep 01 10:00 link_to_games -> /dev_hdd0/GAMES
+-rw-rw-rw-   2 root     root         1024 Sep 01 10:00 two   spaces   inside.txt
+-rw-rw-rw-   1 root     root         2048 Sep 01 10:00 trailing space .txt
+drwxrwxrwx   1 root     root            0 Sep 01 10:00 .hidden
+-rw-rw-rw-   1 root     root          512 Sep 01 10:00 100% & more, done.txt
+total 8
+-rw-rw-rw-   1 root     root
+garbage line that is not a listing at all
+-rw-rw-rw-   1 root     root   9999999999999 Sep 01 10:00 huge.bin

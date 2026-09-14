@@ -1,0 +1,21 @@
+
+Windows IP Configuration
+
+
+Ethernet adapter Ethernet:
+
+   Connection-specific DNS Suffix  . : home
+   Link-local IPv6 Address . . . . . : fe80::1c2b:3d4e:5f60:7182%12
+   IPv4 Address. . . . . . . . . . . : 192.168.1.23
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . : 192.168.1.1
+
+Wireless LAN adapter Wi-Fi:
+
+   Media State . . . . . . . . . . . : Media disconnected
+   Connection-specific DNS Suffix  . :
+
+Ethernet adapter vEthernet (WSL):
+
+   IPv4 Address. . . . . . . . . . . : 172.28.128.1
+   Subnet Mask . . . . . . . . . . . : 255.255.240.0

@@ -1,0 +1,4 @@
+-rw-rw-rw-   1 root     root       131072 Aug 30 12:00 webftp_server.sprx
+-rw-rw-rw-   1 root     root        45056 Aug 30 12:00 prepntfs.sprx
+-rw-rw-rw-   1 root     root       262144 Aug 30 12:00 rebug_toolbox.sprx
+drwxrwxrwx   1 root     root            0 Aug 30 12:00 Iris Manager & tools

@@ -1,0 +1,1 @@
+-rw-rw-rw-   1 root     root      4194304 Aug 22 16:02 EBOOT.BIN

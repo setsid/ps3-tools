@@ -1,0 +1,3 @@
+-rw-rw-rw-   1 root     root      7581072 Sep 13 10:39 default_mp.self
+-rw-rw-rw-   1 root     root     14215768 Sep 13 10:39 default.self
+drwxrwxrwx   1 root     root            0 Sep 13 10:39 main

@@ -1,0 +1,32 @@
+
+Windows IP Configuration
+
+Ethernet adapter vEthernet (WSL):
+
+   IPv4 Address. . . . . . . . . . . : 172.19.16.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.240.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter VMware Network Adapter VMnet8:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.140.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter Ethernet 2:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.50.10(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter Ethernet 3:
+
+   IPv4 Address. . . . . . . . . . . : 10.20.30.40(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter VirtualBox Host-Only Network:
+
+   IPv4 Address. . . . . . . . . . . : 192.168.56.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :

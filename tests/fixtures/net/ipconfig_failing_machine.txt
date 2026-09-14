@@ -1,0 +1,61 @@
+
+Windows IP Configuration
+
+   Host Name . . . . . . . . . . . . : SETSID-PC
+   Primary Dns Suffix  . . . . . . . :
+   Node Type . . . . . . . . . . . . : Hybrid
+   IP Routing Enabled. . . . . . . . : No
+   WINS Proxy Enabled. . . . . . . . : No
+
+Ethernet adapter vEthernet (Default Switch):
+
+   Connection-specific DNS Suffix  . :
+   Link-local IPv6 Address . . . . . : fe80::a1b2:c3d4:e5f6:7a8b%58
+   IPv4 Address. . . . . . . . . . . : 172.29.64.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.240.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter vEthernet (WSL (Hyper-V firewall)):
+
+   Connection-specific DNS Suffix  . :
+   Link-local IPv6 Address . . . . . : fe80::4d3c:2b1a:9f8e:7d6c%71
+   IPv4 Address. . . . . . . . . . . : 172.19.16.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.240.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter VMware Network Adapter VMnet8:
+
+   Connection-specific DNS Suffix  . :
+   Link-local IPv6 Address . . . . . : fe80::3f21:8c4d:11ab:cd90%22
+   IPv4 Address. . . . . . . . . . . : 192.168.140.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter VMware Network Adapter VMnet1:
+
+   Connection-specific DNS Suffix  . :
+   IPv4 Address. . . . . . . . . . . : 192.168.56.1(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . :
+
+Ethernet adapter Ethernet:
+
+   Connection-specific DNS Suffix  . : lan
+   Description . . . . . . . . . . . : Realtek PCIe GbE Family Controller
+   Physical Address. . . . . . . . . : 2C-F0-5D-11-22-33
+   DHCP Enabled. . . . . . . . . . . : Yes
+   Autoconfiguration Enabled . . . . : Yes
+   Link-local IPv6 Address . . . . . : fe80::7c15:9e2a:44b1:20d%12(Preferred)
+   IPv4 Address. . . . . . . . . . . : 192.168.50.10(Preferred)
+   Subnet Mask . . . . . . . . . . . : 255.255.255.0
+   Lease Obtained. . . . . . . . . . : 13 September 2026 08:14:02
+   Lease Expires . . . . . . . . . . : 15 September 2026 08:14:01
+   Default Gateway . . . . . . . . . : fe80::1%12
+                                       192.168.50.1
+   DHCP Server . . . . . . . . . . . : 192.168.50.1
+   DNS Servers . . . . . . . . . . . : 192.168.50.1
+
+Wireless LAN adapter Wi-Fi:
+
+   Media State . . . . . . . . . . . : Media disconnected
+   Connection-specific DNS Suffix  . :

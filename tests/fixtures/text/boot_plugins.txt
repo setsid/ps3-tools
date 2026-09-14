@@ -1,0 +1,7 @@
+# webMAN MOD boot plugins
+/dev_hdd0/plugins/webftp_server.sprx
+/dev_hdd0/plugins/prepntfs.sprx
+#/dev_hdd0/plugins/disabled_example.sprx
+/dev_hdd0/plugins/Iris Manager & tools/irisman.sprx
+
+/dev_usb000/plugins/rebug_toolbox.sprx

@@ -1,0 +1,10 @@
+-rw-rw-rw-   1 root     root  25769803776 Aug 02 11:03 Call of Duty - Modern Warfare 3 [BLES01428].iso
+-rw-rw-rw-   1 root     root  44023414784 Jul 19 22:41 Gran Turismo 5 & Prologue, Collector's Edition [BCES00569].iso
+-rw-rw-rw-   1 root     root  21474836480 Jun 03 08:12 Ico & Shadow of the Colossus Collection [BLES01481].iso
+-rw-rw-rw-   1 root     root  18253611008 May 27 14:55 Ratchet & Clank - A Crack in Time [BCES00511].iso
+-rw-rw-rw-   1 root     root  23622320128 Apr 11 2025  The Last of Us [BCES01584].iso
+-rw-rw-rw-   1 root     root  19327352832 Mar 02 2025  Red Dead Redemption, Undead Nightmare [BLES00680].iso
+-rw-rw-rw-   1 root     root  12884901888 Feb 14 2025  Call of Duty Black Ops II [BLUS31140].iso
+-rw-rw-rw-   1 root     root  26843545600 Jan 08 2025  Metal Gear Solid 4 [BLJM57001].iso
+drwxrwxrwx   1 root     root            0 Sep 01 10:00 _incoming
+-rw-rw-rw-   1 root     root  17179869184 Dec 25 2024  Uncharted 3 - Drake's Deception [BCES01175].iso

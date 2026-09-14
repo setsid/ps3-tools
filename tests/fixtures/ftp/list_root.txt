@@ -1,0 +1,5 @@
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 dev_hdd0
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 dev_hdd1
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 dev_usb000
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 dev_flash
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 dev_bdvd

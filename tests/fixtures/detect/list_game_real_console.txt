@@ -1,0 +1,5 @@
+drwxrwxrwx   1 root     root            0 Aug 22 16:02 XMBMANPLS
+drwxrwxrwx   1 root     root            0 Aug 22 16:02 RELOADXMB
+drwxrwxrwx   1 root     root            0 Aug 22 16:02 BLES80608
+drwxrwxrwx   1 root     root            0 Aug 22 16:02 PKGLAUNCH
+drwxrwxrwx   1 root     root            0 Aug 22 16:02 PS2CONFIG

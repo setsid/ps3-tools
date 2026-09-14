@@ -1,0 +1,3 @@
+-rw-rw-rw-   1 root     root        18422 Sep 01 18:40 core.20260901-184012.txt
+-rw-rw-rw-   1 root     root         9110 Aug 28 21:03 core.20260828-210311.txt
+-rw-rw-rw-   1 root     root            0 Aug 28 21:03 empty.log

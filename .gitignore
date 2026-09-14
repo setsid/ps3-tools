@@ -1,0 +1,25 @@
+# Not in the repo. scetool is naehrwert's work, shipped inside the built exe
+# but not redistributed here, the same as in the two standalone patcher repos.
+# build-exe.ps1 will tell you where to put it.
+tools/scetool/
+
+# Build output
+dist/
+build/
+*.spec
+
+# Generated: make-icon.py draws both, and build-exe.ps1 runs it if they are
+# missing. Tracked copies are committed deliberately; these rules are here so a
+# rebuild does not show up as a change.
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# Written by the application at run time, beside the exe
+ps3-tools.json
+ps3-diag.json
+ps3-diag-*.zip
+ps3-diag-*.log.jsonl
+PS3-Tools-crash-*.txt

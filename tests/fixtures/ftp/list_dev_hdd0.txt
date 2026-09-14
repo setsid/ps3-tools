@@ -1,0 +1,14 @@
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 GAMES
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 PS3ISO
+drwxrwxrwx   1 root     root            0 Sep 12 09:11 PS2ISO
+drwxrwxrwx   1 root     root            0 Sep 12 09:11 PSXISO
+drwxrwxrwx   1 root     root            0 Sep 12 09:11 PSPISO
+drwxrwxrwx   1 root     root            0 Sep 12 09:11 BDISO
+drwxrwxrwx   1 root     root            0 Sep 12 09:11 DVDISO
+drwxrwxrwx   1 root     root            0 Jan 01 2025  packages
+drwxrwxrwx   1 root     root            0 Sep 01 18:40 crash_report
+drwxrwxrwx   1 root     root            0 Aug 30 12:00 plugins
+drwxrwxrwx   1 root     root            0 Aug 30 12:00 game
+drwxrwxrwx   1 root     root            0 Aug 30 12:00 home
+-rw-rw-rw-   1 root     root          486 Sep 10 20:15 boot_plugins.txt
+-rw-rw-rw-   1 root     root          214 Sep 10 20:15 boot_plugins_nocobra.txt

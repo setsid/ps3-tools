@@ -1,0 +1,4 @@
+-rw-rw-rw-   1 root     root      6095184 Sep 06 19:51 EBOOT.BIN
+-rw-rw-rw-   1 root     root      7254288 Sep 06 19:51 t6mp_ps3f.self
+-rw-rw-rw-   1 root     root      6822400 Sep 06 19:51 t6_ps3f.self
+drwxrwxrwx   1 root     root            0 Sep 06 19:51 zone

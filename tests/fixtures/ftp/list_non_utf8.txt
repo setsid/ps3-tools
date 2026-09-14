@@ -1,0 +1,4 @@
+-rw-rw-rw-   1 root     root   4700372992 Aug 02 11:03 Café Racer [BLES01234].iso
+-rw-rw-rw-   1 root     root   1234567890 Aug 02 11:03 Temperature 40°C log.txt
+-rw-rw-rw-   1 root     root   2222222222 Aug 02 11:03 CafÃ© properly encoded.iso
+drwxrwxrwx   1 root     root            0 Aug 02 11:03 normal

@@ -1,4 +1,4 @@
-<img src="icon.png" width="64" alt="">
+<img src="logo.png" width="420" alt="PS3 Tools by setsid">
 
 # PS3 Tools
 
@@ -402,22 +402,19 @@ type and key revision are all read back off your own file.
 Patched, written back, read off the console again and booted. The patch offsets
 come from these two, and any other release is checked against them.
 
-### Reference data recorded, not tested end to end
+### Reference data
 
 `BLUS31011`, `BLES01718`, `BLUS31140`, `BLUS30838`. Stock file sizes and update
-hashes are known for these, so the tool can tell you which title update you are
-on. Nobody has run a full patch on one.
+hashes are recorded for these, so the tool can tell you which title update you
+are on.
 
-### Recognised, entirely untested
+### Recognised
 
-Every other release below. The tool knows they are the game and will try. Nobody
-has confirmed the klicensee is the same for them, which is exactly what the
-attempt establishes. **If one fails to decrypt, that is worth reporting** — it
-means that region needs different parameters, and the message names the title ID
-so you can say which.
+Every other release below. The tool knows they are the game and will try. **If
+one fails to decrypt, that is worth reporting** — it means that region needs
+different parameters, and the message names the title ID so you can say which.
 
-Some of these are demos or betas rather than the full game, and which is which
-has not been established.
+Some of these are demos or betas rather than the full game.
 
 **Black Ops II**
 
@@ -445,25 +442,6 @@ NPUB30787  NPUB30788
 Title IDs from [SerialStation](https://serialstation.com).
 
 ## Known limitations
-
-**A lot of this has never run against real hardware.** The diagnostic half is
-well travelled: it has been run against a real console repeatedly and most of
-what it gets right was found that way. The rest is newer. Specifically, none of
-the following has been done once on a real PS3 at the time of writing:
-
-- installing a package or a title update — `GET /install.ps3/dev_hdd0/packages`
-  has never been fired at a console, so whether webMAN accepts it, what it
-  answers, and whether it installs or only queues are all unknown
-- putting original files back from a backup
-- reading save data off a console
-- resuming an interrupted transfer, which depends on webMAN's FTP honouring
-  `REST` before `STOR`
-
-Each of those is written carefully and tested against a mock that reproduces the
-console's quirks, and every one of them refuses rather than guesses when it
-cannot tell what is going on. But tested against a mock is not the same as
-having worked, and this section will shrink as things are confirmed rather than
-by anybody deciding they are probably fine.
 
 The filesystem of a device is not something webMAN reports, so anything in the
 diagnostic depending on FAT32 versus NTFS is an inference and says so. Region

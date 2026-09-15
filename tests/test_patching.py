@@ -1236,13 +1236,15 @@ class StubLister:
         pass
 
 
-def installation(state, title_id=BO2_ID, key="bo2", tu_version=None):
+def installation(state, title_id=BO2_ID, key="bo2", tu_version=None,
+                 expected=(), missing=()):
     config = titles.TITLES[key]
     return detection.Installation(
         title_id=title_id, title_key=key if state != "unknown_variant" else None,
         name=config["name"], short=config["short"],
         path=f"/dev_hdd0/game/{title_id}",
         usrdir=titles.usrdir_for(title_id), state=state, config=config,
+        expected=list(expected), missing=list(missing),
         tu_version=tu_version,
         verified=titles.is_verified(title_id))
 
@@ -1310,6 +1312,52 @@ class TheSearchForAnInstallation(unittest.TestCase):
                                   installation("ready")))
         self.assertEqual(found.state, flow.READY)
         self.assertEqual(found.title_ids, [BO2_ID])
+
+    def test_the_folder_holding_the_binaries_beats_a_licence_only_folder(self):
+        # Measured on hardware. The console had NPUB31054 with the game's
+        # binaries in it and a leftover BLUS31011 holding licence files and
+        # nothing else. BLUS31011 was listed first and was taken, so the run
+        # found nothing to patch and told the user the title update had not
+        # been downloaded.
+        wanted = [item["name"] for item in titles.binaries_for(BO2_ID)]
+        licences = installation("no_update", title_id="BLUS31011",
+                                expected=wanted, missing=wanted)
+        game = installation("no_update", title_id="NPUB31054",
+                            expected=wanted, missing=wanted[:1])
+        found = flow.locate(StubLister(), "bo2",
+                            detector=detector_for(licences, game))
+        self.assertEqual(found.title_id, "NPUB31054")
+        self.assertEqual(found.installation.title_id, "NPUB31054")
+
+    def test_one_folder_is_not_reported_as_a_choice_between_folders(self):
+        # A console with a single copy of the game is the ordinary case. A
+        # sentence about which folder was picked, printed on every scan, is
+        # furniture and gets read past, which is how the one scan where it
+        # mattered would be missed.
+        wanted = [item["name"] for item in titles.binaries_for(BO2_ID)]
+        found = flow.locate(
+            StubLister(), "bo2",
+            detector=detector_for(installation("ready", expected=wanted)))
+        self.assertEqual(found.state, flow.READY)
+        self.assertEqual(
+            [note for note in found.notes if "more than one folder" in note],
+            [])
+
+    def test_the_note_names_the_folder_that_was_used_and_the_others(self):
+        # The user has no other way of telling which of their folders the fix
+        # was about to be applied to, and that is the one thing they can check
+        # for themselves before anything is written.
+        wanted = [item["name"] for item in titles.binaries_for(BO2_ID)]
+        licences = installation("no_update", title_id="BLUS31011",
+                                expected=wanted, missing=wanted)
+        game = installation("no_update", title_id="NPUB31054",
+                            expected=wanted, missing=wanted[:1])
+        found = flow.locate(StubLister(), "bo2",
+                            detector=detector_for(licences, game))
+        said = [note for note in found.notes if "more than one folder" in note]
+        self.assertEqual(len(said), 1)
+        self.assertIn("NPUB31054 was used", said[0])
+        self.assertIn("BLUS31011", said[0])
 
     def test_without_the_detection_module_the_two_plain_answers_still_work(self):
         self.assertEqual(flow.locate(StubLister(), "bo2").state, flow.READY)
@@ -1677,6 +1725,61 @@ class WhatTheScreenSaysAboutTheTwoStates(ScreenCase):
         row.setCheckState(0, Qt.Checked)
         self.assertTrue(screen._patch.isEnabled())
 
+    def test_a_file_the_user_excluded_stays_excluded_across_a_scan(self):
+        # The same shape as the sticky overwrite flag and the Transfer games
+        # queue re-ticking itself: a scan builds fresh file records, and the
+        # tick a person took out came back on with them.
+        screen = self.the_mixed_install()
+        self.row_named(screen, "t6_ps3f.self").setCheckState(0, Qt.Unchecked)
+        self.assertEqual(screen._scan.chosen, [])
+        screen.start_scan()
+        self.settle(screen.services if hasattr(screen, "services")
+                    else self.services)
+        self.assertEqual(
+            self.row_named(screen, "t6_ps3f.self").checkState(0),
+            Qt.Unchecked)
+        self.assertEqual(screen._scan.chosen, [])
+
+    def test_ticking_it_again_puts_it_back_across_a_scan(self):
+        screen = self.the_mixed_install()
+        row = self.row_named(screen, "t6_ps3f.self")
+        row.setCheckState(0, Qt.Unchecked)
+        row.setCheckState(0, Qt.Checked)
+        screen.start_scan()
+        self.settle(screen.services if hasattr(screen, "services")
+                    else self.services)
+        self.assertEqual(
+            self.row_named(screen, "t6_ps3f.self").checkState(0), Qt.Checked)
+
+    def test_an_unrecognised_file_is_told_where_else_to_try(self):
+        # A game whose files somebody has already modified, by a mod menu that
+        # replaces the eboot for instance, reads exactly like this from here.
+        # The manual sequence can still do it, so the screen says so.
+        screen = self.the_mixed_install()
+        self.assertFalse(screen._next_step.isHidden())
+        said = screen._next_step.text()
+        self.assertIn("already been modified", said)
+        self.assertIn("mod menu", said)
+        self.assertIn(patcher.titles.TITLES["bo2"]["repo"], said)
+
+    def test_the_link_goes_to_the_repository_and_not_the_exe(self):
+        # The standalone exe uses the same detection as this screen and would
+        # refuse the same file for the same reason.
+        screen = self.the_mixed_install()
+        said = screen._next_step.text()
+        self.assertNotIn(".exe", said)
+        self.assertIn("github.com/setsid/bo2-ps3-psn-freeze-fix", said)
+
+    def test_nothing_is_said_when_every_file_was_recognised(self):
+        # A line that is there whatever the scan found is furniture, and the
+        # next real one is read as furniture too.
+        self.start(BO2_ID, {name: self_file("bo2", name)
+                            for name in ("EBOOT.BIN", "t6_ps3f.self",
+                                         "t6mp_ps3f.self")})
+        screen = self._screen_after_scan()
+        self.assertEqual(screen._scan.unrecognised, [])
+        self.assertTrue(screen._next_step.isHidden())
+
     def test_a_file_that_cannot_be_written_has_no_tick_box(self):
         screen = self.the_mixed_install()
         for name in ("EBOOT.BIN", "t6mp_ps3f.self"):
@@ -1734,6 +1837,60 @@ class WhatTheScreenSaysAboutTheTwoStates(ScreenCase):
     def test_the_column_does_not_call_an_unchecked_file_unrecognised(self):
         self.assertNotEqual(patcher.STATE_WORDS[flow.NOT_EXAMINED],
                             patcher.STATE_WORDS[flow.UNRECOGNISED])
+
+    def test_it_does_not_ask_for_three_writes_when_one_is_already_done(self):
+        # A console with EBOOT.BIN fixed on an earlier run was told all three
+        # files still had to be done, under a table showing one of them
+        # already fixed, which reads as the plan on screen being wrong.
+        files = {"EBOOT.BIN": self_file("bo2", "EBOOT.BIN", "patched"),
+                 "t6_ps3f.self": self_file("bo2", "t6_ps3f.self", "stock"),
+                 "t6mp_ps3f.self": self_file("bo2", "t6mp_ps3f.self",
+                                             "stock")}
+        self.start(BO2_ID, files)
+        screen = self._screen_after_scan()
+        words = screen._detail.text()
+        self.assertEqual([item.name for item in screen._scan.chosen],
+                         ["t6_ps3f.self", "t6mp_ps3f.self"])
+        self.assertNotIn("all three", words.lower())
+        self.assertIn("One of the three files that carry the binary has the "
+                      "fix already.", words)
+        self.assertIn("Writing t6_ps3f.self and t6mp_ps3f.self completes the "
+                      "set.", words)
+        # The part that is true whatever the console holds stays put.
+        self.assertIn("re-signed using the content ID", words)
+        self.assertIn("Keep the backups", words)
+
+    def test_it_still_says_all_three_when_none_of_them_is_done(self):
+        self.start(BO2_ID, {name: self_file("bo2", name)
+                            for name in ("EBOOT.BIN", "t6_ps3f.self",
+                                         "t6mp_ps3f.self")})
+        screen = self._screen_after_scan()
+        words = screen._detail.text()
+        self.assertIn("All three files carry the binary and all three have "
+                      "to end up fixed", words)
+        self.assertIn("Keep the backups", words)
+
+    def test_the_table_shows_every_row_of_a_three_file_title(self):
+        # Two rows fitted on one console and EBOOT.BIN was scrolled out of
+        # sight while the sentence below the table named it, which reads as a
+        # file that is not on the console.
+        self.start(BO2_ID, {name: self_file("bo2", name)
+                            for name in ("EBOOT.BIN", "t6_ps3f.self",
+                                         "t6mp_ps3f.self")})
+        screen = self._screen_after_scan()
+        table = screen._files
+        self.assertEqual(table.topLevelItemCount(), 3)
+        row_height = table.sizeHintForRow(0)
+        self.assertGreater(row_height, 0)
+        # The height the table refuses to go below is the layout's floor, so
+        # every row has room in it whatever else is on the screen.
+        self.assertGreaterEqual(table.minimumHeight(),
+                                table.header().height() + 3 * row_height)
+        table.resize(table.width(), table.minimumHeight())
+        self.application.processEvents()
+        last = table.topLevelItem(table.topLevelItemCount() - 1)
+        self.assertLessEqual(table.visualItemRect(last).bottom(),
+                             table.viewport().height())
 
 
 class _ColourfulTheme(Theme if QApplication else object):

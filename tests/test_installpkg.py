@@ -303,6 +303,12 @@ class ScreenCase(unittest.TestCase):
                 continue
             quiet = quiet + 1 if idle else 0
             if quiet >= 3:
+                # A last round of delivery. The pool being idle says the
+                # worker has stopped; it does not say the queued signal
+                # carrying its result has reached the GUI thread yet, and a
+                # test that reads the panel in that gap sees it empty.
+                for _ in range(5):
+                    APP.processEvents()
                 return
         raise AssertionError("work did not settle within ten seconds")
 
@@ -442,6 +448,63 @@ class ThePreflightListing(ScreenCase):
         screen = self.build(host="")
         self.assertIsNone(screen.check_console())
         self.assertIn("address", screen._panel_heading.text())
+
+
+class TheTickTheUserTookOut(ScreenCase):
+    """Adding another file used to tick everything again.
+
+    The same shape as the sticky overwrite flag and the Transfer games queue
+    re-ticking itself: a decision a person made, thrown away by a pass that
+    recomputed the field. Here it sent packages somebody had deliberately
+    excluded.
+    """
+
+    def a_screen_with(self, count):
+        screen = self.build()
+        screen.add_files([self.write(f"p{index}.pkg")
+                          for index in range(count)])
+        return screen
+
+    def rows(self, screen):
+        table = screen._table
+        return [table.topLevelItem(index)
+                for index in range(table.topLevelItemCount())]
+
+    def test_a_row_unticked_stays_unticked_when_another_file_is_added(self):
+        screen = self.a_screen_with(2)
+        self.rows(screen)[0].setCheckState(0, Qt.Unchecked)
+        APP.processEvents()
+        screen.add_files([self.write("later.pkg")])
+        states = [row.checkState(0) for row in self.rows(screen)]
+        self.assertEqual(states[0], Qt.Unchecked)
+        self.assertEqual(states[1:], [Qt.Checked, Qt.Checked])
+
+    def test_the_unticked_one_is_not_in_what_would_be_sent(self):
+        screen = self.a_screen_with(2)
+        self.rows(screen)[0].setCheckState(0, Qt.Unchecked)
+        APP.processEvents()
+        screen.add_files([self.write("later.pkg")])
+        chosen = [item.filename for item in screen.selected_files()]
+        self.assertNotIn("p0.pkg", chosen)
+        self.assertEqual(sorted(chosen), ["later.pkg", "p1.pkg"])
+
+    def test_a_file_arrives_ticked_the_way_it_always_did(self):
+        # The default has not moved. The user picked these out of a dialog,
+        # and unticking them on arrival would make them do the job twice.
+        screen = self.a_screen_with(3)
+        self.assertTrue(all(row.checkState(0) == Qt.Checked
+                            for row in self.rows(screen)))
+
+    def test_ticking_it_again_puts_it_back(self):
+        screen = self.a_screen_with(2)
+        rows = self.rows(screen)
+        rows[0].setCheckState(0, Qt.Unchecked)
+        APP.processEvents()
+        rows[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        screen.add_files([self.write("later.pkg")])
+        self.assertTrue(all(row.checkState(0) == Qt.Checked
+                            for row in self.rows(screen)))
 
 
 class TheRun(ScreenCase):

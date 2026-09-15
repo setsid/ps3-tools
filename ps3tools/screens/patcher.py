@@ -195,6 +195,16 @@ def _state_message(location, name):
     return ("text_dim", "Nothing to report", "")
 
 
+# Small counts read as words in a sentence. Anything larger is a title this
+# tool does not handle today and the digits will do.
+COUNT_WORDS = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+               6: "six"}
+
+
+def _count_word(number):
+    return COUNT_WORDS.get(number, str(number))
+
+
 def _and_list(parts):
     """"a", "a and b", "a, b and c". Used in sentences shown to the user."""
     parts = [str(part) for part in parts if part]
@@ -206,6 +216,16 @@ def _and_list(parts):
 
 
 #: Why one file is being left as it is, in the words the plan uses.
+# No title this tool handles has more than three files. The cap is here for
+# the day one does, so that a longer table stops growing rather than pushing
+# the buttons off the bottom of the screen.
+MOST_FILE_ROWS = 6
+
+# Qt's own row hint is only available once there is a row in the table. The
+# fallback matches what a delegate leaves round a line of text.
+ROW_PADDING = 8
+
+
 LEFT_ALONE = {
     flow.PATCHED: "{name} is already fixed",
     flow.UNRECOGNISED: "{name} is not a build this fix was written for",
@@ -286,6 +306,9 @@ class PatcherScreen(Screen):
         super().__init__(services, parent)
         self.config = titles.TITLES.get(self.title_key, {})
         self._scan = None
+        #: File names the user has taken the tick out of. Held here rather
+        #: than on the scan, which is rebuilt every time the console is read.
+        self._declined = set()
         self._location = None
         self._panel_token = ""
         self._task = None
@@ -475,6 +498,7 @@ class PatcherScreen(Screen):
         self._files.setFocusPolicy(Qt.NoFocus)
         self._files.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._files.itemChanged.connect(self._on_file_ticked)
+        self._fit_files(len(self.config.get("binaries", ())))
         layout.addWidget(self._files, 1)
 
         # Takes the space the file table would have had while the table is
@@ -489,6 +513,17 @@ class PatcherScreen(Screen):
         self._detail.setWordWrap(True)
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self._detail)
+
+        # Its own label so that the rest of the wording above stays plain
+        # text. One link in a block that is otherwise built by hand out of
+        # file names and console output is a block that has to escape all of
+        # it, and a title with an ampersand in it would come out wrong.
+        self._next_step = QLabel("")
+        self._next_step.setWordWrap(True)
+        self._next_step.setTextFormat(Qt.RichText)
+        self._next_step.setOpenExternalLinks(True)
+        self._next_step.hide()
+        layout.addWidget(self._next_step)
 
         self._stage = QLabel("")
         # Room for four lines. It was cut off at three, mid-sentence.
@@ -652,6 +687,24 @@ class PatcherScreen(Screen):
     def _writer(self, host):
         return FtpWriter(host)
 
+    def _fit_files(self, rows):
+        """Give the table room for every row of the title, without scrolling.
+
+        A three-file title came up two rows tall on one console, with
+        EBOOT.BIN scrolled out of sight while the sentence underneath named
+        it, which reads as a file that is not on the console at all.
+        """
+        rows = max(1, min(rows, MOST_FILE_ROWS))
+        header = self._files.header()
+        header_height = max(header.height(), header.sizeHint().height())
+        row_height = self._files.sizeHintForRow(0)
+        if row_height <= 0:
+            # Asked before there is a row to measure, which is every scan
+            # before the first one.
+            row_height = self._files.fontMetrics().height() + ROW_PADDING
+        self._files.setMinimumHeight(header_height + rows * row_height
+                                     + 2 * self._files.frameWidth())
+
     def _on_scanned(self, result):
         location, report, where = result
         self._scan = report
@@ -679,6 +732,9 @@ class PatcherScreen(Screen):
         self._clear_state()
 
         actionable = {item.name for item in report.to_patch}
+        for item in report.files:
+            if item.name in self._declined:
+                item.selected = False
         self._files.blockSignals(True)
         for item in report.files:
             row = QTreeWidgetItem([
@@ -705,9 +761,11 @@ class PatcherScreen(Screen):
         self._files.blockSignals(False)
         for column in range(4):
             self._files.resizeColumnToContents(column)
+        self._fit_files(len(report.files))
 
         self._scan_text = self._verdict(report)
         self._detail.setText(self._compose(self._scan_text))
+        self._show_next_step(report)
         # The gate. A fix confirmed on one build of the game is a fix for that
         # build, and offering it on another is how an install stops starting,
         # so the button is not enabled until the two agree.
@@ -734,6 +792,32 @@ class PatcherScreen(Screen):
             (f"{len(report.to_patch)} file(s) to fix" if report.to_patch
              else "nothing to do"))
 
+    def _show_next_step(self, report):
+        """Where to go when this program will not touch a file.
+
+        Only for a file it did not recognise. A game whose files somebody has
+        already modified, by a mod menu that replaces the eboot for instance,
+        reads exactly like that from here, and the manual sequence in the
+        fix's own repository can still do it because the signing details are
+        supplied by hand there.
+
+        The repository rather than the standalone exe beside it. That exe uses
+        the same detection as this screen and would refuse the same file for
+        the same reason.
+        """
+        repo = self.config.get("repo", "")
+        if report is None or not report.unrecognised or not repo:
+            self._next_step.setText("")
+            self._next_step.hide()
+            return
+        self._next_step.setText(
+            f"If the game files have already been modified, for example by a "
+            f"mod menu that replaces the eboot, this tool will not touch "
+            f"them. The manual scetool sequence in "
+            f"<a href=\"{repo}\">the repo</a> will, because it lets you "
+            f"supply the signing details yourself.")
+        self._next_step.show()
+
     def _on_file_ticked(self, row, column):
         """One file taken out of the write, or put back into it.
 
@@ -749,6 +833,13 @@ class PatcherScreen(Screen):
         if item is None:
             return
         item.selected = row.checkState(0) == Qt.Checked
+        # Kept on the screen as well as on the file, because a scan builds
+        # fresh file records and the tick would otherwise come back on. A
+        # decision a person made is not something to recompute.
+        if item.selected:
+            self._declined.discard(name)
+        else:
+            self._declined.add(name)
         self._scan_text = self._verdict(self._scan)
         self._detail.setText(self._compose(self._scan_text))
         self._patch.setEnabled(
@@ -774,6 +865,7 @@ class PatcherScreen(Screen):
         self._show_state(token, heading, body, reason,
                          offer_updates=location.state == flow.NO_UPDATE)
         self._detail.setText(self._compose(""))
+        self._show_next_step(None)
         self.status_message.emit(heading)
 
     def _show_state(self, token, heading, body, reason="",
@@ -895,6 +987,35 @@ class PatcherScreen(Screen):
                          f"{said}.")
         return lines
 
+    def _completeness(self, report):
+        """What it takes for the set to end up complete, from this console.
+
+        Every file that carries the binary has to end up fixed. How many
+        writes that takes depends on what the scan found, and the fixed
+        sentence that used to sit here said three were needed while the table
+        above it showed two of the three already done.
+        """
+        carriers = [item for item in report.files if item.site]
+        done = [item for item in carriers if item.state == flow.PATCHED]
+        if not done or len(carriers) < 2:
+            return self.config.get("set_advice", "")
+        writing = [item.name for item in report.chosen]
+        left = [item.name for item in carriers
+                if item.present and item.state != flow.PATCHED
+                and item.name not in writing]
+        # Counted rather than named. The plan above this has already said
+        # which file is already fixed, and saying it twice reads as two
+        # different points.
+        has = "has" if len(done) == 1 else "have"
+        opening = (f"{_count_word(len(done)).capitalize()} of the "
+                   f"{_count_word(len(carriers))} files that carry the "
+                   f"binary {has} the fix already.")
+        if not left:
+            return f"{opening} Writing {_and_list(writing)} completes the set."
+        stays = "stays" if len(left) == 1 else "stay"
+        return (f"{opening} {_and_list(left)} {stays} stock after this run, "
+                f"and the game keeps freezing until the set is complete.")
+
     def _verdict(self, report):
         if report.error:
             return report.error
@@ -954,6 +1075,7 @@ class PatcherScreen(Screen):
                 f"game. Going ahead is still yours to decide, and everything "
                 f"written is backed up first.")
         if report.chosen:
+            lines.append(self._completeness(report))
             lines.append(self.config.get("advice", ""))
         if not report.verified and not report.cannot_decrypt:
             if report.unrecognised:

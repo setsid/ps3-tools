@@ -31,25 +31,20 @@ The test console's /dev_hdd0/game held five homebrew folders and no games.
 """
 
 import ftplib
-import re
 from dataclasses import dataclass, field
 
 from ps3diag import isoid
 from ps3diag.parsers import parse_ftp_list
 
-from . import titles
+from . import inventory, titles
 
-GAME_ROOT = "/dev_hdd0/game"
-
-# A PS3 title ID: four letters, five digits. Everything else under
-# /dev_hdd0/game is homebrew, a plugin, or somebody's own folder, and none of
-# it is this tool's business.
-TITLE_DIR = re.compile(r"^[A-Z]{4}\d{5}$")
-
-# Matches the diagnostic collector's cap. A console with more installed titles
-# than this is not a case anybody has seen, and walking an unbounded list over
-# FTP is how a scan appears to hang.
-MAX_TITLE_DIRS = 60
+# What a title ID looks like, where the console installs games, and how many
+# of them are walked. One answer each, in ps3tools.inventory. These were
+# written out again here and in two other modules, and the pattern in one of
+# them differed.
+GAME_ROOT = inventory.GAME_ROOT
+TITLE_DIR = inventory.TITLE_ID
+MAX_TITLE_DIRS = inventory.MAX_TITLES
 
 READY = "ready"
 NO_UPDATE = "no_update"
@@ -164,30 +159,17 @@ def find_installations(lister, param_sfo_reader=None):
 
 
 def _walk(lister, report, param_sfo_reader):
-    try:
-        listing = lister.list_dir(GAME_ROOT + "/")
-    except ftplib.error_perm:
-        # A refusal is an answer: there is no such directory. Every console
-        # that has ever had a game installed has one, so this is worth saying.
-        report.note("There is no /dev_hdd0/game folder on this console, so "
-                    "nothing is installed to the hard drive yet.")
+    # Which folders under /dev_hdd0/game are titles, and how many of them are
+    # looked inside, is ps3tools.inventory's answer for the whole program.
+    # What this adds is the part only the patcher wants: what is in each one's
+    # USRDIR and which title update it has on it.
+    found = inventory.installed(lister)
+    report.notes.extend(found.notes)
+    if found.game_root_unknown:
         return
 
-    entries, unparsed = parse_ftp_list(listing)
-    if unparsed:
-        report.note(f"{len(unparsed)} line(s) of the /dev_hdd0/game listing "
-                    f"were in a format this tool does not recognise and were "
-                    f"skipped.")
-
-    folders = [entry["name"] for entry in entries
-               if entry["kind"] == "directory"
-               and TITLE_DIR.match(entry["name"].upper())]
-    if len(folders) > MAX_TITLE_DIRS:
-        report.note(f"/dev_hdd0/game holds {len(folders)} installed titles. "
-                    f"The first {MAX_TITLE_DIRS} were looked inside.")
-        folders = folders[:MAX_TITLE_DIRS]
-
-    for name in folders:
+    for place in found.installed_places():
+        name = place.name
         try:
             installation = _examine(lister, name, param_sfo_reader)
         except ftplib.error_perm:
@@ -204,6 +186,13 @@ def _walk(lister, report, param_sfo_reader):
         if installation is not None:
             report.installations.append(installation)
             _note_installation(report, installation)
+
+    # Read back off the list rather than gathered in the loop, so that a walk
+    # which stopped half way still says what it did find.
+    unknown = [item.title_id for item in report.installations
+               if item.state == UNKNOWN_VARIANT]
+    if unknown:
+        report.note(_unknown_variants_note(unknown))
 
     if not report.installations:
         report.note("No Call of Duty installation was found in "
@@ -326,9 +315,8 @@ def _title_update(param_sfo_reader, path):
 
 def _note_installation(report, installation):
     if installation.state == UNKNOWN_VARIANT:
-        report.note(f"{installation.title_id} looks like a Call of Duty "
-                    f"installation but is not a release of either of the two "
-                    f"games this tool fixes, so it will be left alone.")
+        # Every one of these is named together in a single note once the walk
+        # is over, so there is nothing to say about this one on its own.
         return
     if not installation.verified and installation.state in (READY, NO_UPDATE):
         # Said out loud rather than left for the user to discover at the end.
@@ -342,6 +330,25 @@ def _note_installation(report, installation):
         report.note(f"{installation.short} ({installation.title_id}) has a "
                     f"USRDIR, but "
                     f"{_and_list(installation.missing)} is not in it.")
+
+
+def _unknown_variants_note(title_ids):
+    """One sentence for every Call of Duty this tool cannot name.
+
+    A console with three of these produced three near-identical sentences,
+    which reads as the scan repeating itself rather than as one fact about
+    three folders.
+    """
+    if len(title_ids) == 1:
+        looks = "looks like a Call of Duty installation"
+        but = "but is not a release"
+        them = "it"
+    else:
+        looks = "look like Call of Duty installations"
+        but = "but are not releases"
+        them = "they"
+    return (f"{_and_list(title_ids)} {looks} {but} of either of the two "
+            f"games this tool fixes, so {them} will be left alone.")
 
 
 def _absent(key):

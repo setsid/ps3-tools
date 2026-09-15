@@ -8,8 +8,8 @@ three QLabels cannot do that without a stylesheet per state.
 from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
                             QSize, Property, Qt, Signal)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
-from PySide6.QtWidgets import (QAbstractButton, QLabel, QLayout, QSizePolicy,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QLabel, QLayout,
+                               QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from . import icons
 
@@ -499,3 +499,83 @@ class Disclosure(QWidget):
     def header(self):
         """The button, for a test that wants to click it."""
         return self._header
+
+
+class ComingSoonCard(QFrame):
+    """A tool that is being worked on, sitting in the grid with the rest.
+
+    Deliberately unlike a ToolCard. It does nothing when it is clicked, and a
+    card that looks live and does nothing reads as a card that is broken. So
+    it is drawn quiet and dashed, and the one thing on it that can be clicked
+    is the link that says where the work is being talked about.
+
+    Same size as the cards beside it, because a placeholder off to one side is
+    a placeholder nobody connects to the grid it belongs to.
+    """
+
+    CARD_WIDTH = ToolCard.CARD_WIDTH
+    CARD_HEIGHT = ToolCard.CARD_HEIGHT
+    PADDING = ToolCard.PADDING
+
+    def __init__(self, key, title, blurb, link_text, url, theme,
+                 parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.url = url
+        self._theme = theme
+        self.setObjectName("comingsoon")
+        self.setFixedSize(self.CARD_WIDTH, self.CARD_HEIGHT)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAccessibleName(f"{title}, under development")
+        self.setAccessibleDescription(blurb)
+
+        box = QVBoxLayout(self)
+        box.setContentsMargins(self.PADDING, self.PADDING,
+                               self.PADDING, self.PADDING)
+        box.setSpacing(8)
+
+        self._status = QLabel("Under development")
+        status_font = QFont(self.font())
+        status_font.setWeight(QFont.Weight.DemiBold)
+        status_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
+        status_font.setPointSizeF(max(7.0, self.font().pointSizeF() - 0.5))
+        self._status.setFont(status_font)
+        box.addWidget(self._status)
+
+        self._title = QLabel(title)
+        title_font = QFont(self.font())
+        title_font.setPointSizeF(self.font().pointSizeF() + 2.0)
+        title_font.setWeight(QFont.Weight.DemiBold)
+        self._title.setFont(title_font)
+        self._title.setWordWrap(True)
+        box.addWidget(self._title)
+
+        self._blurb = QLabel(blurb)
+        self._blurb.setWordWrap(True)
+        box.addWidget(self._blurb)
+        box.addStretch(1)
+
+        self._link = QLabel(f'<a href="{url}">{link_text}</a>')
+        self._link.setOpenExternalLinks(True)
+        self._link.setToolTip(f"Open {url} in your browser.")
+        box.addWidget(self._link)
+
+        self._paint()
+        theme.changed.connect(self._paint)
+
+    def text(self):
+        """As QAbstractButton spells it, so the grid can read every card."""
+        return self._title.text()
+
+    def _paint(self):
+        colour = self._theme.colour
+        self.setStyleSheet(
+            f"QFrame#comingsoon {{ background: {colour('bg')};"
+            f" border: 1px dashed {colour('border')};"
+            f" border-radius: 14px; }}"
+            f"QFrame#comingsoon QLabel {{ background: transparent;"
+            f" border: none; }}")
+        self._status.setStyleSheet(f"color: {colour('text_dim')};")
+        self._title.setStyleSheet(f"color: {colour('text_dim')};")
+        self._blurb.setStyleSheet(f"color: {colour('text_dim')};")
+        self._link.setStyleSheet(f"color: {colour('accent')};")

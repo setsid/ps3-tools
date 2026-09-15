@@ -62,7 +62,7 @@ try:
 except ImportError:                                         # pragma: no cover
     isoreader = None
 
-from . import detect, profiles, titles
+from . import detect, inventory, profiles, titles
 from .consoleactions import ActionFailed, PACKAGE_NAME, PACKAGES_PATH
 from .update import USER_AGENT, compare_versions
 
@@ -77,8 +77,9 @@ MANIFEST_HOST = "a0.ww.np.dl.playstation.net"
 MANIFEST_URL = "https://{host}/tpl/np/{title_id}/{title_id}-ver.xml"
 
 #: A PS3 title ID. The ID comes off a directory listing on the user's console,
-#: so it is checked into this shape before it is ever put in a URL.
-TITLE_ID = re.compile(r"^[A-Z]{4}\d{5}$")
+#: so it is checked into this shape before it is ever put in a URL. One
+#: pattern for the whole program, in ps3tools.inventory.
+TITLE_ID = inventory.TITLE_ID
 
 #: The package URL in the manifest is the one piece of this that is chosen by
 #: somebody else, so the host it names is checked before it is fetched. A
@@ -564,18 +565,12 @@ HOMEBREW_TITLES = {
     "BLES80608": "multiMAN",
 }
 
-#: The devices looked at when the caller does not say. The diagnostic's own
-#: default, for the same reason: dev_hdd0 is on every console and everything
-#: else has to be discovered.
-INVENTORY_DEVICES = ("dev_hdd0",)
-
-#: The folders walked for games. The diagnostic's own list, less PKG: what
-#: sits in /dev_hdd0/PKG is an installer waiting to be run -- very often the
-#: title update itself, named after the game it patches -- and counting it as a
-#: game on the console would put a row on this screen for something that is not
-#: installed and offer to fetch what is already sitting there.
-INVENTORY_FOLDERS = tuple(name for name in collectors.GAME_FOLDERS
-                          if name != "PKG")
+#: Where a console keeps games, and which devices are looked at when the
+#: caller does not say. One answer for the whole program, in
+#: ps3tools.inventory. Kept under these names because callers and tests reach
+#: for them here.
+INVENTORY_DEVICES = inventory.DEVICES
+INVENTORY_FOLDERS = inventory.GAME_FOLDERS
 
 #: File endings the image reader can open. Anything else with no title ID in
 #: its name is left alone rather than guessed at.
@@ -674,6 +669,12 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
     notes = []
     homebrew = {}
 
+    #: Title folders holding a licence and no game. Collected across both
+    #: passes and reported once, after the game folders have been walked: a
+    #: title whose own folder holds nothing may still be on the console as a
+    #: disc image, and that copy is a real one.
+    licence_only = []
+
     stage("Reading the games installed on the console")
     report = detect.find_installations(lister, param_sfo_reader)
     notes.extend(report.notes)
@@ -700,6 +701,11 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
                 detail = detail or fallback
             else:
                 detail = ""
+        if _licence_only_files(installation.files):
+            # A licence the console kept, with no game under it. Its USRDIR
+            # was listed on the way here, so this costs nothing.
+            licence_only.append(installation.title_id)
+            continue
         found[installation.title_id] = InstalledTitle(
             title_id=installation.title_id,
             path=(installation.path
@@ -720,8 +726,13 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
             path = f"{detect.GAME_ROOT}/{title_id}"
             # One read of PARAM.SFO for all of it. The title update version is
             # what Sony's list is compared against; the name and VERSION are
-            # what the row falls back to when Sony has no entry at all.
+            # what the row falls back to when Sony has no entry at all, and
+            # the console refusing the path outright says there is no game in
+            # that folder.
             details = read_title_details(param_sfo_reader, title_id)
+            if details.absent and _licence_folder(lister, title_id):
+                licence_only.append(title_id)
+                continue
             found[title_id] = InstalledTitle(
                 title_id=title_id, path=path,
                 version=details.version or None,
@@ -797,6 +808,14 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
     elif unidentified:
         notes.append(_unidentified_note(unidentified))
 
+    # After the game folders have been walked, because a title whose own
+    # folder holds nothing may still be on the console as a disc image or a
+    # folder game, and that copy is a real one.
+    left_out = sorted({title_id for title_id in licence_only
+                       if title_id not in found})
+    if left_out:
+        notes.append(_licence_only_note(left_out))
+
     names = sorted(set(homebrew.values()))
     if names:
         # One line for all of them. Two sentences saying the same thing about
@@ -849,40 +868,18 @@ def _add_inventory_title(found, homebrew, title_id, entry, from_image=False):
 def inventory_entries(lister, devices=None, folders=None):
     """Every entry in the console's game folders, from the listings alone.
 
-    The folders and the per-folder cap are the diagnostic's games collector's,
-    imported rather than restated: which folders count as game folders on a
-    PS3 is its decision and there is no value in a second opinion on it. See
-    INVENTORY_FOLDERS for the one folder of its eight that is left out here.
+    ps3tools.inventory does the walking. Which folders count as game folders
+    on a PS3 is one question with one answer, and this used to hold a second
+    copy of it.
 
-    A folder that is not there raises and is passed over without a word. On a
-    normal console most of these eight do not exist, and a note for each one
-    would bury the answer under seven lines saying nothing happened. A console
-    that has genuinely stopped answering is reported by the /dev_hdd0/game walk
-    in scan_console, which runs first and does say so.
+    A folder that is not there is passed over without a word. On a normal
+    console most of the seven do not exist, and a note for each would bury the
+    answer under six lines saying nothing happened. A console that has
+    genuinely stopped answering is reported by the /dev_hdd0/game walk in
+    scan_console, which runs first and does say so.
     """
-    out = []
-    for device in devices or INVENTORY_DEVICES:
-        device = str(device).strip("/")
-        if not device:
-            continue
-        for folder in (folders or INVENTORY_FOLDERS):
-            path = f"/{device}/{folder}/"
-            try:
-                listing = lister.list_dir(path)
-            except Exception:                               # noqa: BLE001
-                continue
-            try:
-                entries, _unparsed = parsers.parse_ftp_list(listing)
-            except Exception:                               # noqa: BLE001
-                continue
-            for item in entries[:collectors.MAX_GAME_ENTRIES]:
-                if item.get("name") in (".", ".."):
-                    continue
-                row = dict(item)
-                row["device"] = device
-                row["folder"] = folder
-                out.append(row)
-    return out
+    return inventory.read(lister, devices=devices, folders=folders,
+                          packages=False).entries
 
 
 def _entry_path(entry):
@@ -999,6 +996,86 @@ def _image_pass_note(opened, added, elsewhere, unreadable, unread=(),
     if not added and not groups and not unreadable and not unread:
         parts.append("Nothing could be read out of them.")
     return " ".join(parts)
+
+
+#: What a licence looks like on its own. A folder holding these and nothing
+#: else is a licence the console kept after the game went.
+LICENCE_SUFFIXES = (".edat", ".rif", ".rap")
+
+
+def _licence_only_files(files):
+    """Whether a USRDIR listing holds licences and nothing else.
+
+    The listing the patcher's own walk already took, so a title it looked at
+    costs nothing to answer here. Anything that is not a licence makes this
+    False, which is the safe direction: the cost of being wrong that way is a
+    row on a screen, and the other way hides somebody's game.
+    """
+    seen = 0
+    for entry in files or []:
+        name = (entry.get("name") or "").strip()
+        if name in (".", "..") or entry.get("kind") == "directory":
+            continue
+        seen += 1
+        if not name.lower().endswith(LICENCE_SUFFIXES):
+            return False
+    return seen > 0
+
+
+def _licence_folder(lister, title_id):
+    """Whether a title's own folder holds licences and nothing else.
+
+    Asked only where PARAM.SFO was absent, which is the only case in doubt: a
+    folder with one in it plainly has game data under it, and asking about the
+    rest would be two more listings each on the slowest part of a scan.
+
+    Both the folder and its USRDIR, because the licences sit in the second and
+    the first holds only the directory above them.
+
+    Answers False for anything it could not establish. A console that would
+    not say is not a console that said the folder was empty, and the cost of
+    being wrong in that direction is one row on a screen; the other direction
+    hides somebody's game.
+    """
+    root = f"{detect.GAME_ROOT}/{title_id}"
+    seen = 0
+    for path in (root, f"{root}/USRDIR"):
+        try:
+            listing = lister.list_dir(path + "/")
+        except Exception:                                   # noqa: BLE001
+            continue
+        try:
+            entries, _unparsed = parsers.parse_ftp_list(listing)
+        except Exception:                                   # noqa: BLE001
+            return False
+        for entry in entries:
+            name = (entry.get("name") or "").strip()
+            if name in (".", "..") or entry.get("kind") == "directory":
+                continue
+            seen += 1
+            if not name.lower().endswith(LICENCE_SUFFIXES):
+                return False
+    return seen > 0
+
+
+def _licence_only_note(title_ids):
+    """Title folders with no game in them, said once and named.
+
+    /dev_hdd0/game/<ID> exists for a licence as well as for a game. One
+    console carried BLUS31011 holding licence files and nothing else, beside
+    the digital release of the same game with all its binaries in it. Listing
+    the first as installed offered its owner a title update for a game that
+    was not there, and the console refused the package.
+
+    Said rather than dropped quietly. Somebody who can see the folder on their
+    console is entitled to know why it is not in the list.
+    """
+    one = len(title_ids) == 1
+    return (f"{_names_sentence(title_ids)} "
+            f"{'has' if one else 'have'} a folder under {detect.GAME_ROOT} "
+            f"with no game in {'it' if one else 'them'}, which is what a "
+            f"licence on its own looks like. No update is offered for "
+            f"{'it' if one else 'them'}.")
 
 
 def _unidentified_note(entries):
@@ -1270,21 +1347,44 @@ def parallel_image_identifier(open_lister, workers=IMAGE_WORKERS, budget=None,
     Never raises: a share that fails gives up its images and the rest stand.
     """
     def identify(entries):
-        entries = list(entries or [])
+        # One list, counted and iterated. identify_isos opens nothing that
+        # is not a disc image, so anything else here would be part of the
+        # total and never be reached, and the readout would stop short of
+        # its own total for the rest of the scan.
+        entries = [entry for entry in list(entries or []) if _is_image(entry)]
         if not entries:
             return []
+        total = len(entries)
         shares = [entries[index::workers] for index in range(workers)]
         shares = [share for share in shares if share]
-        done = [0]
+        begun = {}
         lock = threading.Lock()
 
-        def report(name):
-            with lock:
-                done[0] += 1
-                if on_progress:
-                    on_progress(done[0], len(entries), name)
+        def reporter(index):
+            """The progress callback for one share's current attempt.
 
-        def attempt(share):
+            identify_isos calls this before it opens an image, so what is
+            reported is how many images have been started already, which is
+            the convention the screen reading it expects. A count of calls
+            was one ahead of that and put "Reading COD3.iso (5 of 4)" on
+            screen at the end of a four image scan on hardware.
+
+            A share whose connection dies is read again from the start, so
+            its images arrive here a second time. Its own count goes back to
+            zero with the attempt, which is why the running total stays the
+            number of images in hand.
+            """
+            def report(name):
+                with lock:
+                    started = sum(begun.values())
+                    begun[index] = begun.get(index, 0) + 1
+                    if on_progress:
+                        # Clamped because a readout that says more images
+                        # than there are is read as a fault in the scan.
+                        on_progress(min(started, total), total, name)
+            return report
+
+        def attempt(share, report):
             with _measured_open(meter, open_lister) as lister:
                 reader = isoreader.reader_for(lister)
                 try:
@@ -1297,7 +1397,7 @@ def parallel_image_identifier(open_lister, workers=IMAGE_WORKERS, budget=None,
                     reader.release()
             return payload.get("isos") or []
 
-        def run(share):
+        def run(index):
             """One share, with a second go on a fresh connection.
 
             webMANftpd hangs up when it has had enough data connections in
@@ -1309,18 +1409,21 @@ def parallel_image_identifier(open_lister, workers=IMAGE_WORKERS, budget=None,
             The retry is what makes the answer the same twice running. What
             still cannot be read is reported as unread rather than as empty.
             """
+            share = shares[index]
             for pause in (0, RETRY_PAUSE_SECONDS):
                 if pause:
                     time.sleep(pause)
+                with lock:
+                    begun[index] = 0
                 try:
-                    return attempt(share)
+                    return attempt(share, reporter(index))
                 except Exception as exc:                    # noqa: BLE001
                     last = exc
             return [_unread_row(entry, last) for entry in share]
 
         found = []
         with futures.ThreadPoolExecutor(max_workers=len(shares)) as pool:
-            for result in pool.map(run, shares):
+            for result in pool.map(run, range(len(shares))):
                 found.extend(result)
         return found
 
@@ -1406,21 +1509,20 @@ def image_identifier(lister, budget=None, on_progress=None):
 def _title_folders(lister, notes):
     """The title ID folders under /dev_hdd0/game, from one listing.
 
-    detect's constants rather than new ones: the shape of a title ID folder and
-    the cap on how many are looked at are its decisions, and having a second
-    opinion on either is how two parts of one program start disagreeing about
-    what is installed.
+    ps3tools.inventory owns the shape of a title ID folder and the cap on how
+    many are looked at. Having a second opinion on either is how two parts of
+    one program start disagreeing about what is installed.
+
+    Raises where the console stopped answering, because the caller reports
+    that differently from a console with nothing installed.
     """
-    listing = lister.list_dir(detect.GAME_ROOT + "/")
-    entries, _unparsed = parsers.parse_ftp_list(listing)
-    folders = [entry["name"].upper() for entry in entries
-               if entry["kind"] == "directory"
-               and detect.TITLE_DIR.match(entry["name"].upper())]
-    if len(folders) > detect.MAX_TITLE_DIRS:
-        notes.append(f"This console has {len(folders)} games installed. The "
-                     f"first {detect.MAX_TITLE_DIRS} were checked.")
-        folders = folders[:detect.MAX_TITLE_DIRS]
-    return folders
+    found = inventory.installed(lister)
+    if found.game_root_unknown:
+        raise UpdateError(
+            f"{inventory.GAME_ROOT} could not be read from the console.")
+    notes.extend(note for note in found.notes
+                 if "were checked" in note or "were skipped" in note)
+    return found.installed_ids()
 
 
 #: How an FTP server says the path in the request is not there. A missing
@@ -2073,9 +2175,18 @@ def installed_title_ids(lister):
     Enough to say whether a package sitting in the packages folder has already
     gone in. A title with a folder is not proof the install finished, which is
     why this only ever greys a row rather than deciding anything.
+
+    The cheap half of the walk: one listing rather than the eight a full
+    inventory costs, because this is the only thing the caller asked.
+
+    A folder holding a licence and no game answers yes here. Telling the two
+    apart costs two more listings for each folder in doubt, which scan_console
+    pays because it is deciding what to offer somebody; this only greys a row
+    that says a package may already have gone in, and it is not worth the
+    wait on a console that gives up when it is pushed.
     """
     try:
-        return _title_folders(lister, [])
+        return inventory.installed(lister).installed_ids()
     except Exception:                                       # noqa: BLE001
         return []
 
@@ -2639,7 +2750,8 @@ PKG_SFO_SEARCH = 256 * 1024
 
 SFO_MAGIC = b"\x00PSF"
 
-CONTENT_ID = re.compile(r"^[A-Z]{2}\d{4}-([A-Z]{4}\d{5})_\d{2}-[A-Za-z0-9_]+$")
+#: One pattern for the whole program, in ps3tools.inventory.
+CONTENT_ID = inventory.CONTENT_ID
 
 
 @dataclass
@@ -2657,6 +2769,12 @@ class PackageFile:
     #: True when the console already has this title installed. Only ever set
     #: for a package read off the console.
     installed: bool = False
+    #: Set when the user takes the tick out of this row. Kept on the file
+    #: rather than on the table row because the table is rebuilt whenever
+    #: another file is added, and rebuilding it used to tick everything again:
+    #: somebody who unticked two of five and then added a sixth had all six
+    #: sent. A decision a person made is not something to recompute.
+    declined: bool = False
     #: Why not, or what else is worth saying. Always a sentence when set.
     reason: str = ""
 

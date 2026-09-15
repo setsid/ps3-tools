@@ -146,7 +146,12 @@ BO2_TITLE_IDS = (
     "BLJM61231",
     "BLUS31011", "BLUS31080", "BLUS31140", "BLUS31141", "BLUS41005",
     "NPEB01204", "NPEB01205", "NPEB01206", "NPEB01207",
-    "NPUB31055", "NPUB31056",
+    # NPUB31054 was missing while 31055 and 31056 were here. It is the North
+    # American digital release and it is the copy somebody was playing: his
+    # console held it with all three binaries in its USRDIR, beside a leftover
+    # BLUS31011 folder holding licence files and nothing else. The tool read
+    # the leftover and told him his title update had not been downloaded.
+    "NPUB31054", "NPUB31055", "NPUB31056",
 )
 
 MW3_TITLE_IDS = (
@@ -200,15 +205,20 @@ TITLES = {
         # where the original did. Saying otherwise sends somebody whose file
         # will not start off switching syscalls on instead of looking at the
         # real cause.
-        "advice": ("All three files carry the binary and all three have to be "
-                   "done. Patching only the multiplayer one leaves campaign "
-                   "and zombies freezing. Each file is re-signed using the "
-                   "content ID, application type and key revision read back "
-                   "off your own copy, so it boots the way the original did "
-                   "rather than depending on the extra custom firmware "
-                   "controls being left switched on. Keep the backups: they "
-                   "are the only way back, and an original cannot be rebuilt "
-                   "from a patched copy."),
+        # What the set has to end up as, for a console where none of it is
+        # done yet. A console with some of the three already fixed is told
+        # what remains instead, worked out from the scan in the patcher
+        # screen: this sentence there said three writes were needed while
+        # the table above it showed two of them already made.
+        "set_advice": ("All three files carry the binary and all three have "
+                       "to end up fixed. Patching only the multiplayer one "
+                       "leaves campaign and zombies freezing."),
+        "advice": ("Each file is re-signed using the content ID, application "
+                   "type and key revision read back off your own copy, so it "
+                   "boots the way the original did rather than depending on "
+                   "the extra custom firmware controls being left switched "
+                   "on. Keep the backups: they are the only way back, and an "
+                   "original cannot be rebuilt from a patched copy."),
         "skus": {
             "BLUS31011": {"region": "North America",
                           "updates": {
@@ -249,14 +259,16 @@ TITLES = {
         "symptom": ("You reach a multiplayer lobby and are dropped back to "
                     "the menu about a second later, on any PSN account made "
                     "after late 2018. Campaign and Spec Ops are unaffected."),
-        "advice": ("Only the multiplayer binary is changed. default.self is "
-                   "campaign and Spec Ops and is left alone. The file is "
-                   "re-signed using the content ID, application type and key "
-                   "revision read back off your own copy, so it boots the way "
-                   "the original did rather than depending on the extra "
-                   "custom firmware controls being left switched on. Keep the "
-                   "backup: it is the only way back, and the original cannot "
-                   "be rebuilt from the patched copy."),
+        # See the note on the same key above. One file carries the fault
+        # here, so the set is one file wide.
+        "set_advice": ("Only the multiplayer binary is changed. default.self "
+                       "is campaign and Spec Ops and is left alone."),
+        "advice": ("The file is re-signed using the content ID, application "
+                   "type and key revision read back off your own copy, so it "
+                   "boots the way the original did rather than depending on "
+                   "the extra custom firmware controls being left switched "
+                   "on. Keep the backup: it is the only way back, and the "
+                   "original cannot be rebuilt from the patched copy."),
         "skus": {
             "BLUS30838": {"region": "North America",
                           "updates": {"1.24": "fc183a0e17a452dbcf492431668b"

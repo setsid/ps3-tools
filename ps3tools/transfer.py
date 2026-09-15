@@ -33,7 +33,8 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 
-from ps3diag import collectors, isoid, parsers
+from ps3diag import isoid, parsers
+from ps3tools import inventory
 from ps3tools.updates import free_bytes_for          # one answer to "how much
                                                      # room is there", shared
                                                      # with the two cards that
@@ -61,12 +62,10 @@ PS3_ROOT_MARKER = "PS3_DISC.SFB"
 IMAGE_EXTENSIONS = (".iso",)
 
 #: The folders on a device that hold games, listed before anything is queued so
-#: the user can see what is already there. Taken from the diagnostic
-#: collector's own list rather than written again, because the two must not be
-#: allowed to disagree about where a console keeps its games. PKG is dropped:
-#: it holds packages, which is the other card's business.
-BROWSE_FOLDERS = tuple(name for name in collectors.GAME_FOLDERS
-                       if name != "PKG")
+#: the user can see what is already there. ps3tools.inventory owns the list:
+#: two parts of this program disagreeing about where a console keeps its games
+#: is how a screen comes to offer a copy of something already there.
+BROWSE_FOLDERS = inventory.GAME_FOLDERS
 
 
 class TransferError(Exception):
@@ -247,14 +246,31 @@ class QueueItem:
     #: in /dev_hdd0/game. A different question from `present`, which is about
     #: a file of this name in the folder this one is going to, and the two
     #: want different things done about them. An installed game and an image
-    #: of it are not the same thing: somebody may well want both, so this
-    #: warns and leaves the decision alone.
+    #: of it are not the same thing, so it is said rather than assumed. The
+    #: row arrives unticked: a copy that takes hours and changes nothing must
+    #: never start by accident, which is the same rule an image of this name
+    #: already in the destination folder has always followed.
     installed: bool = False
     #: Whether to copy it. Untick a file the console already has; tick it to
     #: send it again over the top. Never decided silently: a tool that quietly
     #: declines to copy something is how somebody ends up with a missing game
     #: and no explanation for it.
     wanted: bool = True
+    #: The user's own answer about this row, or None where they have not given
+    #: one. Kept apart from `wanted` because a scan is free to change its mind
+    #: about a row nobody has touched and is never free to change its mind
+    #: about a row somebody has.
+    #:
+    #: Both directions matter. Reading the console again re-ticked every row
+    #: it did not already hold, which threw away eight unticks and sent eight
+    #: games. And a row that arrives unticked because the game is installed
+    #: already has to stay ticked once the user says they want it after all.
+    ticked: bool = None
+
+    @property
+    def declined(self):
+        """Whether the user took the tick out of this row by hand."""
+        return self.ticked is False
     #: Set only when the user has been told the console already has this file
     #: and has ticked it anyway. Kept apart from wanted because the two answer
     #: different questions: a file that was never checked against the console
@@ -331,6 +347,16 @@ class QueueItem:
             if self.wanted and self.overwrite:
                 return "Already on the console; it will be copied over again"
             return "Already on the console; it will not be copied"
+        if self.installed:
+            # Said before the bare "not ticked" below, which is true of this
+            # row and does not say why it arrived that way.
+            if self.wanted:
+                return (f"{self.title_id} is already installed on this "
+                        f"console. This is the disc image of it, which is a "
+                        f"separate thing, and it will be copied")
+            return (f"{self.title_id} is already installed on this console. "
+                    f"This is the disc image of it, which is a separate "
+                    f"thing. Tick it to copy it as well")
         if not self.wanted:
             return "Not ticked, so it will not be copied"
         if self.present == "shorter":
@@ -340,10 +366,6 @@ class QueueItem:
         if self.present == "different":
             return (f"A different file of that name is already there; this "
                     f"one will be called {self.name}")
-        if self.installed:
-            return (f"{self.title_id} is already installed on this console. "
-                    f"This is the disc image of it, which is a separate "
-                    f"thing. It will be copied unless you untick it")
         return "It will be copied"
 
 
@@ -416,6 +438,29 @@ def bytes_to_send(items):
     return sum(item.remaining for item in chosen(items))
 
 
+def installed_and_ticked(items):
+    """The ones whose game is installed already and which are still ticked.
+
+    These are the difference between the two totals the estimate offers.
+    """
+    return [item for item in installed_on_console(items) if item.wanted]
+
+
+def bytes_without_installed(items):
+    """What would be left to push if those ones were unticked instead.
+
+    Nothing here unticks anything. A running total that counted eight games
+    the console could already play was the whole of the complaint, and the
+    answer to it is the second figure rather than a decision taken on the
+    user's behalf.
+    """
+    # Identity rather than equality: QueueItem is a dataclass, so two rows
+    # describing the same image compare equal and neither can go in a set.
+    skip = {id(item) for item in installed_and_ticked(items)}
+    return sum(item.remaining for item in chosen(items)
+               if id(item) not in skip)
+
+
 # --- what is already on the console ----------------------------------------
 
 @dataclass
@@ -449,28 +494,41 @@ def read_listing(lister, path):
 
 
 def console_games(lister, device=DEFAULT_DEVICE, folders=BROWSE_FOLDERS):
-    """(files, listings) for the game folders on one device.
+    """(files, listings, installed) for the game folders on one device.
 
     Read-only, through the diagnostic client, and done as part of the first
     scan rather than behind a button: somebody about to spend thirteen hours
     copying a game the console already has should find that out before they
-    start, not afterwards.
+    start.
+
+    One walk, in ps3tools.inventory, which is also what answers the third of
+    these. A game installed under its own title ID is a folder under
+    /dev_hdd0/game and matches no file name in any of these folders, so the
+    listings alone could never see it.
     """
-    files = []
-    listings = {}
-    for folder in folders:
-        path = f"/{device}/{folder}"
-        entries = read_listing(lister, path)
-        if entries is None:
-            continue
-        listings[path] = {name: entry["size"]
-                          for name, entry in entries.items()}
-        for entry in entries.values():
-            files.append(ConsoleFile(folder=folder, name=entry["name"],
-                                     size=entry["size"],
-                                     directory=entry["kind"] == "directory"))
+    found = inventory.read(lister, devices=[device], folders=folders,
+                           packages=False)
+    files = [ConsoleFile(folder=row.get("folder") or "",
+                         name=row.get("name") or "",
+                         size=row.get("size") or 0,
+                         directory=row.get("kind") == "directory")
+             for row in found.entries]
     files.sort(key=lambda item: (item.folder, item.name.lower()))
-    return files, listings
+    return files, found.listings, found.installed_ids()
+
+
+def _proposed(item):
+    """Whether to offer this row ticked, once the user has had their say.
+
+    A game the console has installed already arrives unticked. Nine ticked
+    rows and a paragraph asking somebody to untick what they do not need is
+    how a 141 GB queue starts by accident, and it is the same situation as an
+    image of this name already sitting in the destination folder, which has
+    always arrived unticked.
+    """
+    if item.ticked is not None:
+        return item.ticked
+    return not item.installed
 
 
 def match_console(items, listings, installed=()):
@@ -509,7 +567,12 @@ def match_console(items, listings, installed=()):
             continue
         found = listings.get(item.destination, {}).get(item.name.lower())
         if found is None:
-            item.wanted = True
+            # The console having nothing under this name says nothing about
+            # whether the user wants it sent, and reading the console again
+            # used to answer that on their behalf every time the button was
+            # pressed. A game already installed arrives unticked; everything
+            # else arrives ticked; the user's own answer beats both.
+            item.wanted = _proposed(item)
             # Permission to write over the top was given about the file that
             # was on the console at the time. The console has nothing under
             # this name now, so that permission has stopped meaning anything,
@@ -531,12 +594,15 @@ def match_console(items, listings, installed=()):
             item.wanted = False
             item.overwrite = False
         elif found < item.size:
+            # Part copied, so it is offered as something to carry on with.
+            # That is a proposal about a row nobody has touched, and it gives
+            # way to a user who has already said no to this one.
             item.present = "shorter"
-            item.wanted = True
+            item.wanted = _proposed(item)
             item.overwrite = False
         else:
             item.present = "different"
-            item.wanted = True
+            item.wanted = _proposed(item)
             item.overwrite = False
     return items
 
@@ -558,10 +624,18 @@ DIFFERENT_LEAD = ("The console already has a different file under each of "
 OVERWRITE_LEAD = ("These are already on the console and you have ticked them, "
                   "so they will be copied over the top:")
 
-INSTALLED_LEAD = ("These games are already installed on this console under "
-                  "their own title IDs. A disc image is a separate thing from "
-                  "an installed game and there are reasons to want both, so "
-                  "these are still ticked. Untick any you do not need:")
+#: Why the installed ones are still ticked, on its own. The block above the
+#: queue says which games they are in its heading, so the first sentence of
+#: INSTALLED_LEAD would be the same fact a second time there.
+#: Why the block above the queue exists, for a row nobody has ticked yet.
+INSTALLED_WHY = ("A disc image is a separate thing from an installed game and "
+                 "there are reasons to want both, so these arrive unticked. "
+                 "Tick any you do want")
+
+#: The same games at the point of confirming, where the user has ticked them
+#: and the box is describing what is about to happen rather than proposing it.
+INSTALLED_LEAD = ("These games are already installed on this console and you "
+                  "have ticked them, so their disc images will be copied:")
 
 
 def already_on_console(items):
@@ -625,6 +699,18 @@ def console_notes(items):
     return lines
 
 
+def describe_installed(item):
+    """One installed game, named by both the things that identify it.
+
+    Both where both are known. The name is what somebody recognises and the
+    title ID is the folder on the console they would go and look in. Shared
+    with the screen so that the block above the queue and the confirmation
+    box name the same game the same way.
+    """
+    said = ", ".join(part for part in (item.title, item.title_id) if part)
+    return f"{item.name} ({said})" if said else item.name
+
+
 def _listed(item, lead):
     """One line under a lead. The installed group names the game as well.
 
@@ -634,10 +720,7 @@ def _listed(item, lead):
     """
     if lead is not INSTALLED_LEAD:
         return f"    {item.name}"
-    # Both where both are known. The name is what somebody recognises and the
-    # title ID is the folder on the console they would go and look in.
-    said = ", ".join(part for part in (item.title, item.title_id) if part)
-    return f"    {item.name} ({said})" if said else f"    {item.name}"
+    return f"    {describe_installed(item)}"
 
 
 def settle_after_run(items):
@@ -774,6 +857,38 @@ def estimate_seconds(count, rate=ASSUMED_RATE):
     return count / float(rate)
 
 
+def _sized(files, count, rate):
+    """A queue said as its three numbers: files, bytes, hours."""
+    how_long = format_duration(estimate_seconds(count, rate))
+    return (f"{files} file{'s' if files != 1 else ''}, "
+            f"{parsers.human_size(count)} and {how_long}")
+
+
+def without_installed_estimate(items, rate=ASSUMED_RATE):
+    """The same queue costed with the already-installed games left out.
+
+    Empty when there are none of them, so a queue with nothing installed
+    reads exactly as it did. On the console this came from, the figure on
+    screen was 144.6 GB and ten and a half hours, and eight of the fourteen
+    rows behind it were games sitting in /dev_hdd0/game. Both numbers are
+    given because the choice between them is the user's.
+    """
+    group = installed_and_ticked(items)
+    if not group:
+        return ""
+    count = bytes_without_installed(items)
+    one = len(group) == 1
+    says = ("That total includes one game this console already has "
+            "installed." if one else
+            f"That total includes {len(group)} games this console already "
+            f"has installed.")
+    without = "Without it" if one else "Without them"
+    if not count:
+        return f"{says} {without} there is nothing left to copy."
+    left = _sized(len(chosen(items)) - len(group), count, rate)
+    return f"{says} {without} the queue is {left}."
+
+
 def time_estimate(items, rate=ASSUMED_RATE):
     """The sentence shown before the user commits to the queue."""
     count = bytes_to_send(items)
@@ -781,10 +896,12 @@ def time_estimate(items, rate=ASSUMED_RATE):
         return "There is nothing left to copy."
     files = len(chosen(items))
     how_long = format_duration(estimate_seconds(count, rate))
-    return (f"{files} file{'s' if files != 1 else ''}, "
+    said = (f"{files} file{'s' if files != 1 else ''}, "
             f"{parsers.human_size(count)} to copy. At the speed a PS3 "
             f"normally manages that is {how_long}. You can leave it running "
             f"and come back to it.")
+    rest = without_installed_estimate(items, rate)
+    return f"{said}\n\n{rest}" if rest else said
 
 
 # --- progress --------------------------------------------------------------

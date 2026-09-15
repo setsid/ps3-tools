@@ -207,6 +207,19 @@ class TransferGamesScreen(Screen):
         self._console_table.setMaximumHeight(150)
         layout.addWidget(self._console_table)
 
+        # Above the queue rather than in it. The same warning was already in
+        # the last column of every row that carried it, and that column is off
+        # the right-hand edge of the window at the width this screen opens at:
+        # eight of fourteen rows said it on a real console and none of them
+        # could be seen without scrolling sideways.
+        #
+        # Behind an arrow and closed, the way the Game updates summary is.
+        # Nine games named at full length with a paragraph under them left two
+        # of twelve file rows on the screen, and the file list is the thing
+        # being acted on.
+        self._installed_panel = widgets.Disclosure("")
+        layout.addWidget(self._installed_panel)
+
         self._table = QTreeWidget()
         self._table.setColumnCount(len(COLUMNS))
         self._table.setHeaderLabels(COLUMNS)
@@ -362,12 +375,11 @@ class TransferGamesScreen(Screen):
         def work(control):
             devices = read_storage(host)
             with open_lister(host) as lister:
-                files, listings = transfer.console_games(lister, device)
-                # The same connection, because the question is about the same
-                # console. A game installed under its own title ID is not a
-                # file in any of the folders above, so nothing in `listings`
-                # can answer it.
-                installed = updates.installed_title_ids(lister)
+                # One walk answers all three. A game installed under its own
+                # title ID is not a file in any of these folders, so the
+                # listings alone could never see it.
+                files, listings, installed = transfer.console_games(
+                    lister, device)
             return devices, files, listings, installed
 
         task = self.submit(work)
@@ -516,8 +528,31 @@ class TransferGamesScreen(Screen):
             self._table.resizeColumnToContents(index)
         self._table.blockSignals(False)
         self._show_unidentified()
+        self._show_installed()
         self._show_estimate()
         self._update_go()
+
+    def _show_installed(self):
+        """Name the queued images the console already has the game of.
+
+        Every one of them, whether ticked or not. They arrive unticked now, so
+        a block that listed only the ticked ones would be empty exactly when
+        it has something to say.
+        """
+        group = transfer.installed_on_console(self._items)
+        if not group:
+            self._installed_panel.set_summary("")
+            self._installed_panel.setText("")
+            return
+        one = len(group) == 1
+        self._installed_panel.set_summary(
+            "One of these games is already installed on this console"
+            if one else
+            f"{len(group)} of these games are already installed on this "
+            f"console")
+        lines = [f"    {transfer.describe_installed(item)}" for item in group]
+        lines += ["", transfer.INSTALLED_WHY + "."]
+        self._installed_panel.setText("\n".join(lines))
 
     def _on_ticked(self, row, column):
         """The user overruling the proposal. Their decision, not ours."""
@@ -527,6 +562,13 @@ class TransferGamesScreen(Screen):
         for item in self._items:
             if item.path == path:
                 item.wanted = row.checkState(0) == Qt.Checked
+                # Recorded here because this is the only place a tick is
+                # known to have come from the user. The button reads the
+                # console again on its way to the confirmation box, and the
+                # match that follows used to put the tick back into every row
+                # the console did not hold; unticking eight games and pressing
+                # copy sent all eight of them.
+                item.ticked = item.wanted
                 # Ticking a file the console already has is the only thing
                 # that authorises copying over the top of it, and it is
                 # recorded here because this is the moment the user was
@@ -574,18 +616,19 @@ class TransferGamesScreen(Screen):
     def confirm_text(self, queue):
         """The last thing the user reads before committing to several hours.
 
-        Built from the whole list rather than from the ticked part of it, so
-        that a file the console already has is named here as well. It is
-        unticked by then and was therefore missing from this box altogether,
-        which is half of why somebody copied a game they already had.
+        What is about to happen, and nothing else. It used to be built from
+        the whole list, so with one file ticked it still said nine games were
+        ticked and named two duplicates that were not going anywhere. A box
+        that describes the screen's opening proposal rather than the queue is
+        a box nobody can check their decision against.
 
         Kept apart from confirm() so that what it says can be read back
         without a modal dialog being put on the screen.
         """
-        lines = [transfer.time_estimate(self._items), "", transfer.HONEST_SPEED]
+        lines = [transfer.time_estimate(queue), "", transfer.HONEST_SPEED]
         if self._check_note:
             lines += ["", self._check_note]
-        notes = transfer.console_notes(self._items)
+        notes = transfer.console_notes(queue)
         if notes:
             lines += [""] + notes
         renamed = [item for item in queue if item.filename != item.name]
@@ -629,8 +672,8 @@ class TransferGamesScreen(Screen):
 
         def work(control):
             with open_lister(host) as lister:
-                files, listings = transfer.console_games(lister, device)
-                installed = updates.installed_title_ids(lister)
+                files, listings, installed = transfer.console_games(
+                    lister, device)
             return files, listings, installed
 
         self._check_note = ""

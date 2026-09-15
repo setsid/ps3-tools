@@ -928,6 +928,46 @@ class Location:
         return f"<Location {self.state} {','.join(self.title_ids)}>"
 
 
+def _files_present(item):
+    """How many of this title's binaries are in that folder."""
+    expected = list(getattr(item, "expected", None) or [])
+    missing = list(getattr(item, "missing", None) or [])
+    return len(expected) - len(missing)
+
+
+def _by_files_present(picked):
+    """The folders of one game, the one holding the most binaries first.
+
+    A console can carry several folders for the same game. One user had
+    NPUB31054 with the binaries in it and a leftover BLUS31011 holding
+    licence files and nothing else; the folder the console happened to list
+    first was taken, which was the empty one, and the run reported the title
+    update as not downloaded. The title ID breaks a tie so that two scans of
+    an unchanged console give the same answer.
+    """
+    return sorted(picked,
+                  key=lambda item: (-_files_present(item),
+                                    (item.title_id or "").upper()))
+
+
+def _several_folders_note(chosen, others):
+    """Which folder the fix will work on, when there is a choice.
+
+    Said only when there is more than one, because the user's way of checking
+    that the right copy was picked is seeing the folder named. A sentence on
+    every scan would be read past.
+    """
+    names = ", ".join(item.title_id or "an unnamed folder" for item in others)
+    detail = ""
+    total = len(list(getattr(chosen, "expected", None) or []))
+    if total:
+        detail = (f", which holds {_files_present(chosen)} of the {total} "
+                  f"files this fix changes")
+    return (f"This game is in more than one folder on the console. "
+            f"{chosen.title_id} was used{detail}. Also on the console: "
+            f"{names}.")
+
+
 def locate(lister, title_key, detector=None):
     """Find one title on the console, or say precisely why it was not found.
 
@@ -976,8 +1016,11 @@ def locate(lister, title_key, detector=None):
     for state in (READY, NO_UPDATE):
         picked = [item for item in found if item.state == state]
         if picked:
-            return Location(state, [item.title_id for item in picked],
-                            notes=notes, installation=picked[0])
+            ordered = _by_files_present(picked)
+            if len(ordered) > 1:
+                notes.append(_several_folders_note(ordered[0], ordered[1:]))
+            return Location(state, [item.title_id for item in ordered],
+                            notes=notes, installation=ordered[0])
 
     # An unrecognised SKU carries no title key, because nothing on the console
     # says which of the two games it is. It cannot be attributed to this screen

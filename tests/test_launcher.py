@@ -23,6 +23,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
 from mock_webman import MockWebmanHttp
 from ps3tools.shell import consolestats, icons, registry
+from ps3tools.shell import launcher as launcher_module
 from ps3diag.transport import Response
 from ps3tools.shell.launcher import SUPPORT_ADDRESS, CardGrid, Launcher
 from ps3tools.shell.widgets import ToolCard
@@ -354,18 +355,31 @@ class CardGridTests(LauncherCase):
     def grid(self):
         return self.launcher._grid_host
 
-    def test_a_row_holds_at_most_four_cards(self):
-        self.launcher.rebuild(card_screens(6))
+    def shape(self, tools):
+        """Row lengths for this many tools, with the placeholders counted.
+
+        The grid holds the tools and the cards for what is still being worked
+        on, so a test that expects only the tools is a test that breaks the
+        day one of those is added.
+        """
+        self.launcher.rebuild(card_screens(tools))
         self.settle()
-        rows = self.grid().rows()
-        self.assertEqual([len(row) for row in rows], [4, 2])
-        for row in rows:
+        return [len(row) for row in self.grid().rows()]
+
+    def rows_for(self, count):
+        full, over = divmod(count, CardGrid.COLUMNS)
+        return [CardGrid.COLUMNS] * full + ([over] if over else [])
+
+    def test_a_row_holds_at_most_four_cards(self):
+        placed = 6 + len(launcher_module.COMING_SOON)
+        self.assertEqual(self.shape(6), self.rows_for(placed))
+        for row in self.grid().rows():
             self.assertLessEqual(len(row), CardGrid.COLUMNS)
 
-    def test_eight_cards_are_four_and_four(self):
-        self.launcher.rebuild(card_screens(8))
-        self.settle()
-        self.assertEqual([len(row) for row in self.grid().rows()], [4, 4])
+    def test_eight_cards_fill_two_rows_before_starting_a_third(self):
+        placed = 8 + len(launcher_module.COMING_SOON)
+        self.assertEqual(self.shape(8), self.rows_for(placed))
+        self.assertEqual(self.shape(8)[:2], [4, 4])
 
     def test_the_gutters_either_side_of_the_row_match(self):
         self.launcher.rebuild(card_screens(6))

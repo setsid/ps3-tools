@@ -58,18 +58,9 @@ from ps3diag import config
 from ps3diag.parsers import parse_ftp_list
 from ps3diag.regioncodes import describe_name, find_title_id
 
-from . import titles
+from . import inventory, titles
 
 HOME_ROOT = "/dev_hdd0/home"
-
-# Where the console writes down what a title ID means in words. Read for names
-# only; nothing in any of these folders is ever fetched.
-INVENTORY_ROOTS = (
-    "/dev_hdd0/game/",
-    "/dev_hdd0/GAMES/",
-    "/dev_hdd0/PS3ISO/",
-    "/dev_hdd0/PS2ISO/",
-)
 
 # A user folder under /dev_hdd0/home. The console numbers them 00000001 up.
 # Anything else in there belongs to something other than a user profile.
@@ -297,57 +288,19 @@ class Survey:
 
 # Strips the bracketed title ID and anything trailing it out of an inventory
 # entry, so "Persona 5 [NPEB02143]" becomes "Persona 5". Also handles the
-# parenthesised and bare-suffix forms that turn up in the same listings.
-_TRAILING_ID = re.compile(
-    r"\s*[\[(\-_]*\s*[A-Z]{4}[-_]?\d{5}\s*[\])]*\s*.*$")
-_EXTENSION = re.compile(r"(?i)\.(iso|bin|img|pkg)$")
-
-
-def _name_from_entry(entry_name, title_id):
-    """The human part of an inventory entry, or None if there is not one.
-
-    A folder called exactly BLES01717 says nothing a title ID does not already
-    say, and returning it as a name would put the same string on the row twice
-    while claiming it had been recognised.
-    """
-    text = _EXTENSION.sub("", entry_name or "").strip()
-    trimmed = _TRAILING_ID.sub("", text).strip(" -_.")
-    if not trimmed:
-        return None
-    if find_title_id(trimmed) or trimmed.upper() == (title_id or "").upper():
-        return None
-    return trimmed
-
-
 def build_inventory(lister):
     """Title ID to game name, from what is installed on this console.
 
+    One walk of the console, shared with every other screen. This used to have
+    four roots of its own, three fewer than the rest of the program looked in,
+    so a game in PSPISO had a name everywhere except here.
+
     Read once per scan and reused for every save folder. A root that is not
-    there, or that the console refuses, costs the names in it and nothing else,
-    so every one of them is tried and none of them can fail the scan.
+    there, or that the console refuses, costs the names in it and nothing else:
+    ps3tools.inventory never raises, and the names are a nicety that must not
+    take a scan of somebody's saves down with them.
     """
-    found = {}
-    for root in INVENTORY_ROOTS:
-        try:
-            listing = lister.list_dir(root)
-        except Exception:                                   # noqa: BLE001
-            # A missing GAMES folder is the normal case, not a fault, and a
-            # console that has stopped answering is reported by the caller
-            # that is actually trying to read saves. Either way the names are
-            # a nicety and must not take the scan down with them.
-            continue
-        entries, _unparsed = parse_ftp_list(listing)
-        for entry in entries:
-            title_id = find_title_id(entry.get("name", ""))
-            if not title_id:
-                continue
-            name = _name_from_entry(entry.get("name", ""), title_id)
-            # First name wins. The roots are ordered installed-first, and an
-            # installed title's folder is the one most likely to have been
-            # named by the console rather than by whoever made the image.
-            if name and title_id.upper() not in found:
-                found[title_id.upper()] = name
-    return found
+    return inventory.read(lister, packages=False).names()
 
 
 def name_for(title_id, inventory=None):

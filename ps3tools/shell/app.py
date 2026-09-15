@@ -22,6 +22,7 @@ import os
 import pkgutil
 import sys
 import threading
+import time
 
 from PySide6.QtCore import (QByteArray, QEasingCurve, QParallelAnimationGroup,
                             QPoint, QPointF, QPropertyAnimation, QRectF, QSize,
@@ -2292,6 +2293,56 @@ def build(application, settings=None):
     return window
 
 
+#: How long a thread that will not stop is given once the window has gone.
+#: Long enough for a read that is nearly finished, short enough that nobody
+#: sits watching a program with no window in their task manager.
+SHUTDOWN_GRACE = 2.0
+
+
+def lingering_threads():
+    """Threads that would hold the interpreter open after the window closes.
+
+    Python joins every non-daemon thread before it exits, and
+    concurrent.futures registers its executors' threads for exactly that. The
+    disc image pass and the console search both use an executor, so one read
+    waiting on a console that has gone quiet holds the whole program open.
+    """
+    here = threading.current_thread()
+    return [thread for thread in threading.enumerate()
+            if thread is not here and thread.is_alive()
+            and not thread.daemon]
+
+
+def finish(code, wait=SHUTDOWN_GRACE, exit_now=None):
+    """End the process, whatever is still holding a socket open.
+
+    Closing the window left the program running with nothing on screen. The
+    window had gone, the event loop had ended, and the interpreter was waiting
+    on a worker that was itself waiting on a console.
+
+    Ending it without asking is safe here. Every screen that writes to a
+    console refuses to close while it is writing, so whatever is still going
+    at this point is a read, and somebody who has closed the window has said
+    they are finished. A short grace period first, so an ordinary shutdown
+    stays an ordinary shutdown.
+    """
+    deadline = time.monotonic() + max(0.0, wait)
+    while lingering_threads() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    left = lingering_threads()
+    if not left:
+        return code
+    crashreport.note("still running at exit: " + ", ".join(
+        sorted(thread.name for thread in left)))
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:                                   # noqa: BLE001
+            pass
+    (exit_now or os._exit)(code)
+    return code
+
+
 def main(argv=None):
     from PySide6.QtWidgets import QApplication
 
@@ -2309,4 +2360,4 @@ def main(argv=None):
     # anything constructing a window for another reason -- a test, a
     # screenshot -- asks nobody anything and reaches no network.
     QTimer.singleShot(0, window.start_launch)
-    return application.exec()
+    return finish(application.exec())

@@ -188,6 +188,46 @@ class States(FixtureCase):
         self.assertTrue(any("left alone" in note for note in report.notes),
                         report.notes)
 
+    def test_one_unknown_variant_still_reads_as_a_single_title(self):
+        # Collecting the unknown titles into one sentence must not leave the
+        # one title case reading as a list of one.
+        report = self.report({
+            GAME: folders("BLES00683"),
+            usrdir("BLES00683"): listing("list_usrdir_bo2.txt")})
+        said = [note for note in report.notes if "left alone" in note]
+        self.assertEqual(said, [
+            "BLES00683 looks like a Call of Duty installation but is not a "
+            "release of either of the two games this tool fixes, so it will "
+            "be left alone."])
+
+    def test_several_unknown_variants_are_named_in_one_sentence(self):
+        # A real console had these three Call of Duty titles installed and
+        # the summary printed the same sentence three times over.
+        report = self.report({
+            GAME: folders("BLES00683", "BLES01945", "BLES02077"),
+            usrdir("BLES00683"): listing("list_usrdir_bo2.txt"),
+            usrdir("BLES01945"): listing("list_usrdir_bo2.txt"),
+            usrdir("BLES02077"): listing("list_usrdir_bo2.txt")})
+        said = [note for note in report.notes if "left alone" in note]
+        self.assertEqual(said, [
+            "BLES00683, BLES01945 and BLES02077 look like Call of Duty "
+            "installations but are not releases of either of the two games "
+            "this tool fixes, so they will be left alone."])
+
+    def test_unknown_variants_do_not_add_a_note_each(self):
+        # The note was made inside the loop over installations, so the
+        # summary grew by a sentence for every title the console had.
+        def refused(*names):
+            listings = {GAME: folders(*names)}
+            listings.update({usrdir(name): listing("list_usrdir_bo2.txt")
+                             for name in names})
+            return self.report(listings)
+
+        one = refused("BLES00683")
+        many = refused("BLES00683", "BLES01945", "BLES02077")
+        self.assertEqual(len(many.installations), 3)
+        self.assertEqual(len(many.notes), len(one.notes))
+
     def test_missing_binaries_are_reported_and_are_not_ready(self):
         report = self.report({
             GAME: listing("list_game_regional.txt"),

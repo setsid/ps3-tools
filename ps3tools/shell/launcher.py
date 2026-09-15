@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
 
 from . import registry
 from .consolestats import ConsoleStats
-from .widgets import IconLabel, ToolCard
+from .widgets import ComingSoonCard, IconLabel, ToolCard
 
 SUPPORT_ADDRESS = "setsid.research@proton.me"
 
@@ -35,6 +35,15 @@ DISCORD_HINT = "Ask a question or say how you got on in the Discord."
 def _wording(screen_class):
     """The three things off a screen that end up on the face of its card."""
     return (screen_class.key, screen_class.title, screen_class.blurb)
+
+
+#: A tool being worked on, shown in the grid with the rest so that somebody
+#: who wants it can see it is coming. It opens nothing.
+COMING_SOON = (
+    ("bo1stats", "Black Ops 1 stats fix",
+     "The stat reset on Black Ops 1 is being worked on.",
+     "Progress on Discord", DISCORD_URL),
+)
 
 
 class CardGrid(QWidget):
@@ -181,6 +190,7 @@ class Launcher(QWidget):
         self.setObjectName("launcher")
         self._theme = theme
         self._cards = []
+        self._placeholders = []
         # The window hands itself in as the parent and holds the services
         # every screen is given. Taken from there rather than added to the
         # call because the shell's construction of the launcher is not this
@@ -353,11 +363,14 @@ class Launcher(QWidget):
         # costs the focused card its focus and gives the layout a window in
         # which every card is hidden. Returning to the home screen is by far
         # the commonest caller and never changes a thing.
-        if self._drawn() == [_wording(item) for item in screens]:
+        # The placeholders are part of what is drawn, so a grid missing them
+        # is a grid that still has to be built however well the tools match.
+        if (self._drawn() == [_wording(item) for item in screens]
+                and len(self._placeholders) == len(COMING_SOON)):
             self._apply_count(len(self._cards))
             return
 
-        for card in self._cards:
+        for card in self._cards + self._placeholders:
             # Hidden before it is orphaned: a parentless widget is a top-level
             # window, and one that is still visible when it becomes one
             # flashes on screen before it is collected.
@@ -365,6 +378,7 @@ class Launcher(QWidget):
             card.setParent(None)
             card.deleteLater()
         self._cards = []
+        self._placeholders = []
 
         for screen_class in screens:
             card = ToolCard(screen_class.key, screen_class.title,
@@ -380,7 +394,19 @@ class Launcher(QWidget):
             card.show()
             self._cards.append(card)
 
-        self._grid_host.set_cards(self._cards)
+        # After the working tools, in the same grid. A placeholder off to one
+        # side is one nobody connects to the tools it belongs beside. Kept
+        # apart from _cards, which means the tools: a placeholder is not one,
+        # and counting it as one would make a build with no tools in it look
+        # as though it had one.
+        self._placeholders = []
+        for key, title, blurb, link_text, url in COMING_SOON:
+            card = ComingSoonCard(key, title, blurb, link_text, url,
+                                  self._theme, self._grid_host)
+            card.show()
+            self._placeholders.append(card)
+
+        self._grid_host.set_cards(self._cards + self._placeholders)
         self._apply_count(len(self._cards))
 
     def _apply_count(self, count):

@@ -29,6 +29,7 @@ import datetime
 import os
 import ssl
 import tempfile
+import time
 import unittest
 import unittest.mock as mock
 import urllib.error
@@ -2021,6 +2022,72 @@ class TheScanSaysWhatItIsDoing(unittest.TestCase):
         updates.scan_console(lister)
 
 
+class AFolderWithNoGameInIt(FixtureCase):
+    """A licence the console kept is not an installed game.
+
+    Measured on a user's console. It carried two folders for Black Ops II:
+    NPUB31054 with all three binaries in its USRDIR, which is the copy he
+    played, and BLUS31011 holding licence files and nothing else. The tool
+    listed the second as installed and offered him its title update, and the
+    console refused the package because there was no game there to update.
+    """
+
+    def console(self, extra=None):
+        listings = {
+            GAME: folders("NPUB31054", "BLUS31011"),
+            f"{GAME}/BLUS31011": folders("USRDIR"),
+            f"{GAME}/BLUS31011/USRDIR": files("license.edat", "dlc0.edat"),
+        }
+        listings.update(extra or {})
+        return FakeLister(
+            listings=listings,
+            blobs={f"{GAME}/NPUB31054/PARAM.SFO":
+                   param_sfo("01.19", "NPUB31054")})
+
+    def test_a_licence_only_folder_is_not_offered_an_update(self):
+        found, _notes, _unnamed = updates.scan_console(self.console())
+        self.assertEqual([item.title_id for item in found], ["NPUB31054"])
+
+    def test_the_copy_that_holds_the_game_is_the_one_listed(self):
+        found, _notes, _unnamed = updates.scan_console(self.console())
+        self.assertEqual(found[0].version, "1.19")
+
+    def test_the_folder_that_was_left_out_is_named(self):
+        # Somebody who can see the folder on their console is entitled to
+        # know why it is not in the list.
+        _found, notes, _unnamed = updates.scan_console(self.console())
+        said = " ".join(notes)
+        self.assertIn("BLUS31011", said)
+        self.assertIn("no game in it", said)
+
+    def test_a_folder_with_real_files_in_it_is_still_an_installed_game(self):
+        # The distinction this must not lose. A title with no PARAM.SFO is a
+        # version that could not be read, which is a different answer from a
+        # game that is not there, and the row still says so.
+        lister = FakeLister(
+            listings={GAME: folders("BLES00003"),
+                      f"{GAME}/BLES00003": folders("USRDIR"),
+                      f"{GAME}/BLES00003/USRDIR": files("EBOOT.BIN")})
+        found, _notes, _unnamed = updates.scan_console(lister)
+        self.assertEqual([item.title_id for item in found], ["BLES00003"])
+        self.assertIsNone(found[0].version)
+
+    def test_a_console_that_will_not_say_keeps_the_title(self):
+        # Never hide somebody's game on a question the console refused to
+        # answer. A folder nobody could look in stays on the list.
+        lister = FakeLister(listings={GAME: folders("BLES00003")})
+        found, _notes, _unnamed = updates.scan_console(lister)
+        self.assertEqual([item.title_id for item in found], ["BLES00003"])
+
+    def test_an_empty_folder_still_counts_where_the_game_is_elsewhere(self):
+        # The licence folder is dropped and the disc image of the same game
+        # is not: that copy is real and it is the one worth an update.
+        lister = self.console(
+            {PS3ISO: files("Black Ops II [BLUS31011].iso")})
+        found, _notes, _unnamed = updates.scan_console(lister)
+        self.assertIn("BLUS31011", [item.title_id for item in found])
+
+
 class TheThreeWaysACheckCanEndWithoutAnUpdate(unittest.TestCase):
     """Sony answering "no such title" is not the check having failed.
 
@@ -3325,6 +3392,121 @@ class AWorkerThatLosesItsConnection(unittest.TestCase):
 
 
 
+
+class TheCountOfImagesOnScreen(unittest.TestCase):
+    """How far through the image pass is, said in a way that adds up.
+
+    Reported from hardware: a scan of four disc images ended on "Reading
+    COD3.iso (5 of 4)". isoreader calls back before it opens an image, so
+    what it hands over is the number already finished; this pass counted the
+    call instead and was one ahead of that all the way down the list.
+    """
+
+    def images(self, *names):
+        return [{"name": name, "kind": "file", "size": 4096,
+                 "device": "dev_hdd0", "folder": "PS3ISO"} for name in names]
+
+    def identifier(self, seen, workers=1):
+        return updates.parallel_image_identifier(
+            self.Lister, workers=workers,
+            on_progress=lambda done, total, name:
+                seen.append((done, total, name)))
+
+    class Lister:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def run_pass(self, entries, identify, workers=1):
+        """The image pass, with a stand-in for the part that opens a file."""
+        seen = []
+        with mock.patch.object(updates.isoreader, "identify_isos", identify), \
+             mock.patch.object(updates.isoreader, "reader_for",
+                               lambda lister: mock.Mock()), \
+             mock.patch.object(updates.time, "sleep", lambda seconds: None):
+            found = self.identifier(seen, workers)(entries)
+        return seen, found
+
+    @staticmethod
+    def reads_every_image(entries, reader, **kwargs):
+        """identify_isos as it behaves on a console that answers."""
+        on_progress = kwargs.get("on_progress")
+        rows = []
+        for done, entry in enumerate(entries):
+            if on_progress:
+                on_progress(done, len(entries), entry["name"])
+            rows.append({"name": entry["name"], "opened": True,
+                         "title_id": BO2})
+        return {"isos": rows}
+
+    def test_the_count_never_runs_past_the_total(self):
+        # The 5 of 4 seen on hardware. The screen shows done + 1, so a
+        # count that is already one ahead names an image that is not there.
+        seen, _found = self.run_pass(
+            self.images("A.iso", "B.iso", "C.iso", "COD3.iso"),
+            self.reads_every_image)
+        self.assertEqual([done for done, _total, _name in seen], [0, 1, 2, 3])
+        for done, total, _name in seen:
+            self.assertLessEqual(done + 1, total)
+
+    def test_a_retried_share_does_not_count_its_images_twice(self):
+        # A share whose connection dies is read again from the start, which
+        # is what puts the same image in front of the count twice. The four
+        # image scan that said 5 of 4 had a retry in it.
+        attempts = [0]
+
+        def dies_once(entries, reader, **kwargs):
+            on_progress = kwargs.get("on_progress")
+            attempts[0] += 1
+            rows = []
+            for done, entry in enumerate(entries):
+                if on_progress:
+                    on_progress(done, len(entries), entry["name"])
+                if attempts[0] == 1 and done == 1:
+                    raise OSError("421 the console hung up")
+                rows.append({"name": entry["name"], "opened": True,
+                             "title_id": BO2})
+            return {"isos": rows}
+
+        seen, found = self.run_pass(
+            self.images("A.iso", "B.iso", "C.iso", "COD3.iso"), dies_once)
+        self.assertEqual(attempts[0], 2)
+        self.assertEqual(len(found), 4)
+        for done, total, _name in seen:
+            self.assertLessEqual(done + 1, total)
+        self.assertEqual(seen[-1][0] + 1, 4)
+
+    def test_the_total_is_the_images_the_pass_will_open(self):
+        # A folder game among the entries is never opened, so counting it in
+        # the total leaves the readout stuck one short for the whole scan.
+        entries = self.images("A.iso", "COD3.iso")
+        entries.append({"name": "Some Game", "kind": "directory",
+                        "device": "dev_hdd0", "folder": "GAMES"})
+        seen, _found = self.run_pass(entries, self.reads_every_image)
+        self.assertEqual([total for _done, total, _name in seen], [2, 2])
+        self.assertEqual(seen[-1][0] + 1, 2)
+
+    def test_an_image_already_known_is_not_in_the_total(self):
+        # cached_image_identifier hands on only the images it has no answer
+        # for, so the total is what is being read rather than what is on the
+        # shelf. The count has to agree with it.
+        settings = {updates.IMAGE_CACHE_KEY: {"4096:A.iso": BO2}}
+        seen = []
+        with mock.patch.object(updates.isoreader, "identify_isos",
+                               self.reads_every_image), \
+             mock.patch.object(updates.isoreader, "reader_for",
+                               lambda lister: mock.Mock()):
+            identify = updates.cached_image_identifier(
+                self.identifier(seen), settings)
+            found = identify(self.images("A.iso", "B.iso", "COD3.iso"))
+        self.assertEqual(len(found), 3)
+        self.assertEqual([(done, total) for done, total, _name in seen],
+                         [(0, 2), (1, 2)])
+
+
+
 class AnImageThatReadsEmptyOnce(unittest.TestCase):
     """A blank read must not undo an identification that already happened.
 
@@ -3548,10 +3730,37 @@ class ScreenCase(unittest.TestCase):
                 version, BO2)
         return landed
 
-    def settle(self, task):
-        if task is not None:
-            self.services.wait(10000)
-        APP.processEvents()
+    def settle(self, task=None):
+        """Wait for the worker AND for its result to reach the GUI thread.
+
+        services.wait() only drains the thread pool, and the pool is
+        QThreadPool.globalInstance(), shared with every other test in the
+        process: "the pool is idle" can be true before this task has been
+        picked up at all. A single processEvents() then returns before the
+        queued finished signal has run, and the test reads a panel that is
+        still empty. That is what this used to do, and it failed about one
+        full run in three while passing every time on its own.
+        """
+        deadline = time.monotonic() + 10.0
+        quiet = 0
+        while time.monotonic() < deadline:
+            APP.processEvents()
+            idle = self.services.wait(50)
+            # Services keeps a task until its done signal has been delivered,
+            # so "no longer tracked" is the one reading of "this has finished"
+            # that does not race.
+            if task is not None and task in self.services.running_tasks():
+                quiet = 0
+                continue
+            quiet = quiet + 1 if idle else 0
+            if quiet >= 3:
+                # A last round of delivery. The pool being idle says the
+                # worker has stopped; it does not say the signal carrying its
+                # result has reached the GUI thread yet.
+                for _ in range(5):
+                    APP.processEvents()
+                return
+        raise AssertionError("work did not settle within ten seconds")
 
     def scan(self, **kwargs):
         screen = self.build(**kwargs)

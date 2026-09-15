@@ -177,7 +177,7 @@ class InstallPackagesScreen(Screen):
         self._table.setUniformRowHeights(True)
         self._table.setSelectionMode(QAbstractItemView.NoSelection)
         self._table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._table.itemChanged.connect(lambda *args: self._update_go())
+        self._table.itemChanged.connect(self._on_file_ticked)
         layout.addWidget(self._table, 1)
 
         self._chain_note = QLabel(CHAIN_NOTE)
@@ -603,7 +603,12 @@ class InstallPackagesScreen(Screen):
                 # any of it; here the user has already picked these files out
                 # of a dialog, and unticking them the moment they appear would
                 # make them do the same job twice.
-                row.setCheckState(0, Qt.Checked)
+                #
+                # A row the user has since unticked stays unticked. This runs
+                # again every time another file is added, and it used to tick
+                # the lot.
+                row.setCheckState(0, Qt.Unchecked if item.declined
+                                  else Qt.Checked)
             else:
                 row.setFlags(row.flags() & ~Qt.ItemIsUserCheckable)
                 brush = self._brush("error")
@@ -613,6 +618,20 @@ class InstallPackagesScreen(Screen):
         for index in range(len(COLUMNS)):
             self._table.resizeColumnToContents(index)
         self._table.blockSignals(False)
+        self._update_go()
+
+    def _on_file_ticked(self, row, _column=0):
+        """Remember a tick the user took out, then refresh the button.
+
+        The one place a tick is known to have come from a person. _fill_table
+        blocks this signal while it rebuilds, so nothing here is ever the
+        table repopulating itself.
+        """
+        path = row.data(0, Qt.UserRole)
+        for item in self._files:
+            if item.path == path:
+                item.declined = row.checkState(0) != Qt.Checked
+                break
         self._update_go()
 
     def selected_files(self):

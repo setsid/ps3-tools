@@ -11,6 +11,7 @@ being assembled and becomes strict as the pieces land.
 
 import importlib
 import os
+import sys
 import unittest
 
 from support import ROOT  # noqa: F401  (puts the repo root on the path)
@@ -33,13 +34,26 @@ def application():
 
 
 def load_screens():
-    """Imports whichever screen modules exist. Returns the registry."""
+    """Imports whichever screen modules exist. Returns the registry.
+
+    A module already in sys.modules imports without running its register()
+    again. Another file that imported these and then emptied the registry
+    would leave this one looking at a launcher with no cards in it and
+    calling that a missing screen, which it did: this passed on its own and
+    failed after tests/test_shell.py. So where nothing is registered, a module
+    that was already loaded is loaded again to put its card back.
+    """
     from ps3tools.shell import registry
+    if registry.screens():
+        return registry
     for name in SCREEN_MODULES:
+        cached = sys.modules.get(name)
         try:
-            importlib.import_module(name)
+            module = importlib.import_module(name)
         except ImportError:
             continue
+        if cached is not None:
+            importlib.reload(module)
     return registry
 
 

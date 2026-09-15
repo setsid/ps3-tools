@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import json
 import pathlib
 import tempfile
+import time
 import unittest
 import urllib.request
 
@@ -89,9 +90,29 @@ class AboutCase(unittest.TestCase):
         return widget
 
     def pump(self, milliseconds=30000):
-        self.services.wait(milliseconds)
-        for _ in range(5):
+        """Wait for the worker AND for its result to reach the GUI thread.
+
+        The pool is QThreadPool.globalInstance(), shared with every other
+        test in the process, so "the pool is idle" can be true before this
+        screen's work has been picked up at all. The task a screen holds is
+        cleared by a queued signal, and a second press made before that
+        arrives is quietly ignored, which is how pressing Check now twice
+        counted as one request in a full run and as two on its own.
+        """
+        deadline = time.monotonic() + milliseconds / 1000.0
+        quiet = 0
+        while time.monotonic() < deadline:
             APP.processEvents()
+            idle = self.services.wait(50)
+            if self.services.running_tasks():
+                quiet = 0
+                continue
+            quiet = quiet + 1 if idle else 0
+            if quiet >= 3:
+                for _ in range(5):
+                    APP.processEvents()
+                return
+        raise AssertionError("work did not settle")
 
     def on_show(self, widget):
         """Whether the widget has been shown, without needing a real window.

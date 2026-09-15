@@ -1,5 +1,17 @@
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
 
+> ### HEN support is being tested
+>
+> The patching is expected to work. The fix re-signs each file with the NPDRM
+> control block and application type read off your own copy, which is what
+> makes a patched file boot on a console that checks licences. What is not
+> confirmed is whether webMAN behaves the same way on HEN as it does on CFW,
+> and everything this program does to a console goes through webMAN.
+>
+> If you are on HEN and want to help, run the Diagnostics card and send the
+> file it saves to setsid.research@proton.me, or post it in
+> [the Discord](https://discord.gg/PDrSPNgeNj).
+
 # PS3 Tools
 
 [![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)

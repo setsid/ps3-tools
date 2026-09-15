@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -1704,3 +1705,128 @@ class SavingAConsole(ShellCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCardForSomethingStillBeingWorkedOn(unittest.TestCase):
+    """In the grid with the tools, and plainly not one of them.
+
+    A card that looks live and opens nothing reads as a card that is broken,
+    so this one is drawn quiet and dashed and says what it is. Off to one side
+    it would be a placeholder nobody connects to the tools it belongs beside.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.application = QApplication.instance() or QApplication([])
+
+    def build(self):
+        from ps3tools.shell import launcher as launcher_module
+        theme = AppTheme("dark")
+        connection = ConnectionState("")
+        window = shell_app.MainWindow(Services(connection, theme, {}))
+        self.addCleanup(window.deleteLater)
+        return window.launcher, launcher_module
+
+    def test_it_is_in_the_same_grid_as_the_tools(self):
+        launcher, module = self.build()
+        drawn = launcher._grid_host.cards
+        self.assertTrue(launcher._placeholders)
+        for card in launcher._placeholders:
+            self.assertIn(card, drawn)
+
+    def test_it_is_not_counted_as_a_tool(self):
+        # A build with no tools in it must still say so, whatever else is
+        # sitting in the grid.
+        launcher, _module = self.build()
+        self.assertNotIn("bo1stats", launcher.card_keys())
+
+    def test_it_says_what_it_is_and_what_is_being_worked_on(self):
+        launcher, _module = self.build()
+        card = launcher._placeholders[0]
+        self.assertIn("Black Ops 1", card.text())
+        self.assertIn("stat reset", card.accessibleDescription())
+        self.assertIn("under development", card.accessibleName().lower())
+
+    def test_the_only_thing_on_it_that_clicks_is_the_discord_link(self):
+        launcher, module = self.build()
+        card = launcher._placeholders[0]
+        self.assertEqual(card.url, module.DISCORD_URL)
+        self.assertIn(module.DISCORD_URL, card._link.text())
+        # Nothing to press, and nothing to tab on to.
+        self.assertFalse(hasattr(card, "activated"))
+        from PySide6.QtCore import Qt
+        self.assertEqual(card.focusPolicy(), Qt.FocusPolicy.NoFocus)
+
+    def test_it_is_the_same_size_as_the_cards_beside_it(self):
+        from ps3tools.shell.widgets import ToolCard
+        launcher, _module = self.build()
+        card = launcher._placeholders[0]
+        self.assertEqual(card.width(), ToolCard.CARD_WIDTH)
+        self.assertEqual(card.height(), ToolCard.CARD_HEIGHT)
+
+
+class ClosingTheWindowEndsTheProgram(unittest.TestCase):
+    """Pressing the X left it running with nothing on screen.
+
+    Reported off a real machine: the window disappeared and the process stayed
+    in the task manager. The event loop had ended and the interpreter was
+    waiting to join a worker that was itself waiting on a console.
+
+    Ending it is safe at that point. Every screen that writes to a console
+    refuses to close while it is writing, so whatever is still going is a read.
+    """
+
+    def test_an_ordinary_shutdown_is_left_alone(self):
+        killed = []
+        code = shell_app.finish(0, wait=0.0, exit_now=killed.append)
+        self.assertEqual(code, 0)
+        self.assertEqual(killed, [])
+
+    def test_a_worker_that_will_not_stop_does_not_hold_the_program_open(self):
+        stop = threading.Event()
+        # Not a daemon, which is the whole point: Python joins these before
+        # the interpreter exits, and concurrent.futures registers its
+        # executors' threads for exactly that.
+        worker = threading.Thread(target=stop.wait, name="stubborn")
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(stop.set)
+        killed = []
+        shell_app.finish(3, wait=0.05, exit_now=killed.append)
+        self.assertEqual(killed, [3])
+
+    def test_it_waits_a_moment_for_one_that_is_nearly_done(self):
+        # An ordinary shutdown stays an ordinary shutdown. A worker that stops
+        # of its own accord inside the grace period is joined rather than cut.
+        worker = threading.Thread(target=time.sleep, args=(0.1,),
+                                  name="nearly-done")
+        worker.start()
+        self.addCleanup(worker.join)
+        killed = []
+        shell_app.finish(0, wait=5.0, exit_now=killed.append)
+        self.assertEqual(killed, [])
+
+    def test_a_daemon_thread_is_never_a_reason_to_cut_the_exit(self):
+        # Python does not join these, so they cannot be what is holding it.
+        stop = threading.Event()
+        worker = threading.Thread(target=stop.wait, name="daemon",
+                                  daemon=True)
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(stop.set)
+        killed = []
+        shell_app.finish(0, wait=0.0, exit_now=killed.append)
+        self.assertEqual(killed, [])
+
+    def test_the_names_of_what_was_left_running_are_recorded(self):
+        stop = threading.Event()
+        worker = threading.Thread(target=stop.wait, name="image-reader")
+        worker.start()
+        self.addCleanup(worker.join)
+        self.addCleanup(stop.set)
+        said = []
+        from ps3tools import crashreport
+        with mock.patch.object(crashreport, "note", said.append):
+            shell_app.finish(0, wait=0.05, exit_now=lambda code: None)
+        self.assertTrue(any("image-reader" in line for line in said), said)

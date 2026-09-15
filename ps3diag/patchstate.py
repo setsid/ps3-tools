@@ -160,7 +160,11 @@ BO2 = Title(
         "BLJM61231",
         "BLUS31011", "BLUS31080", "BLUS31140", "BLUS31141", "BLUS41005",
         "NPEB01204", "NPEB01205", "NPEB01206", "NPEB01207",
-        "NPUB31055", "NPUB31056",
+        # NPUB31054 is the North American digital release. It was missing
+        # while 31055 and 31056 were here, and it is the copy somebody was
+        # playing: the tool read a leftover disc folder beside it instead and
+        # told him his title update had not been downloaded.
+        "NPUB31054", "NPUB31055", "NPUB31056",
     ),
     # BLES01717, BLES01718 and BLUS31011 are named in the README. BLUS31140 is
     # in the repository's own scetool fixtures, as the ContentID

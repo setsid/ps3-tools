@@ -29,6 +29,45 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.2.3",
+        date="2026-09-15",
+        summary="A console read once, and said the same way on every screen.",
+        changes=(
+            "One walk of the console answers what is installed, what is a "
+            "disc image and what is waiting in the packages folder, so every "
+            "screen sees the same games.",
+            "Transfer games names the games already installed on the console "
+            "above the list, behind an arrow, and costs the queue with and "
+            "without them.",
+            "A disc image of a game the console already has arrives unticked. "
+            "Tick it if you want the image as well.",
+            "The box before a copy describes the files that are going and "
+            "leaves out anything already decided against.",
+            "Closing the window ends the program. It used to leave it "
+            "running with nothing on screen while a worker waited on a "
+            "console that had gone quiet.",
+            "A file the patchers do not recognise now says where else to "
+            "try, with a link to the manual sequence that can still do it.",
+            "A card on the home screen for the Black Ops 1 stats fix, marked "
+            "as under development, with a link to the Discord.",
+            "The digital release of Black Ops II is recognised, so a console "
+            "that plays that copy is patched rather than being told its title "
+            "update has not been downloaded.",
+            "A title folder holding a licence and no game is left out of the "
+            "installed list and is named, so no update is offered for a game "
+            "that is not there.",
+            "A row you untick stays unticked when the console is read again.",
+            "The scan progress counter no longer runs past its own total.",
+            "Several Call of Duty installations this tool does not patch are "
+            "named in one line rather than one line each.",
+            "The Black Ops II advice says what is left to do when some of "
+            "the files are already fixed.",
+            "Every file of a title fits in the table on the patch screens.",
+            "A package or a file you untick stays unticked when another file "
+            "is added or the console is read again.",
+        ),
+    ),
+    Release(
         version="1.2.2",
         date="2026-09-15",
         summary="What the console actually does, on the evidence of two of "

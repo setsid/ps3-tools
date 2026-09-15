@@ -123,9 +123,12 @@ class FakeLister:
 
     def list_dir(self, path):
         self.asked.append(path)
-        if path not in self.listings:
+        # A real server answers the same whether or not the path ends in a
+        # slash, so the fake does too. The callers of this differed on it.
+        key = path if path in self.listings else path.rstrip("/")
+        if key not in self.listings:
             raise ftplib.error_perm("550 no such directory")
-        return listing_text(self.listings[path])
+        return listing_text(self.listings[key])
 
     def close(self):
         pass
@@ -425,7 +428,7 @@ class WhatIsAlreadyThere(ImageCase):
     def test_the_game_folders_are_listed_read_only(self):
         lister = FakeLister({PS3_DIR: [("Old Game.iso", 1024)],
                              PS2_DIR: [("Ico.iso", 512)]})
-        files, listings = transfer.console_games(lister)
+        files, listings, _installed = transfer.console_games(lister)
         self.assertEqual([item.name for item in files],
                          ["Ico.iso", "Old Game.iso"])
         self.assertEqual(listings[PS3_DIR], {"old game.iso": 1024})
@@ -470,6 +473,66 @@ class WhatIsAlreadyThere(ImageCase):
         self.assertEqual(transfer.chosen(items), [])
 
 
+class TheTickTheUserTookOut(ImageCase):
+    """Reported off hardware. Untick them, press copy, and they all go.
+
+    The button reads the console again on its way to the confirmation box and
+    matches the queue against what comes back. That match set wanted = True on
+    every row the console did not already hold, which is every row the user
+    had just unticked, so the decision lasted until the moment it mattered and
+    was then thrown away.
+    """
+
+    def queued(self, name="A Game.iso"):
+        return transfer.build_queue([self.ps3(name, pad_to=8192)])
+
+    def test_a_row_the_user_unticked_stays_unticked_when_asked_again(self):
+        items = self.queued()
+        items[0].wanted = False
+        items[0].ticked = False
+        transfer.match_console(items, {PS3_DIR: {}})
+        self.assertFalse(items[0].wanted)
+        # And again, because the console is read on entry, on the button and
+        # after every run.
+        transfer.match_console(items, {PS3_DIR: {}})
+        self.assertFalse(items[0].wanted)
+
+    def test_a_duplicate_found_for_the_first_time_still_unticks_itself(self):
+        # The other half of it. Nothing above may cost the scan its ability
+        # to take the tick out of a row the console turns out to hold in full,
+        # which is what stops a copy that would take hours and change nothing.
+        path = self.ps3("A Game.iso", pad_to=8192)
+        items = transfer.build_queue([path])
+        transfer.match_console(items,
+                               {PS3_DIR: {"a game.iso": self.size(path)}})
+        self.assertEqual(items[0].present, "same")
+        self.assertFalse(items[0].wanted)
+
+    def test_a_row_nobody_has_touched_is_still_ticked_by_the_scan(self):
+        items = self.queued()
+        transfer.match_console(items, {PS3_DIR: {}})
+        self.assertTrue(items[0].wanted)
+
+    def test_a_part_copied_row_the_user_unticked_is_left_alone(self):
+        # A partial is offered as something to carry on with, and that is a
+        # proposal about a row nobody has touched.
+        items = self.queued()
+        items[0].wanted = False
+        items[0].ticked = False
+        transfer.match_console(items, {PS3_DIR: {"a game.iso": 4096}})
+        self.assertEqual(items[0].present, "shorter")
+        self.assertFalse(items[0].wanted)
+
+    def test_a_run_unticking_what_it_copied_is_not_a_user_decision(self):
+        # settle_after_run takes the tick out of a game that has just landed.
+        # That has to stay a proposal the next scan can act on normally.
+        items = self.queued()
+        items[0].status = transfer.DONE
+        transfer.settle_after_run(items)
+        self.assertFalse(items[0].wanted)
+        self.assertIsNot(items[0].ticked, False)
+
+
 class AGameAlreadyInstalledOnTheConsole(ImageCase):
     """The file is not there and the game is. Two different answers.
 
@@ -491,14 +554,23 @@ class AGameAlreadyInstalledOnTheConsole(ImageCase):
         transfer.match_console(items, {}, [self.INSTALLED])
         self.assertTrue(items[0].installed)
 
-    def test_it_stays_ticked_because_an_image_is_a_separate_thing(self):
-        # An installed game and a disc image of it are different things and
-        # there are reasons to want both, so this is said and left alone.
+    def test_it_arrives_unticked_so_hours_cannot_start_by_accident(self):
+        # Nine ticked rows and a paragraph asking somebody to untick what they
+        # do not need is how a 141 GB queue starts by accident. The same rule
+        # an image of this name in the destination folder has always followed.
         items = self.queued()
         transfer.match_console(items, {}, [self.INSTALLED])
-        self.assertTrue(items[0].wanted)
+        self.assertFalse(items[0].wanted)
         self.assertIn("already installed on this console", items[0].plan_text)
         self.assertIn(self.INSTALLED, items[0].plan_text)
+
+    def test_ticking_one_survives_the_console_being_read_again(self):
+        # The way back has to hold, or the restrictive default becomes a wall.
+        items = self.queued()
+        transfer.match_console(items, {}, [self.INSTALLED])
+        items[0].ticked = True
+        transfer.match_console(items, {}, [self.INSTALLED])
+        self.assertTrue(items[0].wanted)
 
     def test_the_same_image_already_in_the_folder_is_still_a_duplicate(self):
         # The other of the two situations, and it behaves as it did: the same
@@ -522,14 +594,18 @@ class AGameAlreadyInstalledOnTheConsole(ImageCase):
                                [self.INSTALLED])
         self.assertEqual(transfer.installed_on_console(items), [])
 
-    def test_the_notes_say_which_games_are_installed_and_name_them(self):
+    def test_the_notes_name_only_the_ones_the_user_ticked(self):
+        # console_notes is read at the point of confirming, where the box has
+        # to describe the queue. A game left unticked is not in it.
         items = self.queued()
         transfer.match_console(items, {}, [self.INSTALLED])
-        said = "\n".join(transfer.console_notes(items))
+        self.assertEqual(transfer.console_notes(transfer.chosen(items)), [])
+        items[0].ticked = True
+        transfer.match_console(items, {}, [self.INSTALLED])
+        said = "\n".join(transfer.console_notes(transfer.chosen(items)))
         self.assertIn("already installed on this console", said)
         self.assertIn(self.INSTALLED, said)
-        # And it does not claim they will not be copied. They will.
-        self.assertIn("still ticked", said)
+        self.assertIn("will be copied", said)
 
     def test_a_game_that_is_not_installed_says_nothing(self):
         items = self.queued()
@@ -542,6 +618,34 @@ class AGameAlreadyInstalledOnTheConsole(ImageCase):
         items = self.queued()
         transfer.match_console(items, {})
         self.assertFalse(items[0].installed)
+
+    def test_the_estimate_offers_the_total_with_and_without_them(self):
+        # Reported off hardware: the running total read 144.6 GB and ten and
+        # a half hours, which was every row copied including the eight the
+        # console already had installed. One figure left nothing to decide
+        # with, so both are given and neither row is unticked for the user.
+        here = transfer.QueueItem(platform=transfer.PS3, wanted=True,
+                                  installed=True, title_id=self.INSTALLED,
+                                  name="A Game.iso", size=100 * 1024 ** 3)
+        rest = transfer.QueueItem(platform=transfer.PS3, wanted=True,
+                                  name="B Game.iso", size=20 * 1024 ** 3)
+        text = transfer.time_estimate([here, rest])
+        self.assertIn("120.0 GB", text)
+        self.assertIn("20.0 GB", text)
+        self.assertIn("already has installed", text)
+        self.assertIn("Without it", text)
+        # And the decision is still the user's to make.
+        self.assertTrue(here.wanted)
+
+    def test_a_queue_with_none_installed_is_costed_in_one_figure(self):
+        # The second figure is the answer to a queue that carries games the
+        # console already has. A queue that carries none of them must read
+        # exactly as it did.
+        items = [transfer.QueueItem(platform=transfer.PS3, wanted=True,
+                                    size=20 * 1024 ** 3)]
+        text = transfer.time_estimate(items)
+        self.assertEqual(transfer.without_installed_estimate(items), "")
+        self.assertNotIn("Without", text)
 
 
 # --- recognising a game that is already there --------------------------------
@@ -1246,7 +1350,10 @@ class TheScreen(ScreenCase):
         self.assertFalse(screen._working)
         # The console is listed again afterwards, and the report of what
         # happened is still on screen rather than having been wiped by it.
-        self.assertGreaterEqual(self.lister.asked.count(PS3_DIR), 2)
+        # The path is asked for with a trailing slash; a server answers the
+        # same either way and the count is what this is about.
+        asked = [path.rstrip("/") for path in self.lister.asked]
+        self.assertGreaterEqual(asked.count(PS3_DIR), 2)
         self.assertIn("Finished", screen._panel_heading.text())
 
     def test_the_free_space_check_refuses_rather_than_filling_the_drive(self):
@@ -1346,10 +1453,10 @@ class TheGameItAlreadyHas(ScreenCase):
         self.assertEqual(row.checkState(0), Qt.Unchecked)
         self.assertIn("Already on the console", row.text(5))
 
-    def test_the_confirmation_names_what_the_console_already_has(self):
-        # It has to be said before the button as well as at the copy, and the
-        # box was the one place it was not said: the file is unticked by then
-        # and the box was built from the ticked ones only.
+    def test_the_confirmation_describes_the_queue_and_nothing_else(self):
+        # With one file ticked the box still said nine games were ticked and
+        # named two duplicates that were going nowhere. Something the user
+        # has already decided against does not need repeating here.
         path = self.ps3("A Game.iso", 8192)
         screen = self.build(
             listings={PS3_DIR: [("A Game.iso", self.size(path))],
@@ -1358,13 +1465,29 @@ class TheGameItAlreadyHas(ScreenCase):
         self.settle(screen)
         screen.add_files([path, self.ps3("B Game.iso", 4096)])
         text = screen.confirm_text(transfer.chosen(screen._items))
-        self.assertIn(transfer.ALREADY_LEAD, text)
+        self.assertNotIn(transfer.ALREADY_LEAD, text)
+        self.assertNotIn("A Game.iso", text)
+        self.assertIn("1 file", text)
+
+    def test_ticking_a_duplicate_puts_it_back_in_the_box(self):
+        # The warning that does apply to a file being copied is still made.
+        path = self.ps3("A Game.iso", 8192)
+        screen = self.build(
+            listings={PS3_DIR: [("A Game.iso", self.size(path))],
+                      PS2_DIR: []})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        self.rows()[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        text = screen.confirm_text(transfer.chosen(screen._items))
+        self.assertIn(transfer.OVERWRITE_LEAD, text)
         self.assertIn("A Game.iso", text)
 
-    def test_a_game_installed_on_the_console_is_named_before_the_button(self):
+    def test_a_game_installed_on_the_console_arrives_unticked(self):
         # 144.6 GB and ten and a half hours of copying, with six of the
-        # fourteen already installed. It has to be said before the button is
-        # pressed rather than after.
+        # fourteen already installed and every row ticked. A copy that takes
+        # hours and changes nothing must not start by accident.
         path = self.ps3("A Game.iso", 8192)
         screen = self.build(listings={
             PS3_DIR: [], PS2_DIR: [],
@@ -1373,10 +1496,25 @@ class TheGameItAlreadyHas(ScreenCase):
         self.settle(screen)
         screen.add_files([path])
         row = self.rows()[0]
-        # Still ticked. An installed game and an image of it are separate
-        # things and the user is the one who decides.
-        self.assertEqual(row.checkState(0), Qt.Checked)
+        self.assertEqual(row.checkState(0), Qt.Unchecked)
+        # And the row says why it arrived that way rather than only that it
+        # is not ticked.
         self.assertIn("already installed on this console", row.text(5))
+        self.assertIn("Tick it", row.text(5))
+        # Nothing is queued, so the box has nothing to warn about.
+        text = screen.confirm_text(transfer.chosen(screen._items))
+        self.assertNotIn(transfer.INSTALLED_LEAD, text)
+
+    def test_ticking_it_puts_it_in_the_box_as_something_going(self):
+        path = self.ps3("A Game.iso", 8192)
+        screen = self.build(listings={
+            PS3_DIR: [], PS2_DIR: [],
+            "/dev_hdd0/game/": [("BLES01428", 0, True)]})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        self.rows()[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
         text = screen.confirm_text(transfer.chosen(screen._items))
         self.assertIn(transfer.INSTALLED_LEAD, text)
         self.assertIn("BLES01428", text)
@@ -1443,6 +1581,101 @@ class TheGameItAlreadyHas(ScreenCase):
         self.settle(screen)
         self.assertEqual(len(writer.stores), 1)
         self.assertEqual(writer.stores[0][1], 0)
+
+
+# --- item 4: the warning nobody could see ------------------------------------
+
+class TheWarningWhereItWillBeRead(ScreenCase):
+    """Reported off hardware. Eight of fourteen rows said it and none showed.
+
+    The only place a queued image was said to be a game the console already
+    has installed was the last column of the table, and that column sits past
+    the right-hand edge of the window at the width this screen opens at. The
+    same words now appear above the queue, behind an arrow: nine names at full
+    length with a paragraph under them left two of twelve file rows on screen,
+    and the file list is the thing being acted on.
+    """
+
+    INSTALLED = "BLES01428"
+
+    def installed_screen(self):
+        screen = self.build(listings={
+            PS3_DIR: [], PS2_DIR: [],
+            "/dev_hdd0/game/": [(self.INSTALLED, 0, True)]})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([self.ps3("A Game.iso", 8192)])
+        return screen
+
+    def test_the_installed_titles_are_named_above_the_queue(self):
+        # Above the table in the layout, and naming the title, so that the
+        # far-right column is not the only place it is said.
+        screen = self.installed_screen()
+        self.assertFalse(screen._installed_panel.isHidden())
+        self.assertIn(self.INSTALLED, screen._installed_panel.text())
+        self.assertIn("installed on this console",
+                      screen._installed_panel.summary())
+        layout = screen.layout()
+        self.assertLess(layout.indexOf(screen._installed_panel),
+                        layout.indexOf(screen._table))
+
+    def test_it_starts_closed_so_the_file_list_keeps_the_room(self):
+        # Nine games named at full length with a paragraph under them left two
+        # of twelve rows visible on a real console.
+        screen = self.installed_screen()
+        self.assertFalse(screen._installed_panel.is_open())
+        self.assertTrue(screen._installed_panel.summary())
+
+    def test_the_block_stays_up_once_the_row_is_unticked(self):
+        # The row arrives unticked now, so a block that listed only the ticked
+        # ones would be empty exactly when it has something to say.
+        screen = self.installed_screen()
+        self.assertFalse(self.rows()[0].checkState(0) == Qt.Checked)
+        self.assertFalse(screen._installed_panel.isHidden())
+
+    def test_a_queue_with_nothing_installed_shows_no_block(self):
+        # A warning that is on screen whatever the queue holds is furniture,
+        # and the next real one is read as furniture too.
+        screen = self.build(listings={PS3_DIR: [], PS2_DIR: []})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([self.ps3("A Game.iso", 8192)])
+        self.assertTrue(screen._installed_panel.isHidden())
+        self.assertEqual(screen._installed_panel.text(), "")
+
+    def test_clearing_the_queue_takes_the_block_away(self):
+        # A warning left up over a queue that no longer holds the row it is
+        # about is the screen arguing with its own table.
+        screen = self.installed_screen()
+        screen._on_clear()
+        APP.processEvents()
+        self.assertTrue(screen._installed_panel.isHidden())
+
+
+class TheButtonKeepsTheTicksTheUserSet(ScreenCase):
+    """The same fault as TheTickTheUserTookOut, driven through the screen.
+
+    "When you load games and it says this game already on console so you
+    untick them, then when you press copy to console it reselects them all
+    again." The button is where the console is read a second time, so the
+    button is where the ticks came back.
+    """
+
+    def test_an_unticked_row_is_not_copied_when_the_button_is_pressed(self):
+        screen = self.build(listings={
+            PS3_DIR: [], PS2_DIR: [],
+            "/dev_hdd0/game/": [("BLES01428", 0, True)]})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([self.ps3("A Game.iso", 8192),
+                          self.ps2("B Game.iso", 4096)])
+        self.rows()[0].setCheckState(0, Qt.Unchecked)
+        APP.processEvents()
+        screen._on_go()
+        self.settle(screen)
+        self.assertEqual([path for path, *_ in self.writer.stores],
+                         [f"{PS2_DIR}/B Game.iso"])
+        self.assertEqual(self.rows()[0].checkState(0), Qt.Unchecked)
 
 
 # --- the guard ---------------------------------------------------------------

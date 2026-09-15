@@ -561,9 +561,7 @@ def _walk_game_folders(ctx, result, devices, folders, all_names):
             if not entries:
                 continue
             rows = []
-            for item in entries[:MAX_GAME_ENTRIES]:
-                if item["name"] in (".", ".."):
-                    continue
+            for item in parsers.real_entries(entries)[:MAX_GAME_ENTRIES]:
                 info = describe_name(item["name"])
                 rows.append({
                     "name": item["name"],
@@ -746,8 +744,8 @@ def collect_network(ctx):
         result.artefact("network/parsed-from.txt", text)
     else:
         result.note("This webMAN version does not report the console's "
-                    "network settings on any page that answered. That is a "
-                    "limitation of the console's web pages, not a fault.")
+                    "network settings on any page that answered. Nothing is "
+                    "wrong with the console.")
 
     # Whatever the pages do or do not say, the address the tool reached the
     # console on is known for certain, and so is whether FTP answered. On

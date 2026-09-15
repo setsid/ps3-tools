@@ -132,3 +132,82 @@ class Assembled(unittest.TestCase):
         self.assertTrue(connection.connected)
         self.assertEqual(connection.connection, "connected")
         self.assertNotIn("No PS3 found", connection.connection_detail)
+
+
+@unittest.skipUnless(QT, "PySide6 not available")
+class ButtonColours(unittest.TestCase):
+    """What a button does decides its colour, on every screen the same way.
+
+    Every button was the same grey, including the ones that write to somebody's
+    console: "Apply the fix" looked exactly like "Back". This walks the real
+    screens rather than testing the helper, because the thing that goes wrong
+    is a new screen forgetting to say what its button is for.
+    """
+
+    #: The one action each screen exists to perform, as a screen that has
+    #: just opened. Game updates is the odd one: on arrival there is nothing
+    #: to download, so the action is the scan, and it hands the colour over to
+    #: the download button once there is a list. Either way, exactly one.
+    PRIMARY_BUTTONS = {
+        "ps3tools.screens.diagnostics": "run_button",
+        "ps3tools.screens.gameupdates": "_rescan",
+        "ps3tools.screens.patcher": "_patch",
+        "ps3tools.screens.transfer": "_go",
+        "ps3tools.screens.saves": "copy_button",
+        "ps3tools.screens.installpkg": "_go",
+    }
+
+    #: Writes over what is already there. Red so it is not hit in passing.
+    DANGER_BUTTONS = {
+        "ps3tools.screens.patcher": "_restore",
+    }
+
+    def setUp(self):
+        self.app = application()
+
+    def _screen(self, module_name):
+        from ps3tools.shell.app import AppTheme, ConnectionState
+        from ps3tools.shell.screen import Services
+        module = importlib.import_module(module_name)
+        for candidate in vars(module).values():
+            key = getattr(candidate, "key", None)
+            if isinstance(key, str) and key and hasattr(candidate, "on_enter"):
+                services = Services(ConnectionState(""), AppTheme("dark"), {})
+                return candidate(services)
+        self.skipTest(f"no screen class in {module_name}")
+
+    def test_the_main_action_of_every_screen_is_coloured(self):
+        for module_name, attribute in self.PRIMARY_BUTTONS.items():
+            with self.subTest(module_name):
+                screen = self._screen(module_name)
+                button = getattr(screen, attribute)
+                self.assertTrue(button.property("primary"), button.text())
+                self.assertFalse(button.property("danger"), button.text())
+
+    def test_what_writes_over_something_is_red(self):
+        for module_name, attribute in self.DANGER_BUTTONS.items():
+            with self.subTest(module_name):
+                button = getattr(self._screen(module_name), attribute)
+                self.assertTrue(button.property("danger"), button.text())
+                self.assertFalse(button.property("primary"), button.text())
+
+    def test_back_is_never_coloured_on_any_screen(self):
+        for module_name in self.PRIMARY_BUTTONS:
+            with self.subTest(module_name):
+                screen = self._screen(module_name)
+                back = getattr(screen, "_back", None)
+                if back is None:
+                    continue
+                self.assertEqual(back.text(), "Back")
+                self.assertFalse(back.property("primary"))
+                self.assertFalse(back.property("danger"))
+
+    def test_exactly_one_button_a_screen_is_the_primary_one(self):
+        from PySide6.QtWidgets import QPushButton
+        for module_name in self.PRIMARY_BUTTONS:
+            with self.subTest(module_name):
+                screen = self._screen(module_name)
+                coloured = [button.text()
+                            for button in screen.findChildren(QPushButton)
+                            if button.property("primary")]
+                self.assertEqual(len(coloured), 1, coloured)

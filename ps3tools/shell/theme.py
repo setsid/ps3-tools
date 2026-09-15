@@ -320,6 +320,30 @@ QPushButton[danger="true"]:disabled {
 QPushButton#backButton { padding: 6px 14px 6px 9px; font-weight: 600; }
 QPushButton#backButton:hover { border-color: %(accent)s; }
 
+/* The first-run dialog is frameless, so it has to draw its own edge or it
+   reads as a rectangle of nothing floating over the blurred window. */
+QDialog#firstRun { background: transparent; }
+QFrame#firstRunBody {
+    background: %(surface)s;
+    border: 1px solid %(border)s;
+    border-radius: 12px;
+}
+QDialog#firstRun QLabel { background: transparent; }
+QPushButton#dismiss {
+    border-radius: 15px;
+    padding: 0px;
+    font-size: 15px;
+    color: %(text_dim)s;
+}
+QPushButton#dismiss:hover { color: %(text)s; background: %(surface_alt)s; }
+QPushButton#bigFind { border-radius: 10px; padding: 12px 20px; }
+
+/* A menu on a QPushButton draws an arrow beside the label. On the theme
+   button that arrow is the whole reason it read as a drop-down in a row of
+   toolbar buttons, so it is taken off. The menu still opens on a click. */
+QPushButton#themeButton::menu-indicator { image: none; width: 0px; }
+QPushButton#themeButton { padding: 6px 9px; }
+
 QPushButton[flat="true"] {
     background: transparent;
     border: 1px solid transparent;

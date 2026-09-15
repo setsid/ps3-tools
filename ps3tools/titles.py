@@ -123,7 +123,7 @@ MW3_BINARIES = (
     # sitting next to the one being changed. It has no patch site: the fault is
     # not in it and the fix does not touch it.
     binary("default.self", MW3_KLICENSEE, None, None,
-           "campaign and Spec Ops, not affected"),
+           "campaign and Spec Ops; unaffected"),
 )
 
 
@@ -191,8 +191,8 @@ TITLES = {
         "verified_update": "1.19",
         "repo": "https://github.com/setsid/bo2-ps3-psn-freeze-fix",
         "symptom": ("The game freezes on PS3 while a PSN session is active. "
-                    "It is a logging fault in the game, not a network "
-                    "problem and not a ban."),
+                    "It is a logging fault in the game. Your connection is "
+                    "fine and your account has not been banned."),
         # The "fake signed, so syscalls must be on" line that used to be here
         # described TrueAncestor's output, not this tool's. Recovering the
         # NPDRM control block and application type off the user's own files is

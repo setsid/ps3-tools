@@ -11,6 +11,7 @@ test fails the test rather than making a request.
 import json
 import os
 import tempfile
+import shutil
 import unittest
 import urllib.error
 import urllib.request
@@ -188,7 +189,7 @@ class FetchTests(NoNetworkCase):
         obstacle to it. It exists so a version change is always a decision
         somebody made rather than something noticed later on a screenshot.
         """
-        self.assertEqual(update.VERSION, "1.1.0")
+        self.assertEqual(update.VERSION, "1.2.0")
         # Plain dotted numbers, or the tag comparison silently stops working.
         self.assertIsNotNone(update.parse_version(update.VERSION))
 
@@ -580,6 +581,66 @@ class DownloadTests(NoNetworkCase):
         self.assertIsNotNone(release)
         self.assertEqual(len(seen), 1)
         self.assertEqual(seen[0][0], update.RELEASES_URL)
+
+
+
+class WhereTheDownloadLands(unittest.TestCase):
+    """Nothing on the Desktop is ever written over.
+
+    Reported from a real Desktop: every release ships the same file name, the
+    copy already there was the program doing the downloading, Windows had it
+    locked, and the save failed as "write protected" with nothing the user
+    could do about it. Closing the program first cannot help, because the
+    program is the thing doing the writing.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="ps3-update-target-")
+        self.addCleanup(shutil.rmtree, self.folder, True)
+
+    def name_for(self, asset="ps3-tools.exe", tag="v1.2.0"):
+        return os.path.basename(update.free_path(self.folder, asset, tag))
+
+    def test_the_version_goes_in_the_name(self):
+        self.assertEqual(self.name_for(), "ps3-tools-1.2.0.exe")
+
+    def test_a_file_that_is_already_there_is_left_alone(self):
+        first = update.free_path(self.folder, "ps3-tools.exe", "v1.2.0")
+        with open(first, "wb") as handle:
+            handle.write(b"the copy that is running")
+        second = update.free_path(self.folder, "ps3-tools.exe", "v1.2.0")
+        self.assertNotEqual(first, second)
+        self.assertEqual(os.path.basename(second), "ps3-tools-1.2.0 (2).exe")
+        with open(first, "rb") as handle:
+            self.assertEqual(handle.read(), b"the copy that is running")
+
+    def test_it_keeps_counting_rather_than_giving_up(self):
+        for _ in range(4):
+            path = update.free_path(self.folder, "ps3-tools.exe", "v1.2.0")
+            open(path, "wb").close()
+        self.assertEqual(self.name_for(), "ps3-tools-1.2.0 (5).exe")
+
+    def test_a_name_that_already_carries_the_version_is_not_doubled(self):
+        self.assertEqual(self.name_for(asset="ps3-tools-1.2.0.exe"),
+                         "ps3-tools-1.2.0.exe")
+
+    def test_a_release_with_no_tag_still_gets_a_name(self):
+        self.assertEqual(self.name_for(tag=""), "ps3-tools.exe")
+
+    def test_a_download_says_the_name_it_actually_used(self):
+        release = update.Release({
+            "tag_name": "v1.2.0",
+            "assets": [{"name": "ps3-tools.exe", "size": 4,
+                        "browser_download_url":
+                            "https://github.com/setsid/ps3-tools/x.exe"}]})
+        taken = update.free_path(self.folder, "ps3-tools.exe", "v1.2.0")
+        open(taken, "wb").close()
+        result = update.download(release, fetcher=lambda url, timeout=None:
+                                 b"data", folder=self.folder)
+        self.assertTrue(result.ok)
+        self.assertEqual(os.path.basename(result.path),
+                         "ps3-tools-1.2.0 (2).exe")
+        self.assertIn("ps3-tools-1.2.0 (2).exe", result.detail)
 
 
 if __name__ == "__main__":

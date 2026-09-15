@@ -188,9 +188,11 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], 1)
         row = payload["isos"][0]
         self.assertEqual(sorted(row), sorted([
-            "name", "device", "folder", "path", "size", "method", "title_id",
-            "title", "app_version", "category", "region", "bytes_read",
-            "name_mismatch", "reason"]))
+            "name", "opened", "device", "folder", "path", "size", "method",
+            "title_id", "title", "app_version", "category", "region",
+            "bytes_read", "name_mismatch", "reason"]))
+        # It was read to a conclusion, so the caller may act on the answer.
+        self.assertTrue(row["opened"])
         self.assertEqual(row["method"], "param_sfo")
         self.assertEqual(row["title_id"], "BLES01428")
         self.assertEqual(row["region"], "Europe")

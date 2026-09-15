@@ -32,8 +32,11 @@ from ps3tools.consoleactions import (ActionFailed, ActionRefused,
 # The route the coordinator is adding to tests/mock_webman.py. It is passed in
 # explicitly here so this file does not depend on that landing first; when it
 # lands, DEFAULT_ROUTES gains the same path and nothing here has to change.
+PACKAGE = "EP0002-BLES00134_00-GUITARHERO3PATCH-A0111-V0100-PE.pkg"
+INSTALL_PATH = "/install.ps3/dev_hdd0/packages/" + PACKAGE
+
 INSTALL_ROUTES = {
-    "/install.ps3/dev_hdd0/packages": b"<html><body>Installing</body></html>",
+    INSTALL_PATH: b"<html><body>Installing</body></html>",
 }
 
 
@@ -78,15 +81,40 @@ class ExplodingOpener:
 # --- the allowlist ---------------------------------------------------------
 
 class TheAllowlist(unittest.TestCase):
-    def test_it_holds_exactly_one_path(self):
-        # A second entry is a decision somebody makes on purpose. If this fails
-        # because one was added, read consoleactions.py before changing it.
-        self.assertEqual(sorted(consoleactions.ALLOWED_ACTIONS),
-                         ["/install.ps3/dev_hdd0/packages"])
+    def test_the_prefix_is_fixed_and_written_out_whole(self):
+        # Everything before the file name is a constant. If this fails because
+        # somebody made part of it configurable, read consoleactions.py before
+        # changing it.
+        self.assertEqual(consoleactions.INSTALL_PREFIX,
+                         "/install.ps3/dev_hdd0/packages/")
 
-    def test_the_install_path_is_allowed(self):
-        self.assertEqual(assert_allowed("/install.ps3/dev_hdd0/packages"),
-                         "/install.ps3/dev_hdd0/packages")
+    def test_the_install_path_for_a_real_package_is_allowed(self):
+        self.assertEqual(assert_allowed(INSTALL_PATH), INSTALL_PATH)
+        self.assertEqual(consoleactions.install_path(PACKAGE), INSTALL_PATH)
+
+    def test_the_folder_on_its_own_is_not_a_call_any_more(self):
+        # It was the only entry for a while and it does nothing: that URL is a
+        # picker page whose dropdown appends the file name in the browser.
+        for path in ("/install.ps3/dev_hdd0/packages",
+                     "/install.ps3/dev_hdd0/packages/"):
+            with self.subTest(path):
+                with self.assertRaises(ActionRefused):
+                    assert_allowed(path)
+
+    def test_nothing_can_be_walked_out_of_the_packages_folder(self):
+        for tail in ("../recovery.ps3", "../../recovery.ps3", "..",
+                     "a/b.pkg", "sub/../../rebuild.ps3", ".hidden.pkg",
+                     "boot.self", "x.pkg.self", ""):
+            with self.subTest(tail):
+                with self.assertRaises(ActionRefused):
+                    assert_allowed(consoleactions.INSTALL_PREFIX + tail)
+
+    def test_a_name_that_is_not_a_package_is_refused_before_a_url_exists(self):
+        for name in ("recovery.ps3", "../x.pkg", "a b.pkg", "x.PKG.exe",
+                     "", None, "/etc/passwd"):
+            with self.subTest(name):
+                with self.assertRaises(ActionRefused):
+                    consoleactions.install_path(name)
 
     def test_recovery_is_refused(self):
         with self.assertRaises(ActionRefused):
@@ -143,23 +171,21 @@ class TheAllowlist(unittest.TestCase):
 # --- the call itself -------------------------------------------------------
 
 class TheInstallCall(unittest.TestCase):
-    def test_it_asks_for_the_one_allowed_path(self):
+    def test_it_names_the_file_because_the_folder_alone_does_nothing(self):
         opener = RecordingOpener()
         client = ConsoleActions("127.0.0.1:8080", opener=opener)
-        response = client.install_packages()
+        response = client.install_package(PACKAGE)
         self.assertTrue(response.ok)
-        self.assertEqual(
-            opener.urls,
-            ["http://127.0.0.1:8080/install.ps3/dev_hdd0/packages"])
+        self.assertEqual(opener.urls,
+                         ["http://127.0.0.1:8080" + INSTALL_PATH])
 
     def test_it_works_against_the_mock_console(self):
         with MockWebmanHttp(routes=INSTALL_ROUTES) as server:
             client = ConsoleActions(server.address)
-            response = client.install_packages()
+            response = client.install_package(PACKAGE)
         self.assertEqual(response.status, 200)
         self.assertIn("Installing", response.body)
-        self.assertEqual(server.requests,
-                         [("GET", "/install.ps3/dev_hdd0/packages")])
+        self.assertEqual(server.requests, [("GET", INSTALL_PATH)])
 
     def test_an_unexpected_status_is_a_failure_with_advice(self):
         # webMAN answering 404 means this build has no such endpoint. The file
@@ -167,7 +193,7 @@ class TheInstallCall(unittest.TestCase):
         opener = RecordingOpener(status=404, body=b"not found")
         client = ConsoleActions("127.0.0.1:8080", opener=opener)
         with self.assertRaises(ActionFailed) as caught:
-            client.install_packages()
+            client.install_package(PACKAGE)
         self.assertIn("Package Manager", str(caught.exception))
 
     def test_an_http_error_comes_back_as_the_status_it_was(self):
@@ -177,7 +203,7 @@ class TheInstallCall(unittest.TestCase):
         client = ConsoleActions("127.0.0.1:8080",
                                 opener=RecordingOpener(raises=error))
         with self.assertRaises(ActionFailed) as caught:
-            client.install_packages()
+            client.install_package(PACKAGE)
         self.assertIn("500", str(caught.exception))
 
     def test_a_console_that_vanished_says_what_to_check(self):
@@ -185,13 +211,13 @@ class TheInstallCall(unittest.TestCase):
         client = ConsoleActions("127.0.0.1:8080",
                                 opener=RecordingOpener(raises=error))
         with self.assertRaises(ActionFailed) as caught:
-            client.install_packages()
+            client.install_package(PACKAGE)
         self.assertIn("switched on", str(caught.exception))
 
     def test_no_host_is_refused_before_anything_is_built(self):
         client = ConsoleActions("", opener=ExplodingOpener())
         with self.assertRaises(ActionFailed):
-            client.install_packages()
+            client.install_package(PACKAGE)
 
     def test_html_that_is_not_a_success_is_not_treated_as_one(self):
         # A 200 whose body is webMAN's 404 page is still a 200; this client
@@ -199,17 +225,79 @@ class TheInstallCall(unittest.TestCase):
         # page and guessing at what it means.
         opener = RecordingOpener(status=200, body=b"<html>404</html>")
         response = ConsoleActions("127.0.0.1:1",
-                                  opener=opener).install_packages()
+                                  opener=opener).install_package(PACKAGE)
         self.assertTrue(response.ok)
         self.assertIn("404", response.body)
 
 
 class TheModuleItself(unittest.TestCase):
-    def test_it_names_the_install_call_as_untested(self):
-        # The one thing in this program that nobody has ever fired at a real
-        # console must say so where a reader will find it.
-        text = ConsoleActions.install_packages.__doc__ or ""
-        self.assertIn("UNTESTED", text)
+    def test_it_records_what_is_still_unknown_about_installing(self):
+        # Whether a second request lands while the console's own dialog is up
+        # has not been established, and the next person to wire something to
+        # this needs to know that before they fire off a row of them.
+        text = ConsoleActions.install_package.__doc__ or ""
+        self.assertIn("NOT established", text)
+        self.assertIn("one package at a time", text)
+
+
+class WhatItIsAllowedToClaim(unittest.TestCase):
+    """The install call does nothing on hardware, so nothing may say it does.
+
+    Watched twice on a real console, from both screens, with a title update
+    and with a user-supplied package: 200 back, nothing on screen, the file
+    still sitting in the folder. The wording that told people to watch the
+    console for an install read as a fault on their console rather than a
+    thing this program cannot do.
+    """
+
+    def test_the_notice_says_what_the_console_is_doing_and_what_to_press(self):
+        # It really does install now, and the console waits on O. The notice
+        # that told people it could not is gone.
+        from ps3tools import updates
+        notice = updates.INSTALL_NOTICE
+        self.assertIn("installing now", notice)
+        self.assertIn("press O", notice)
+        # More than one queues, so the user is told one press covers the lot
+        # rather than being made to wait between them.
+        self.assertIn("queues up behind", notice)
+        self.assertNotIn("has not been seen to act", notice)
+
+    def test_the_notice_still_says_how_to_do_it_by_hand(self):
+        from ps3tools import updates
+        notice = updates.INSTALL_NOTICE
+        self.assertIn("Package Manager", notice)
+        self.assertIn("Install Package Files", notice)
+
+    def test_the_answer_body_is_logged_not_thrown_away(self):
+        # A 200 with nothing happening is the whole problem. Whatever reason
+        # webMAN gives is in the body or nowhere.
+        events = []
+
+        class Log:
+            def event(self, kind, **fields):
+                events.append((kind, fields))
+
+        body = "Installing packages from /dev_hdd0/packages<br>"
+        actions = ConsoleActions("192.0.2.9",
+                                 opener=RecordingOpener(body=body.encode()),
+                                 log=Log())
+        actions.install_package(PACKAGE)
+        kinds = [item for item in events if item[0] == "console_action"]
+        self.assertEqual(len(kinds), 1)
+        self.assertIn(body, kinds[0][1]["body"])
+
+    def test_a_very_long_answer_is_cut_before_it_reaches_the_log(self):
+        events = []
+
+        class Log:
+            def event(self, kind, **fields):
+                events.append(fields)
+
+        actions = ConsoleActions(
+            "192.0.2.9", opener=RecordingOpener(body=b"x" * 50000), log=Log())
+        actions.install_package(PACKAGE)
+        self.assertEqual(len(events[0]["body"]),
+                         consoleactions.MAX_LOGGED_BODY)
 
 
 if __name__ == "__main__":

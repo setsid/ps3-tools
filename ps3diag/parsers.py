@@ -83,6 +83,23 @@ KINDS = {"-": "file", "d": "directory", "l": "link", "b": "block",
          "c": "char", "p": "pipe", "s": "socket"}
 
 
+#: The two entries every FTP listing has and nobody ever means. They are left
+#: in parse_ftp_list's output because that function reports what the console
+#: said; anything counting or showing a folder's contents drops them first.
+DOT_ENTRIES = (".", "..")
+
+
+def real_entries(entries):
+    """A listing without "." and "..".
+
+    A transfer screen that counted them told somebody they had 30 things on
+    their console when they had rather fewer, which is the kind of wrong that
+    looks like the tool cannot read the console properly.
+    """
+    return [entry for entry in entries
+            if entry.get("name") not in DOT_ENTRIES]
+
+
 def parse_ftp_list(text):
     """Unix LIST output to entries.
 

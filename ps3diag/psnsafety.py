@@ -432,7 +432,8 @@ def _unknowns(system, plugins, settings):
                    f"(status: {plugins['status']}"
                    f"{'; ' + _text(plugins['error']) if plugins['error'] else ''})"
                    ", so whether a spoofer or any other plugin is loaded is "
-                   "unknown. Read this as unknown, not as none.")
+                   "unknown. There may be plugins loaded that this did not "
+                   "see.")
     if not settings["collected"]:
         out.append("The webMAN settings were not collected, so any "
                    "PSN-related option set there was not seen.")
@@ -556,8 +557,9 @@ def findings_for(artefact_set):
             rule_id="psn-plugins-not-collected", severity="info",
             title="Which plugins are loaded is unknown",
             explanation=("The plugin list could not be read, so nothing can "
-                         "be said about what is loaded on this console. Read "
-                         "that as unknown, not as nothing."),
+                         "be said about what is loaded on this console. "
+                         "Treat it as unknown. There may be plugins loaded "
+                         "that this did not see."),
             evidence=[f"plugins category status: {plugins['status']}"],
             category="plugins"))
     else:

@@ -20,9 +20,10 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
-                               QVBoxLayout, QWidget)
+                               QTabWidget, QVBoxLayout, QWidget)
 
-from ps3tools import APP_NAME, FULL_NAME, PROJECT_URL, VENDOR, VERSION, update
+from ps3tools import (APP_NAME, FULL_NAME, PROJECT_URL, VENDOR, VERSION,
+                      history, update)
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 from ps3tools.shell.updatebanner import UpdateBanner
@@ -59,9 +60,10 @@ NETWORK_LINES = (
      "on the console and nothing at all outside that folder."),
     ("Checks GitHub for a newer version, once a day.",
      "One request to api.github.com asking what the latest release is. It "
-     "sends the name and version of this program and nothing else: not your "
-     "IP beyond the one GitHub sees, not what games you own, not anything "
-     "read from the console. If you ask for the update, the file is fetched "
+     "sends the name and version of this program and nothing else. Your "
+     "games and everything read from the console stay on this machine. "
+     "GitHub sees the address any web request would show it. "
+     "If you ask for the update, the file is fetched "
      "from GitHub and saved to your Desktop; it is never run for you and it "
      "never replaces this program while it is running. The checkbox below "
      "turns all of it off."),
@@ -97,6 +99,18 @@ LICENCE_NOTE = (
     "PS3 Tools is MIT licensed, and so are the two patch scripts it ships. "
     "The components credited above are other people's work and are credited "
     "here as such.")
+
+#: Fixed wording. The same two paragraphs go in the README here and in the
+#: READMEs of the two standalone patcher repositories, so they are quoted
+#: rather than rephrased for the screen.
+TRADEMARK_NOTICE = (
+    "Not affiliated with or endorsed by Activision, Treyarch or Sony. All "
+    "trademarks are the property of their respective owners.")
+
+DISCLAIMER_NOTICE = (
+    "Every reasonable step has been taken to make this software safe, but no "
+    "guarantee is given. Use it at your own risk. The app backs up the files "
+    "it modifies; keep your own backups as well.")
 
 UPDATE_LABEL = "Check GitHub for a newer version once a day"
 UPDATE_HINT = (
@@ -194,26 +208,42 @@ class AboutScreen(Screen):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
 
-        scroll = QScrollArea(self)
+        # Four short pages rather than one long one. Everything here is worth
+        # keeping and none of it is worth scrolling past to reach the rest:
+        # what you are running, what changed, what it does over the network,
+        # and who wrote the parts that are not this.
+        self.tabs = QTabWidget(self)
+        self.tabs.setDocumentMode(True)
+        outer.addWidget(self.tabs)
+
+        self._page("This program", self._build_identity, self._build_update)
+        self._page("What's new", self._build_history)
+        self._page("Network", self._build_network)
+        self._page("Credits", self._build_links, self._build_credits)
+
+        self.theme.changed.connect(self._apply_theme)
+        self._apply_theme()
+
+    def _page(self, label, *builders):
+        """One tab: a scrolling column that the builders write into.
+
+        self.column is what _heading and _body add to, so it is pointed at
+        this page for as long as the builders run and every one of them stays
+        exactly as it was.
+        """
+        scroll = QScrollArea(self.tabs)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        outer.addWidget(scroll)
-
         page = QWidget(scroll)
         self.column = QVBoxLayout(page)
         self.column.setContentsMargins(24, 20, 24, 24)
         self.column.setSpacing(14)
         scroll.setWidget(page)
-
-        self._build_identity()
-        self._build_update()
-        self._build_network()
-        self._build_links()
-        self._build_credits()
+        for builder in builders:
+            builder()
         self.column.addStretch(1)
-
-        self.theme.changed.connect(self._apply_theme)
-        self._apply_theme()
+        self.tabs.addTab(scroll, label)
+        return scroll
 
     # -- construction
 
@@ -254,9 +284,11 @@ class AboutScreen(Screen):
         self._bodies.append((self.version_label, "text_dim"))
 
         self._body(
-            "Three tools for a CFW PS3 running webMAN MOD: a diagnostic that "
-            "reads the console and explains what it found, and the two PSN "
-            "fixes that used to be separate programs.")
+            "Tools for a CFW PS3 running webMAN MOD: a diagnostic that reads "
+            "the console and explains what it found, the two Call of Duty "
+            "PSN fixes that used to be separate programs, title updates "
+            "fetched from Sony, a package installer, a save data backup and "
+            "a game transfer that resumes.")
 
         row = QHBoxLayout()
         row.setSpacing(12)
@@ -297,6 +329,40 @@ class AboutScreen(Screen):
                                    opener=self._opener, compact=False)
         self.column.addWidget(self.banner)
 
+    def _build_history(self):
+        """Every published release and what changed in it.
+
+        The one being run is marked, because "what am I on and what is new"
+        is the question this tab exists to answer without sending anybody to
+        a web page.
+        """
+        self._heading("What's new")
+        running = history.for_version(VERSION)
+        if running is None:
+            self._body(f"You are running {VERSION}, which is not one of the "
+                       f"published releases below.")
+        for release in history.releases():
+            label = QLabel(f"{release.version}    {release.date}"
+                           + ("    (this is the one you are running)"
+                              if release is running else ""))
+            font = QFont(self.font())
+            font.setWeight(QFont.Weight.DemiBold)
+            label.setFont(font)
+            label.setWordWrap(True)
+            self.column.addWidget(label)
+            self._bodies.append(
+                (label, "accent" if release is running else "text"))
+            if release.summary:
+                self._body(release.summary)
+            for change in release.changes:
+                bullet = QLabel(f"\u2022  {change}")
+                bullet.setWordWrap(True)
+                bullet.setTextInteractionFlags(
+                    Qt.TextInteractionFlag.TextSelectableByMouse)
+                bullet.setContentsMargins(10, 0, 0, 0)
+                self.column.addWidget(bullet)
+                self._bodies.append((bullet, "text_dim"))
+
     def _build_network(self):
         self._heading("What this program does over the network")
         for lead, detail in NETWORK_LINES:
@@ -331,6 +397,13 @@ class AboutScreen(Screen):
             self._bodies.append((label, "text"))
             self._body(detail)
         self.licence_label = self._body(LICENCE_NOTE, "text_dim")
+        self._build_legal()
+
+    def _build_legal(self):
+        """The trademark line and the disclaimer, under the credits."""
+        self._heading("Legal")
+        self.trademark_label = self._body(TRADEMARK_NOTICE, "text_dim")
+        self.disclaimer_label = self._body(DISCLAIMER_NOTICE, "text_dim")
 
     # -- theme
 

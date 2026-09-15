@@ -1,4 +1,5 @@
-# Builds dist\ps3-tools.exe.
+# Builds dist\ps3-tools-<version>.exe, where the version is the one in
+# ps3diag/__init__.py. Nothing here writes a version number of its own.
 #
 # Requires Python 3 and PyInstaller:  pip install pyinstaller==6.22.3
 # Run from anywhere:                  .\build-exe.ps1
@@ -108,7 +109,8 @@ and Modern Warfare 3 are signed with; that is checked separately below.
     }
 
 
-    # The icons are drawn rather than kept, so a fresh checkout has neither.
+    # The icons are cut out of logo.png rather than kept, so a fresh checkout
+    # has neither. make-icon.py needs the logo to be there to do it.
     if (-not ((Test-Path -LiteralPath "icon.ico") -and (Test-Path -LiteralPath "icon.png"))) {
         python make-icon.py
         if ($LASTEXITCODE -ne 0) {
@@ -155,12 +157,24 @@ and Modern Warfare 3 are signed with; that is checked separately below.
         "ps3tools.crashreport"
     )
 
+    # The one place a version number is written down is the VERSION constant,
+    # so the exe is named from it rather than from a second copy kept in step
+    # by hand. A build that cannot read it stops: an exe named after the wrong
+    # release is worse than no exe.
+    $version = (python -c "import sys; sys.path.insert(0, '.'); from ps3diag import VERSION; print(VERSION)")
+    if ($LASTEXITCODE -ne 0 -or -not $version) {
+        throw "Could not read VERSION from ps3diag/__init__.py."
+    }
+    $version = $version.Trim()
+    $name = "ps3-tools-$version"
+
     $arguments = @(
-        "--onefile", "--windowed", "--name", "ps3-tools",
+        "--onefile", "--windowed", "--name", $name,
         "--icon", "icon.ico",
         "--paths", ".",
         "--add-data", "icon.ico;.",
         "--add-data", "icon.png;.",
+        "--add-data", "logo.png;.",
         "--add-data", "tools\scetool;tools/scetool",
         "--add-data", "tools\patchers;tools/patchers",
         "--add-data", "certs;certs",
@@ -182,7 +196,7 @@ and Modern Warfare 3 are signed with; that is checked separately below.
     }
 
     Write-Host ""
-    Write-Host "Built dist\ps3-tools.exe"
+    Write-Host "Built dist\$name.exe"
     Write-Host "Run it from a local drive. scetool cannot run from a UNC path,"
     Write-Host "and the program writes its settings and its output beside"
     Write-Host "itself, so do not put it in Program Files."

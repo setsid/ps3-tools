@@ -259,11 +259,25 @@ BYTE_READABLE = (
     re.compile(r"(?i)^/dev_hdd0/game/[A-Z]{4}\d{5}/USRDIR/PARAM\.SFO$"),
 )
 
+#: The head of a package sitting in the console's own packages folder. Its own
+#: pattern rather than a widening of BYTE_READABLE, for the same reason the
+#: save data files have one: that list exists to fetch a PARAM.SFO out of a
+#: game folder and should not quietly grow a second purpose.
+#:
+#: Anchored at both ends and exactly one segment deep, so it can name nothing
+#: but /dev_hdd0/packages/<name>.pkg. "/" is outside the character class, so no
+#: segment can be added and nothing above or below that folder is reachable.
+PACKAGE_READABLE = (
+    re.compile(r"(?i)^/dev_hdd0/packages/"
+               r"[A-Za-z0-9][A-Za-z0-9._\-]{0,127}\.pkg$"),
+)
+
 MAX_BYTE_READ = 64 * 1024
 
 
 def may_read_bytes(path):
-    return any(pattern.match(path) for pattern in BYTE_READABLE)
+    return (any(pattern.match(path) for pattern in BYTE_READABLE)
+            or any(pattern.match(path) for pattern in PACKAGE_READABLE))
 
 
 # Save data files. Their own permission rather than a widening of BYTE_READABLE:

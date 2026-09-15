@@ -347,7 +347,7 @@ def _path_for(entry):
     return "/" + "/".join(parts)
 
 
-def _row(entry, path, identity, bytes_read, reason):
+def _row(entry, path, identity, bytes_read, reason, opened=True):
     """One isos[] record, the shape docs/artefact-schema.md reserves."""
     name = entry.get("name") or ""
     from_name = regioncodes.find_title_id(name)
@@ -363,6 +363,12 @@ def _row(entry, path, identity, bytes_read, reason):
                     and from_name.upper() != identity.title_id.upper())
     return {
         "name": name,
+        #: True when this image was actually read. False means nothing was
+        #: learned about it: a refused read, a spent budget, a worker that
+        #: died. A caller must not treat a False here as "looked at and found
+        #: nothing", or the image disappears from its list having never been
+        #: opened.
+        "opened": bool(opened),
         "device": entry.get("device"),
         "folder": entry.get("folder"),
         "path": path,
@@ -381,7 +387,8 @@ def _row(entry, path, identity, bytes_read, reason):
 
 def identify_isos(entries, reader, block=DEFAULT_BLOCK,
                   file_budget=DEFAULT_FILE_BUDGET,
-                  total_budget=DEFAULT_TOTAL_BUDGET, log=None):
+                  total_budget=DEFAULT_TOTAL_BUDGET, log=None,
+                  on_progress=None):
     """The games/iso-identity.json payload for every ISO in entries.
 
     entries are game rows as ArtefactSet.game_entries() produces them: name,
@@ -391,9 +398,16 @@ def identify_isos(entries, reader, block=DEFAULT_BLOCK,
 
     Never raises. A console that stops answering half way through leaves the
     images already done intact and the rest identified by name.
+
+    on_progress(done, total, name) is called before each image is opened. This
+    runs for minutes on a shelf of games and, without it, the screen that asked
+    for it sits there looking frozen.
     """
     isos = []
     spent = [0]
+    todo = [entry for entry in (entries or []) if _is_iso(entry)]
+    total = len(todo)
+    done = 0
 
     def spend(count):
         if spent[0] + count > total_budget:
@@ -401,28 +415,36 @@ def identify_isos(entries, reader, block=DEFAULT_BLOCK,
         spent[0] += count
         return True
 
-    for entry in entries or []:
-        if not _is_iso(entry):
-            continue
+    for entry in todo:
+        if on_progress:
+            on_progress(done, total, entry.get("name") or "")
+        done += 1
         path = _path_for(entry)
         if not may_range_read(path):
             identity = isoid.IsoIdentity(
                 reason="not on the ranged-read allowlist, so the image was "
                        "not opened")
-            isos.append(_row(entry, path, identity, 0, identity.reason))
+            isos.append(_row(entry, path, identity, 0, identity.reason,
+                             opened=False))
             continue
         size = entry.get("size") or None
         ranges = _BudgetedRanges(reader, path, block, file_budget, spend,
                                  size=size)
         identity = isoid.identify(ranges)
         reason = identity.reason
+        # Refused and exhausted both mean this image has not had its chance.
+        # Only a read that ran to a conclusion counts as having been opened.
+        opened = True
         if not identity.identified:
             if ranges.refused:
                 reason = f"the image could not be read: {ranges.refused}"
+                opened = False
             elif ranges.exhausted:
                 reason = (f"stopped after {ranges.bytes_read} bytes without "
                           f"finding the identity")
-        isos.append(_row(entry, path, identity, ranges.bytes_read, reason))
+                opened = False
+        isos.append(_row(entry, path, identity, ranges.bytes_read, reason,
+                         opened=opened))
         if log:
             log.event("iso_identity", path=path, method=isos[-1]["method"],
                       title_id=isos[-1]["title_id"],

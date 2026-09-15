@@ -24,13 +24,14 @@ import sys
 import threading
 
 from PySide6.QtCore import (QByteArray, QEasingCurve, QParallelAnimationGroup,
-                            QPoint, QPropertyAnimation, QSize, Qt, QTimer,
-                            QUrl, Signal)
+                            QPoint, QPointF, QPropertyAnimation, QRectF, QSize,
+                            Property, Qt, QTimer, QUrl, Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
-                           QFont, QGuiApplication, QIcon, QPainter,
+                           QFont, QGuiApplication, QIcon, QImage, QPainter,
                            QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame,
-                               QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+                               QGraphicsBlurEffect, QGraphicsOpacityEffect,
+                               QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
                                QMainWindow, QMenu, QProgressBar, QPushButton,
                                QVBoxLayout, QWidget)
@@ -41,7 +42,7 @@ from ps3diag.parsers import SIGNATURE_THRESHOLD, looks_like_webman, \
 from ps3diag.transport import HttpProbe, tcp_open
 
 from .. import APP_NAME, FULL_NAME, PROJECT_URL, VENDOR, VERSION, crashreport
-from . import registry
+from . import icons, registry, widgets
 from .launcher import Launcher
 from .screen import ConnectionState, Services
 from .theme import AppTheme, menu_palette, qt_palette, stylesheet
@@ -290,6 +291,172 @@ def back_arrow_icon(colour, dim_colour, size=14):
     return icon
 
 
+#: The three flat colours in logo.png. The blue is the brand and is left
+#: alone; the two neutrals are drawn for a dark background and have to be
+#: turned round for a light one, or "PS3" is near enough invisible on white.
+LOGO_BLUE_EXCESS = 60
+
+
+#: How tall the wordmark is drawn. The chrome bar is 59 pixels tall, so this
+#: fills it with a little air above and below. Scaling the whole 390 pixel
+#: file down to the height of one line of text was what made it illegible:
+#: most of that height is space above and below the drawing.
+#: How long shutdown waits for workers to notice they were cancelled. Long
+#: enough for a poll or a block read to come round, short enough that nobody
+#: watches a window refuse to close.
+SHUTDOWN_WAIT_MS = 4000
+
+BRAND_LOGO_HEIGHT = 44
+
+#: The three bands of logo.png, in its own pixels, measured off the file.
+#: Cropping to them is what stops the empty margin eating the height.
+LOGO_CHEVRONS = (40, 64, 260, 260)          # left, top, right, bottom
+LOGO_WORDMARK = (340, 74, 949, 176)         # "PS3 Tools"
+LOGO_BYLINE = (340, 217, 586, 269)          # "by setsid"
+
+#: The space between the chevrons and the wordmark, as drawn.
+LOGO_GAP = 81
+
+#: How tall "by setsid" has to come out before it is worth drawing. Below
+#: this it is a grey smudge, so the mark is built without it instead.
+LOGO_BYLINE_MIN = 13
+
+LOGO_FILE = "logo.png"
+
+
+def brand_logo_path():
+    """Where the wordmark lives, bundled or in a checkout. "" if absent."""
+    for base in (config.bundle_dir(), config.app_dir()):
+        candidate = os.path.join(base, LOGO_FILE)
+        if os.path.isfile(candidate):
+            return candidate
+    return ""
+
+
+class BrandLogo(QLabel):
+    """The wordmark in the top left, as a link to the project.
+
+    The file is one flat-coloured PNG. Rather than ship a second copy for the
+    light palette, the neutral pixels have their lightness turned round and the
+    blue is left as it is: the light grey of "PS3" becomes a dark grey, "by
+    setsid" stays the quieter of the two, and the blue stays the blue. Anti-
+    aliased edges come out right because the rule is applied to every pixel
+    rather than to a list of exact colours.
+
+    Recolouring happens after scaling, on a few thousand pixels rather than on
+    the half million in the source, so a theme change is not something anybody
+    waits for.
+    """
+
+    def __init__(self, path, url, height, parent=None):
+        super().__init__(parent)
+        self.url = url
+        self._source = QImage(path)
+        self._height = height
+        self._cache = {}
+        self.setObjectName("brandLogo")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(f"Open {url} in your browser.")
+        self.setAccessibleName(f"{FULL_NAME}, opens {url}")
+
+    @property
+    def usable(self):
+        return not self._source.isNull()
+
+    def apply_theme(self, dark):
+        if not self.usable:
+            return
+        pixmap = self._cache.get(dark)
+        if pixmap is None:
+            pixmap = QPixmap.fromImage(self._render(dark))
+            self._cache[dark] = pixmap
+        self.setPixmap(pixmap)
+        self.setFixedSize(pixmap.size())
+
+    def _render(self, dark):
+        ratio = self.devicePixelRatioF() if hasattr(
+            self, "devicePixelRatioF") else 1.0
+        tall = max(1, int(self._height * ratio))
+        source = self._laid_out(tall)
+        image = source.scaledToHeight(
+            tall, Qt.TransformationMode.SmoothTransformation)
+        image = image.convertToFormat(QImage.Format.Format_ARGB32)
+        if not dark:
+            _invert_neutrals(image)
+        image.setDevicePixelRatio(ratio)
+        return image
+
+    def _laid_out(self, tall):
+        """The drawing to scale, with or without the byline.
+
+        The file has the byline under the wordmark and the chevrons spanning
+        both, so the byline cannot simply be cropped off the bottom without
+        taking half the chevrons with it. The two parts are laid out again
+        instead, which also lets the gap between them stay as drawn.
+        """
+        full = self._cropped(_union(LOGO_CHEVRONS, LOGO_WORDMARK,
+                                    LOGO_BYLINE))
+        byline_height = (LOGO_BYLINE[3] - LOGO_BYLINE[1])
+        if byline_height * tall / max(1, full.height()) >= LOGO_BYLINE_MIN:
+            return full
+        chevrons = self._cropped(LOGO_CHEVRONS)
+        wordmark = self._cropped(LOGO_WORDMARK)
+        width = chevrons.width() + LOGO_GAP + wordmark.width()
+        height = max(chevrons.height(), wordmark.height())
+        composed = QImage(width, height, QImage.Format.Format_ARGB32)
+        composed.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(composed)
+        painter.drawImage(0, (height - chevrons.height()) // 2, chevrons)
+        painter.drawImage(chevrons.width() + LOGO_GAP,
+                          (height - wordmark.height()) // 2, wordmark)
+        painter.end()
+        return composed
+
+    def _cropped(self, box):
+        left, top, right, bottom = box
+        return self._source.copy(left, top, right - left, bottom - top)
+
+    def open(self):
+        return QDesktopServices.openUrl(QUrl(self.url))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.open()
+        super().mouseReleaseEvent(event)
+
+
+def _union(*boxes):
+    """The smallest box holding all of them."""
+    return (min(box[0] for box in boxes), min(box[1] for box in boxes),
+            max(box[2] for box in boxes), max(box[3] for box in boxes))
+
+
+def _invert_neutrals(image):
+    """Turn the grey pixels round in place. The blue ones are left alone.
+
+    "Grey" is decided by how much more blue a pixel has than its red and green,
+    which separates the brand blue from both neutrals cleanly and keeps working
+    through the anti-aliased edges where a colour match would not.
+
+    Lightness is what is turned round, not each channel on its own: the light
+    grey is very slightly warm, and inverting its channels gives a brown rather
+    than the dark grey it is supposed to become. The two neutrals keep their
+    order either way -- "PS3" stays the stronger of the two and "by setsid" the
+    quieter -- which is the whole point of not simply painting both one colour.
+    """
+    for y in range(image.height()):
+        for x in range(image.width()):
+            pixel = image.pixelColor(x, y)
+            alpha = pixel.alpha()
+            if not alpha:
+                continue
+            red, green, blue = pixel.red(), pixel.green(), pixel.blue()
+            if blue - (red + green) / 2 > LOGO_BLUE_EXCESS:
+                continue
+            level = 255 - (red + green + blue) // 3
+            image.setPixelColor(x, y, QColor(level, level, level, alpha))
+
+
 class LinkLabel(QLabel):
     """Text that behaves like a link and looks like one.
 
@@ -412,6 +579,339 @@ class CandidateDialog(QDialog):
         return "" if item is None else item.data(Qt.ItemDataRole.UserRole)
 
 
+class AnimatedTick(QWidget):
+    """A tick that draws itself on. Shown for a moment when a console answers.
+
+    Painted rather than an icon swap, because the point of it is the drawing:
+    something happened, it worked, and the window is about to get out of the
+    way. A static tick appearing and vanishing reads as a flicker.
+    """
+
+    finished = Signal()
+
+    def __init__(self, colour, size=72, parent=None):
+        super().__init__(parent)
+        self._colour = colour
+        self._progress = 0.0
+        self.setFixedSize(size, size)
+        self._animation = QPropertyAnimation(self, b"progress", self)
+        self._animation.setDuration(420)
+        self._animation.setStartValue(0.0)
+        self._animation.setEndValue(1.0)
+        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._animation.finished.connect(self.finished)
+
+    def start(self):
+        self._animation.stop()
+        self._progress = 0.0
+        self._animation.start()
+
+    def get_progress(self):
+        return self._progress
+
+    def set_progress(self, value):
+        self._progress = float(value)
+        self.update()
+
+    progress = Property(float, get_progress, set_progress)
+
+    def paintEvent(self, _event):
+        side = min(self.width(), self.height())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(self._colour))
+        pen.setWidthF(max(2.0, side * 0.09))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        # The ring first, then the tick inside it, so the two halves of the
+        # animation read as one movement.
+        inset = pen.widthF()
+        box = QRectF(inset, inset, side - inset * 2, side - inset * 2)
+        ring = min(1.0, self._progress / 0.6)
+        if ring > 0:
+            painter.drawArc(box, 90 * 16, -int(360 * 16 * ring))
+        mark = max(0.0, (self._progress - 0.45) / 0.55)
+        if mark > 0:
+            points = [(0.30, 0.52), (0.44, 0.66), (0.71, 0.38)]
+            path = QPainterPath()
+            path.moveTo(side * points[0][0], side * points[0][1])
+            first = QPointF(side * points[1][0], side * points[1][1])
+            second = QPointF(side * points[2][0], side * points[2][1])
+            if mark <= 0.5:
+                where = mark / 0.5
+                path.lineTo(
+                    side * points[0][0] + (first.x() - side * points[0][0])
+                    * where,
+                    side * points[0][1] + (first.y() - side * points[0][1])
+                    * where)
+            else:
+                where = (mark - 0.5) / 0.5
+                path.lineTo(first)
+                path.lineTo(first.x() + (second.x() - first.x()) * where,
+                            first.y() + (second.y() - first.y()) * where)
+            painter.drawPath(path)
+
+
+class Spinner(QWidget):
+    """A turning arc, for the moments there is nothing to measure.
+
+    The search has no total worth showing -- it is a sweep of a subnet whose
+    size the user does not care about -- so this says "still going" and the
+    label beside it says what it is doing. It only runs while it is visible:
+    an animation ticking away behind a closed dialog is wasted work.
+    """
+
+    def __init__(self, colour, size=18, parent=None):
+        super().__init__(parent)
+        self._colour = colour
+        self._angle = 0
+        self.setFixedSize(size, size)
+        self._animation = QPropertyAnimation(self, b"angle", self)
+        self._animation.setDuration(1100)
+        self._animation.setStartValue(0)
+        self._animation.setEndValue(360)
+        self._animation.setLoopCount(-1)
+
+    def set_colour(self, colour):
+        self._colour = colour
+        self.update()
+
+    def get_angle(self):
+        return self._angle
+
+    def set_angle(self, value):
+        self._angle = int(value)
+        self.update()
+
+    angle = Property(int, get_angle, set_angle)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._animation.start()
+
+    def hideEvent(self, event):
+        self._animation.stop()
+        super().hideEvent(event)
+
+    def closeEvent(self, event):
+        # A looping animation still running while its widget is destroyed is
+        # a way to take the process with it.
+        self._animation.stop()
+        super().closeEvent(event)
+
+    def paintEvent(self, _event):
+        side = min(self.width(), self.height())
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor(self._colour))
+        pen.setWidthF(max(1.6, side * 0.13))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        inset = pen.widthF()
+        box = QRectF(inset, inset, side - inset * 2, side - inset * 2)
+        # Three quarters of a circle, turning. A full ring would not read as
+        # moving at all.
+        painter.drawArc(box, -self._angle * 16, 270 * 16)
+
+
+class FirstRunDialog(QDialog):
+    """Shown once, on a start with no console address saved.
+
+    It drives the connection bar rather than talking to the network itself:
+    one Find, one Check and one address field in this program, wherever they
+    are pressed from. Dismissing it leaves the application exactly as it was
+    before it existed, with no console and every screen still reachable.
+    """
+
+    #: How long the tick stays up once it has drawn itself.
+    LINGER_MS = 700
+
+    def __init__(self, bar, theme, parent=None):
+        super().__init__(parent)
+        self._bar = bar
+        self._theme = theme
+        self._closing = False
+        self.setObjectName("firstRun")
+        self.setWindowTitle("Find your PS3")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # Without this the window still paints its own square behind the
+        # stylesheet's rounded rectangle, and the corners show up as four
+        # darker notches.
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        # The window itself is transparent and an inner frame carries the
+        # rounded background. Rounding the window directly leaves it painting
+        # its own square behind the corners, which showed as four darker
+        # notches; making the window transparent on its own leaves the body
+        # transparent too and only the buttons visible.
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        self.body = QFrame(self)
+        self.body.setObjectName("firstRunBody")
+        self.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        shell.addWidget(self.body)
+
+        column = QVBoxLayout(self.body)
+        column.setContentsMargins(28, 18, 28, 26)
+        column.setSpacing(14)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addStretch(1)
+        self.dismiss_button = QPushButton("\u2715", self)
+        self.dismiss_button.setObjectName("dismiss")
+        self.dismiss_button.setProperty("flat", True)
+        self.dismiss_button.setFixedSize(30, 30)
+        self.dismiss_button.setToolTip("Carry on without a console.")
+        self.dismiss_button.setAccessibleName("Close")
+        self.dismiss_button.clicked.connect(self.reject)
+        top.addWidget(self.dismiss_button)
+        column.addLayout(top)
+
+        heading = QLabel("Let's find your PS3", self)
+        heading_font = QFont(heading.font())
+        heading_font.setPointSize(heading_font.pointSize() + 7)
+        heading_font.setBold(True)
+        heading.setFont(heading_font)
+        heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        column.addWidget(heading)
+
+        blurb = QLabel(
+            "Switch the console on, leave it on the main menu, and press the "
+            "button. If you already know its address, type it in instead.",
+            self)
+        blurb.setWordWrap(True)
+        blurb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        column.addWidget(blurb)
+
+        self.tick = AnimatedTick(theme.colour("ok") or theme.colour("accent"),
+                                 parent=self)
+        self.tick.hide()
+        self.tick.finished.connect(self._after_tick)
+        tick_row = QHBoxLayout()
+        tick_row.addStretch(1)
+        tick_row.addWidget(self.tick)
+        tick_row.addStretch(1)
+        column.addLayout(tick_row)
+
+        self.find_button = QPushButton("Find my PS3", self)
+        self.find_button.setObjectName("bigFind")
+        self.find_button.setMinimumHeight(54)
+        widgets.set_role(self.find_button, widgets.PRIMARY)
+        find_font = QFont(self.find_button.font())
+        find_font.setPointSize(find_font.pointSize() + 3)
+        find_font.setBold(True)
+        self.find_button.setFont(find_font)
+        self.find_button.clicked.connect(self._on_find)
+        column.addWidget(self.find_button)
+
+        # The same two things the bar at the top shows while it searches: a
+        # sign that it is still going, and what it is doing.
+        busy = QHBoxLayout()
+        busy.setSpacing(8)
+        busy.addStretch(1)
+        self.spinner = Spinner(theme.colour("accent"), parent=self)
+        self.spinner.hide()
+        busy.addWidget(self.spinner, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.status = QLabel("", self)
+        self.status.setObjectName("dim")
+        self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        busy.addWidget(self.status, 0, Qt.AlignmentFlag.AlignVCenter)
+        busy.addStretch(1)
+        column.addLayout(busy)
+
+        typed = QHBoxLayout()
+        typed.setSpacing(8)
+        self.address = QLineEdit(self)
+        self.address.setPlaceholderText("or type it: 192.168.1.50")
+        self.address.setMinimumWidth(210)
+        self.address.setAccessibleName("PlayStation 3 address")
+        self.address.returnPressed.connect(self._on_check)
+        typed.addWidget(self.address, 1)
+        self.check_button = QPushButton(CHECK_LABEL, self)
+        self.check_button.clicked.connect(self._on_check)
+        typed.addWidget(self.check_button)
+        column.addLayout(typed)
+
+        self._bar.connection.changed.connect(self._on_connection)
+        self._on_connection()
+
+    # -- driving the one connection bar there is
+
+    def _on_find(self):
+        self.status.setText("Looking for a console on this network.")
+        self.spinner.show()
+        self._bar.find()
+
+    def _on_check(self):
+        host = self.address.text().strip()
+        if not host:
+            self.status.setText("Type the console's address, or press Find "
+                                "my PS3.")
+            return
+        self._bar.set_address(host)
+        self._bar.check()
+
+    def _on_connection(self):
+        state = self._bar.connection.connection
+        if state == "connected":
+            self._succeed()
+            return
+        scanning = self._bar.connection.scan == "scanning"
+        busy = state == "checking" or scanning
+        self.find_button.setEnabled(not busy)
+        self.check_button.setEnabled(not busy)
+        self.spinner.setVisible(busy)
+        # While it is working, say what it is doing and keep saying it: the
+        # search reports how far through the subnet it is and that is the
+        # whole of what there is to show. The bar at the top shows the same
+        # detail in the same words.
+        if busy:
+            detail = self._bar.connection.scan_detail
+            if detail:
+                self.status.setText(detail)
+            else:
+                self.status.setText(
+                    "Looking for a console on this network." if scanning
+                    else "Asking that address whether it is there.")
+            return
+        detail = (self._bar.connection.scan_detail
+                  or self._bar.connection.connection_detail)
+        if state == "unreachable" and detail:
+            self.status.setText(detail)
+        elif self._bar.connection.scan == "none" and detail:
+            # A finished search that found nothing. Its own words say what to
+            # check, and they are better than anything repeated here.
+            self.status.setText(detail)
+
+    def _succeed(self):
+        if self._closing:
+            return
+        self._closing = True
+        host = self._bar.connection.host
+        self.status.setText(f"Found it at {host}.")
+        self.spinner.hide()
+        self.find_button.hide()
+        self.check_button.hide()
+        self.address.hide()
+        self.dismiss_button.hide()
+        self.tick.show()
+        self.tick.start()
+
+    def _after_tick(self):
+        # A timer owned by the dialog, not a loose singleShot: if the dialog
+        # is closed or destroyed while the tick is still up, the timer goes
+        # with it rather than firing into something that is no longer there.
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.timeout.connect(self.accept)
+        timer.start(self.LINGER_MS)
+
+
 class ConnectionBar(QWidget):
     """The console's address, entered once and shared by every screen.
 
@@ -513,6 +1013,12 @@ class ConnectionBar(QWidget):
         self._refresh()
 
     # -- address field
+    @property
+    def connection(self):
+        """The shared ConnectionState. Read-only on purpose: everything that
+        changes it goes through this bar's own find/check/set_address."""
+        return self._connection
+
     def _address_typed(self, text):
         # set_host resets the verdict to unknown, which is right: the old
         # answer described the old address.
@@ -1119,27 +1625,52 @@ class MainWindow(QMainWindow):
 
         row.addStretch(1)
 
-        self.theme_button = QPushButton("Theme", bar)
+        # An icon rather than the word, and the menu arrow suppressed in the
+        # stylesheet: with both it read as a form control sitting in a strip
+        # of toolbar buttons.
+        self.theme_button = QPushButton(bar)
+        self.theme_button.setObjectName("themeButton")
         self.theme_button.setProperty("flat", True)
         self.theme_button.setToolTip("Light, dark, or whichever the desktop "
                                      "is using.")
+        self.theme_button.setAccessibleName("Theme")
         self.theme_menu = self._build_theme_menu(bar)
         self.theme_button.setMenu(self.theme_menu)
         row.addWidget(self.theme_button)
         return bar
 
     def _build_brand(self, parent):
+        """The wordmark, or the words it is a picture of if it is missing.
+
+        A checkout or a build without logo.png still has to start and still has
+        to say whose program it is, so the text version stays as the fallback
+        rather than the top left going blank.
+        """
         brand = QWidget(parent)
         row = QHBoxLayout(brand)
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(5)
+        self.brand_logo = None
+        self.vendor_link = LinkLabel(VENDOR, PROJECT_URL, brand)
+        path = brand_logo_path()
+        if path:
+            logo = BrandLogo(path, PROJECT_URL, BRAND_LOGO_HEIGHT, brand)
+            if logo.usable:
+                logo.apply_theme(self.theme.dark)
+                row.addWidget(logo)
+                self.brand_logo = logo
+                # Kept, not shown: the About screen and the tests both ask the
+                # shell for the project link and neither should have to know
+                # whether the picture loaded.
+                self.vendor_link.hide()
+                return brand
+            logo.deleteLater()
         title = QLabel(APP_NAME, brand)
         title.setObjectName("appTitle")
         row.addWidget(title)
         byline = QLabel("by", brand)
         byline.setObjectName("dim")
         row.addWidget(byline)
-        self.vendor_link = LinkLabel(VENDOR, PROJECT_URL, brand)
         row.addWidget(self.vendor_link)
         return brand
 
@@ -1213,10 +1744,64 @@ class MainWindow(QMainWindow):
             application.setPalette(qt_palette(self.theme))
             application.setStyleSheet(stylesheet(self.theme))
         self._style_menu()
+        self._paint_theme_button()
+        if getattr(self, "brand_logo", None) is not None:
+            self.brand_logo.apply_theme(self.theme.dark)
         self.back_button.setIcon(back_arrow_icon(
             self.theme.colour("text"), self.theme.colour("text_dim")))
         self._paint_status()
         self.update()
+
+    def _paint_theme_button(self):
+        button = getattr(self, "theme_button", None)
+        if button is None:
+            return
+        button.setIcon(icons.icon("theme", self.theme.colour("text"),
+                                  size=18))
+        button.setIconSize(QSize(18, 18))
+
+    def offer_to_find_console(self):
+        """Ask for a console, once, on a start with no address saved.
+
+        Returns the dialog so a test can drive it, or None when there was
+        nothing to ask. Dismissing it leaves the application exactly as it is
+        without one: every screen still opens and says what it needs.
+        """
+        if self.connection.host:
+            return None
+        dialog = FirstRunDialog(self.connection_bar, self.theme, self)
+        self._blur(True)
+        dialog.finished.connect(lambda _result: self._blur(False))
+        dialog.show()
+        self._centre_on_window(dialog)
+        return dialog
+
+    def _centre_on_window(self, dialog):
+        dialog.adjustSize()
+        centre = self.geometry().center()
+        dialog.move(centre.x() - dialog.width() // 2,
+                    centre.y() - dialog.height() // 2)
+
+    def _blur(self, on):
+        """Soften the window behind the first-run dialog.
+
+        The dialog is a window of its own, so the effect on the central widget
+        does not reach it. Wrapped because a graphics effect is the sort of
+        thing a remote desktop or a software renderer refuses, and a blur that
+        will not apply is not a reason to withhold the dialog.
+        """
+        target = self.centralWidget()
+        if target is None:
+            return
+        try:
+            if on:
+                effect = QGraphicsBlurEffect(target)
+                effect.setBlurRadius(9)
+                target.setGraphicsEffect(effect)
+            else:
+                target.setGraphicsEffect(None)
+        except Exception:                                   # noqa: BLE001
+            pass
 
     def _style_menu(self):
         """A popup is a top level window of its own, and neither the
@@ -1415,11 +2000,34 @@ class MainWindow(QMainWindow):
             return
         crashreport.note("closed the window")
         self.pages.finish_now()
+        # Ask first, wait second. Cancellation is co-operative -- a worker
+        # stops at its next check -- so waiting before asking would simply
+        # sit through whatever is in flight.
         self.connection_bar.cancel_scan()
         if screen is not None:
             screen.on_leave()
+        self._drain_workers()
         self.store_settings()
         super().closeEvent(event)
+
+    def _drain_workers(self):
+        """Wait for the worker pool, but never hold the window open on it.
+
+        Work runs on QThreadPool.globalInstance() and nothing else waits for
+        it, so without this the window closes while workers are still running
+        and Qt starts tearing down underneath them. The wait is bounded: a
+        worker that will not stop is recorded and the window closes anyway,
+        because a program that will not shut down is worse than one that
+        leaves a thread behind.
+        """
+        try:
+            if self.services.wait(SHUTDOWN_WAIT_MS):
+                return
+            still = ", ".join(self.services.running()) or "unnamed work"
+            crashreport.note(f"closed with work still running: {still}")
+        except Exception:                                   # noqa: BLE001
+            # Never allowed to stop the window closing.
+            pass
 
 
 # --- entry point -----------------------------------------------------------
@@ -1495,4 +2103,7 @@ def main(argv=None):
     # left free of it so that anything constructing a window for another
     # reason -- a test, a screenshot -- asks nobody anything.
     QTimer.singleShot(0, window.update_banner.start_check)
+    # Same rule as the update check: only from the real entry point, so
+    # nothing that builds a window for its own reasons is asked anything.
+    QTimer.singleShot(0, window.offer_to_find_console)
     return application.exec()

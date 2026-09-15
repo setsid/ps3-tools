@@ -429,7 +429,8 @@ def read_listing(lister, path):
     except Exception:                                     # noqa: BLE001
         return None
     entries, _unparsed = parsers.parse_ftp_list(text)
-    return {entry["name"].lower(): entry for entry in entries}
+    return {entry["name"].lower(): entry
+            for entry in parsers.real_entries(entries)}
 
 
 def console_games(lister, device=DEFAULT_DEVICE, folders=BROWSE_FOLDERS):

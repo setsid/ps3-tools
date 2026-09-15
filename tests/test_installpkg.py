@@ -52,7 +52,7 @@ from ps3tools.shell.screen import (ConnectionState, Services,  # noqa: E402
                                    THEME_TOKENS, Theme)
 
 from test_updates import (ExplodingWriter, FakeLister,      # noqa: E402
-                          RecordingActions, RecordingWriter, files)
+                          RecordingActions, RecordingWriter, files, folders)
 
 APP = QApplication.instance() or QApplication([])
 
@@ -70,7 +70,7 @@ class StubTheme(Theme):
 
 
 class ExplodingActions:
-    def install_packages(self):
+    def install_package(self, filename):
         raise AssertionError("the console was asked to install something")
 
 
@@ -80,6 +80,19 @@ class ReadingAPackage(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="ps3-pkg-test-")
         self.addCleanup(lambda: _rmtree(self.folder))
+        # Installing rescans the console's packages folder, so a test can
+        # finish with a task still in flight. The pool is
+        # QThreadPool.globalInstance(): work left running here turns up inside
+        # whichever test comes next.
+        self.addCleanup(self._drain)
+
+    def _drain(self):
+        services = getattr(self, "services", None)
+        if services is None:
+            return
+        self.assertTrue(services.wait(10000),
+                        "a test left work running in the pool")
+        APP.processEvents()
 
     def write(self, name, blob):
         path = os.path.join(self.folder, name)
@@ -187,6 +200,19 @@ class ScreenCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.folder = tempfile.mkdtemp(prefix="ps3-pkg-test-")
         self.addCleanup(lambda: _rmtree(self.folder))
+        # Installing rescans the console's packages folder, so a test can
+        # finish with a task still in flight. The pool is
+        # QThreadPool.globalInstance(): work left running here turns up inside
+        # whichever test comes next.
+        self.addCleanup(self._drain)
+
+    def _drain(self):
+        services = getattr(self, "services", None)
+        if services is None:
+            return
+        self.assertTrue(services.wait(10000),
+                        "a test left work running in the pool")
+        APP.processEvents()
 
     def write(self, name, blob=None):
         path = os.path.join(self.folder, name)
@@ -213,6 +239,8 @@ class ScreenCase(unittest.TestCase):
         screen._lister = lambda _host: self.lister
         screen._writer = lambda _host: self.writer
         screen._actions = lambda _host: self.actions
+        screen.install_poll_seconds = 0.0
+        screen.install_timeout_seconds = 0.0
         screen._storage = lambda _host: storage
         screen.confirm = lambda chosen: True
         self.screen = screen
@@ -227,16 +255,30 @@ class ScreenCase(unittest.TestCase):
         work leaves a second round undelivered. That raced about one run in
         three: the panel was still empty when the assertion read it.
 
-        Pumping until the pool has stayed idle across three passes is
-        deterministic: the handler runs on the first, anything it submits is in
-        flight by the second, and the third confirms nothing new arrived. The
-        deadline means a genuine hang still fails rather than spinning.
+        Where a task is given, its own done signal is what is waited for.
+        The pool is QThreadPool.globalInstance(), shared with every other test
+        in the process: "the pool is idle" can be true before this task has
+        been picked up at all, and waiting on that raced against another file's
+        leftovers. Waiting on the task itself cannot.
+
+        Then the pool is pumped until it has stayed idle across three passes,
+        which covers whatever the handler started -- an install rescans the
+        console's packages folder, and that work must not be left in flight.
         """
         deadline = time.monotonic() + 10.0
         quiet = 0
         while time.monotonic() < deadline:
             APP.processEvents()
-            quiet = quiet + 1 if self.services.wait(50) else 0
+            idle = self.services.wait(50)
+            # Services keeps a task until its done signal has been delivered,
+            # so "no longer tracked" is the one reading of "this task has
+            # finished" that does not race. Connecting to done here would:
+            # a task can finish before the connection is made, and the signal
+            # is never sent again.
+            if task is not None and task in self.services.running_tasks():
+                quiet = 0
+                continue
+            quiet = quiet + 1 if idle else 0
             if quiet >= 3:
                 return
         raise AssertionError("work did not settle within ten seconds")
@@ -277,11 +319,17 @@ class WhatTheScreenSays(unittest.TestCase):
             self.body = handle.read()
 
     def test_it_says_it_cannot_check_a_file_the_user_supplied(self):
-        self.assertIn("cannot do that for a file you supply",
+        self.assertIn("Nothing can check this file for you",
                       updates.NO_WAY_TO_CHECK)
         self.assertIn("Only install packages you trust",
                       updates.NO_WAY_TO_CHECK)
         self.assertIn("NO_WAY_TO_CHECK", self.body)
+
+    def test_it_is_about_this_screen_rather_than_the_other_one(self):
+        # It used to open by describing what Game updates does, which read on
+        # this screen as a warning that had been put in the wrong place.
+        self.assertNotIn("downloads from Sony", updates.NO_WAY_TO_CHECK)
+        self.assertNotIn("every update", updates.NO_WAY_TO_CHECK)
 
     def test_nothing_on_this_screen_claims_to_verify_anything(self):
         # Not "verified", not "checked and safe", nothing that would read
@@ -352,10 +400,14 @@ class ThePreflightListing(ScreenCase):
             listings={"/dev_hdd0/packages": files("someone-elses.pkg")})
         screen.check_console()
         self.settle()
-        self.assertIn("already something", screen._panel_heading.text())
-        self.assertIn("someone-elses.pkg", screen._panel_body.text())
-        self.assertIn("installs everything in that folder",
-                      screen._panel_body.text())
+        # It is a list to act on now, not a warning: anything sitting in that
+        # folder can be installed from here without being sent again.
+        names = [screen._console_table.topLevelItem(index).text(0)
+                 for index in range(screen._console_table.topLevelItemCount())]
+        self.assertEqual(names, ["someone-elses.pkg"])
+        self.assertFalse(screen._console_table.isHidden())
+        self.assertIn("Already on the console",
+                      screen._console_heading.text())
 
     def test_a_folder_that_cannot_be_read_is_said_rather_than_assumed_empty(self):
         screen = self.build(listings={})
@@ -381,17 +433,33 @@ class TheRun(ScreenCase):
         with open(path, "rb") as handle:
             self.assertEqual(body, handle.read())
         self.assertEqual(self.actions.calls, 1)
-        self.assertIn("install", screen._panel_heading.text().lower())
-        self.assertIn("Package Manager", screen._panel_body.text())
+        self.assertIn("installed", screen._panel_heading.text().lower())
+        # Confirmed on the console, and the package left where it is.
+        self.assertIn("installed on the console", screen._panel_body.text())
+        self.assertIn("stay in the console's packages folder",
+                      screen._panel_body.text())
 
-    def test_several_files_are_all_sent_before_the_install_is_asked_for(self):
+    def test_every_file_is_sent_and_then_each_one_is_installed_by_name(self):
+        # One install call per package, naming the package, in the order they
+        # went up. The console queues them behind its own dialog.
         screen = self.build()
         screen.add_files([self.write("one.pkg"), self.write("two.pkg")])
         self.settle(screen.start_run(screen.selected_files()))
         self.assertEqual([remote for remote, _body in self.writer.stored],
                          ["/dev_hdd0/packages/one.pkg",
                           "/dev_hdd0/packages/two.pkg"])
-        self.assertEqual(self.actions.calls, 1)
+        self.assertEqual(self.actions.calls, 2)
+        self.assertEqual(self.actions.installed, ["one.pkg", "two.pkg"])
+
+    def test_only_what_was_uploaded_is_ever_installed(self):
+        # The folder may hold packages the user put there themselves. Those
+        # are not ours to run, and the only defence against a later
+        # "simplification" into a folder sweep is a test that says so.
+        screen = self.build(
+            listings={"/dev_hdd0/packages": files("someone-elses.pkg")})
+        screen.add_files([self.write("mine.pkg")])
+        self.settle(screen.start_run(screen.selected_files()))
+        self.assertEqual(self.actions.installed, ["mine.pkg"])
 
     def test_a_file_that_vanished_between_picking_and_pressing(self):
         screen = self.build(writer=RecordingWriter(),
@@ -438,7 +506,7 @@ class TheRun(ScreenCase):
         screen.add_files([self.write("patch.pkg")])
         self.settle(screen.start_run(screen.selected_files()))
         self.assertEqual(len(self.writer.stored), 1)
-        self.assertIn("not installed", screen._panel_heading.text())
+        self.assertIn("did not install", screen._panel_heading.text())
         self.assertIn("Package Manager", screen._panel_body.text())
 
     def test_it_will_not_leave_while_an_upload_is_in_flight(self):
@@ -488,6 +556,98 @@ class NothingReachesARealClient(ScreenCase):
 def _rmtree(path):
     import shutil
     shutil.rmtree(path, ignore_errors=True)
+
+
+
+def pkg_head(title_id):
+    """The first bytes of a package, with a content ID in them."""
+    head = bytearray(4096)
+    head[0:4] = b"\x7fPKG"
+    content = f"EP0002-{title_id}_00-SOMETHINGPKG000".encode()
+    head[0x30:0x30 + len(content)] = content
+    return bytes(head)
+
+
+class WhatIsAlreadyOnTheConsole(ScreenCase):
+    """The recovery list. Read off the console, not remembered.
+
+    An install that failed leaves its package in the folder. Somebody who has
+    just watched 2 GB fail needs to install it again without sending it again,
+    and that has to work after this program or the console has been restarted.
+    """
+
+    def build_with(self, names, installed=None, heads=None):
+        screen = self.build(
+            listings={"/dev_hdd0/packages": files(*names),
+                      "/dev_hdd0/game": folders(*(installed or []))})
+        heads = heads or {}
+        real = self.lister.download_bytes
+
+        def read(path, max_bytes=None):
+            name = path.rsplit("/", 1)[-1]
+            if name in heads:
+                return heads[name]
+            return real(path, max_bytes)
+
+        self.lister.download_bytes = read
+        screen.check_console()
+        self.settle()
+        return screen
+
+    def rows_on_console(self, screen):
+        table = screen._console_table
+        return [table.topLevelItem(index)
+                for index in range(table.topLevelItemCount())]
+
+    def test_each_package_is_listed_with_its_name_size_and_title(self):
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        row = self.rows_on_console(screen)[0]
+        self.assertEqual(row.text(0), "EP0002-BLES01807_00-GTAV.pkg")
+        self.assertTrue(row.text(1))
+        self.assertEqual(row.text(2), "BLES01807")
+
+    def test_a_title_already_installed_cannot_be_ticked(self):
+        screen = self.build_with(
+            ["EP0002-BLES01717_00-PATCH.pkg"], installed=["BLES01717"],
+            heads={"EP0002-BLES01717_00-PATCH.pkg": pkg_head("BLES01717")})
+        row = self.rows_on_console(screen)[0]
+        self.assertFalse(row.flags() & Qt.ItemIsUserCheckable)
+        self.assertIn("already installed", row.text(3))
+
+    def test_installing_from_the_list_sends_nothing_across(self):
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        self.assertTrue(screen._install_here.isEnabled())
+        self.settle(screen._on_install_here())
+        self.assertEqual(self.writer.stored, [])
+        self.assertEqual(self.actions.installed,
+                         ["EP0002-BLES01807_00-GTAV.pkg"])
+
+    def test_the_list_is_read_again_after_installing(self):
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        asked = len([path for path in self.lister.asked
+                     if path.startswith("/dev_hdd0/packages")])
+        self.settle(screen._on_install_here())
+        self.settle()
+        after = len([path for path in self.lister.asked
+                     if path.startswith("/dev_hdd0/packages")])
+        self.assertGreater(after, asked)
+
+    def test_the_screen_says_one_failure_does_not_stop_the_rest(self):
+        screen = self.build()
+        note = screen._chain_note.text()
+        self.assertIn("does not stop the others", note)
+        self.assertIn("stays in the console's packages folder", note)
+        self.assertIn("Nothing here deletes them", note)
 
 
 if __name__ == "__main__":

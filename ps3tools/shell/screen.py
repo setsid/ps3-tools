@@ -255,6 +255,9 @@ class Services(QObject):
         waits for a result that can never arrive.
         """
         task = Task(self)
+        # Named so that a shutdown which gives up waiting can say what it gave
+        # up on. Nothing else reads it.
+        task.label = getattr(function, "__qualname__", None) or "work"
         self._tasks.append(task)
         task.done.connect(lambda: self._forget(task))
         self._pool.start(_Runner(task, function))
@@ -267,6 +270,19 @@ class Services(QObject):
     def wait(self, milliseconds=10000):
         """Blocks until the worker pool is idle. For tests and for shutdown."""
         return self._pool.waitForDone(milliseconds)
+
+    def running_tasks(self):
+        """The Task objects still in flight. A test waits on one of these."""
+        return list(self._tasks)
+
+    def running(self):
+        """What has been submitted and not finished, by name.
+
+        The pool is QThreadPool.globalInstance() and cancellation is
+        co-operative, so a shutdown that waits can still time out. This is how
+        it says which piece of work it stopped waiting for.
+        """
+        return [getattr(task, "label", "work") for task in self._tasks]
 
 
 # --- the screen itself -----------------------------------------------------

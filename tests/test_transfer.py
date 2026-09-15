@@ -97,8 +97,14 @@ class ExplodingClient:
 
 
 def listing_text(entries):
-    """A Unix LIST as webMANftpd sends one. (name, size) or (name, size, dir)."""
-    lines = []
+    """A Unix LIST as webMANftpd sends one. (name, size) or (name, size, dir).
+
+    Every real listing starts with "." and "..", so every listing here does
+    too. They were missing, and the screen counted them: somebody with a
+    handful of games was told there were 30 items on their console.
+    """
+    lines = ["drwxrwxrwx   1 root  root             0 Jan  1 00:00 .",
+             "drwxrwxrwx   1 root  root             0 Jan  1 00:00 .."]
     for entry in entries:
         name, size = entry[0], entry[1]
         directory = len(entry) > 2 and entry[2]
@@ -886,6 +892,11 @@ class ScreenCase(ImageCase):
         screen._storage = lambda host: self.devices
         screen.confirm = lambda queue: True
         self.addCleanup(screen.deleteLater)
+        # deleteLater only queues it. Without a pump the screens pile up and
+        # are destroyed at some unpredictable later moment, which is how the
+        # shell tests came to take the process down several hundred tests
+        # after the one that made the mess.
+        self.addCleanup(APP.processEvents)
         self.screen = screen
         return screen
 
@@ -950,6 +961,19 @@ class TheScreen(ScreenCase):
         self.assertEqual(sorted(names), ["Ico.iso", "Old Game.iso"])
         self.assertIn("Already on the console",
                       screen._console_heading.text())
+
+    def test_the_dot_entries_are_not_games_and_are_not_counted(self):
+        # Reported off hardware: the heading said 30 items when the console
+        # had far fewer, because every folder contributes a "." and a ".."
+        # and they were being listed with blank sizes.
+        screen = self.build(listings={PS3_DIR: [("Old Game.iso", 4096)],
+                                      PS2_DIR: [("Ico.iso", 2048)]})
+        screen.on_enter()
+        self.settle(screen)
+        names = [row.text(1) for row in self.console_rows()]
+        self.assertNotIn(".", names)
+        self.assertNotIn("..", names)
+        self.assertIn("2 items", screen._console_heading.text())
 
     def test_a_file_the_console_already_has_arrives_unticked_and_marked(self):
         path = self.ps3("A Game.iso", 8192)

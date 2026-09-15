@@ -1088,7 +1088,7 @@ class TheStateTheScreenReports(ScreenCase):
         self.assertEqual(screen._panel_token, "error")
         words = self.words(screen)
         self.assertIn("fault in this program", words)
-        self.assertIn("not anything you have done", words)
+        self.assertIn("you have not done anything to cause it", words)
         self.assertIn("550 nope", screen._panel_reason.text())
         # It must not tell the user their game is missing on the strength of a
         # listing this program could not read.

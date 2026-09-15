@@ -56,6 +56,7 @@ from ps3tools.patching import flow
 from ps3tools.patching.ftpwrite import FtpWriter
 from ps3tools.patching.scetool import Scetool
 from ps3tools.shell import icons
+from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
@@ -144,8 +145,9 @@ def _state_message(location, name):
 
     if state == flow.LIST_FAILED:
         return ("error", "This program could not read the console's game list", (
-            "This is a fault in this program, not anything you have done, and "
-            "nothing is wrong with your console or your game.\n\n"
+            "This is a fault in this program. Nothing is wrong with your "
+            "console or your game, and you have not done anything to cause "
+            "it.\n\n"
             "The console answered, but the list of installed games came back "
             "in a form this program could not make sense of, so it cannot say "
             "what is installed. Nothing has been read from your game and "
@@ -490,9 +492,14 @@ class PatcherScreen(Screen):
         # person, and a user looking for the way back will look where the way
         # forward was.
         self._restore = QPushButton("Put the originals back")
+        # Red for the same reason Disconnect is: nothing bad happens, but
+        # it writes over what is on the console now and should not be hit
+        # by accident on the way to Apply.
+        widgets.set_role(self._restore, widgets.DANGER)
         self._restore.clicked.connect(self._on_restore)
         buttons.addWidget(self._restore)
         self._patch = QPushButton("Apply the fix")
+        widgets.set_role(self._patch, widgets.PRIMARY)
         self._patch.setDefault(True)
         self._patch.setEnabled(False)
         self._patch.clicked.connect(self._on_patch)

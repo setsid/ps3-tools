@@ -44,6 +44,7 @@ from ps3diag.collectors import CATEGORIES
 from ps3diag.findings import SEVERITIES, SEVERITY_LABELS
 from ps3diag.logging_json import RunLog
 
+from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
@@ -451,6 +452,7 @@ class DiagnosticsScreen(Screen):
         row = QHBoxLayout()
         row.setSpacing(10)
         self.run_button = QPushButton("Collect diagnostics")
+        widgets.set_role(self.run_button, widgets.PRIMARY)
         self.run_button.setDefault(True)
         self.run_button.clicked.connect(self._start)
         row.addWidget(self.run_button)

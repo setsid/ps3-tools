@@ -11,6 +11,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import json
+import pathlib
 import tempfile
 import unittest
 import urllib.request
@@ -664,6 +665,155 @@ class _desktop:
     def __exit__(self, *exc):
         update.target_folder = self._saved
         return False
+
+
+
+class TheVersionHistory(unittest.TestCase):
+    """What changed in each release, without going to a web page.
+
+    The list is kept in the program rather than fetched: the answer for a
+    build is fixed at the moment it is built, and somebody with no internet
+    still needs to know what they are running.
+    """
+
+    def test_every_release_has_something_to_say(self):
+        from ps3tools import history
+        self.assertTrue(history.releases())
+        for release in history.releases():
+            with self.subTest(release.version):
+                self.assertTrue(release.version)
+                self.assertTrue(release.date)
+                self.assertTrue(release.summary or release.changes)
+
+    def test_newest_first(self):
+        from ps3tools import history
+        dates = [release.date for release in history.releases()]
+        self.assertEqual(dates, sorted(dates, reverse=True))
+
+    def test_the_version_being_run_is_one_of_them(self):
+        # A build whose version is not in the list is not an error, but the
+        # released one always should be: it is how somebody checks what they
+        # have against what changed.
+        from ps3tools import history
+        from ps3tools import VERSION
+        self.assertIsNotNone(
+            history.for_version(VERSION),
+            f"{VERSION} has no entry in ps3tools/history.py")
+
+    def test_a_v_prefix_and_whitespace_are_tolerated(self):
+        from ps3tools import history
+        newest = history.releases()[0].version
+        self.assertIsNotNone(history.for_version(f" v{newest} "))
+        self.assertIsNone(history.for_version("0.0.0-nothing"))
+
+    def test_no_release_repeats_the_install_boilerplate(self):
+        # The sha256 line and "restart the console after patching" belong on
+        # the release page and in the README. Once a release, forever, is how
+        # this turns back into the wall of text it replaced.
+        from ps3tools import history
+        for release in history.releases():
+            words = (release.summary,) + tuple(release.changes)
+            said = " ".join(words).lower()
+            for boilerplate in ("sha256", "certutil", "windows will warn",
+                                "restart the console"):
+                self.assertNotIn(boilerplate, said, release.version)
+
+
+class TheAboutTabs(AboutCase):
+    """Four short pages rather than one long scroll."""
+
+    def test_there_is_a_tab_for_each_thing_it_has_to_say(self):
+        screen = self.build()
+        labels = [screen.tabs.tabText(index)
+                  for index in range(screen.tabs.count())]
+        self.assertEqual(labels,
+                         ["This program", "What's new", "Network", "Credits"])
+
+    def test_the_history_tab_lists_every_release(self):
+        from ps3tools import history
+        screen = self.build()
+        said = self._text_of(screen.tabs.widget(1))
+        for release in history.releases():
+            self.assertIn(release.version, said)
+
+    def test_the_running_version_is_marked(self):
+        from ps3tools import VERSION
+        screen = self.build()
+        said = self._text_of(screen.tabs.widget(1))
+        self.assertIn("this is the one you are running", said)
+        self.assertIn(VERSION, said)
+
+    def test_the_update_check_is_still_where_it_was(self):
+        # Rearranged, not removed: the button and the banner are the same two
+        # widgets they were, on the first tab.
+        screen = self.build()
+        self.assertIsNotNone(screen.check_button)
+        self.assertIsNotNone(screen.banner)
+        said = self._text_of(screen.tabs.widget(0))
+        self.assertIn("Version", said)
+
+    def _text_of(self, widget):
+        from PySide6.QtWidgets import QLabel
+        return " ".join(label.text() for label in widget.findChildren(QLabel))
+
+
+
+class TheLegalNotices(unittest.TestCase):
+    """Fixed wording, in the app and in the README, word for word.
+
+    The same two paragraphs go in the two standalone patcher repositories, so
+    the text is quoted rather than rewritten to suit each place it appears.
+    """
+
+    TRADEMARK = ("Not affiliated with or endorsed by Activision, Treyarch or "
+                 "Sony. All trademarks are the property of their respective "
+                 "owners.")
+    DISCLAIMER = ("Every reasonable step has been taken to make this software "
+                  "safe, but no guarantee is given. Use it at your own risk. "
+                  "The app backs up the files it modifies; keep your own "
+                  "backups as well.")
+
+    def test_the_wording_in_the_app_is_the_wording_that_was_agreed(self):
+        self.assertEqual(about.TRADEMARK_NOTICE, self.TRADEMARK)
+        self.assertEqual(about.DISCLAIMER_NOTICE, self.DISCLAIMER)
+
+    def test_the_readme_carries_the_same_words(self):
+        readme = " ".join(
+            pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8").split())
+        self.assertIn("## Legal",
+                      pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8"))
+        self.assertIn(self.TRADEMARK, readme)
+        self.assertIn(self.DISCLAIMER, readme)
+
+    def test_the_trademark_line_comes_first(self):
+        readme = " ".join(
+            pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8").split())
+        self.assertLess(readme.index(self.TRADEMARK),
+                        readme.index(self.DISCLAIMER))
+
+    def test_nothing_in_the_readme_points_at_box_art_or_a_screenshot(self):
+        # No logos, box art or in-game screenshots. The only image is the
+        # wordmark this project drew for itself.
+        import re
+        readme = pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8")
+        images = set(re.findall(r'<img[^>]*src="([^"]+)"', readme))
+        images |= set(re.findall(r'!\[[^\]]*\]\(([^)]+)\)', readme))
+        local = {name for name in images if not name.startswith("http")}
+        self.assertEqual(local, {"logo.png"}, local)
+
+
+class TheLegalNoticesOnScreen(AboutCase):
+    def test_they_sit_under_the_credits(self):
+        screen = self.build()
+        credits_tab = screen.tabs.widget(3)
+        from PySide6.QtWidgets import QLabel
+        said = [label.text() for label in credits_tab.findChildren(QLabel)]
+        joined = " ".join(said)
+        self.assertIn(about.TRADEMARK_NOTICE, joined)
+        self.assertIn(about.DISCLAIMER_NOTICE, joined)
+        # Under the credits, not above them.
+        self.assertLess(joined.index("webMAN MOD"),
+                        joined.index(about.TRADEMARK_NOTICE))
 
 
 if __name__ == "__main__":

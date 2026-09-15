@@ -169,8 +169,8 @@ def site_state(site, image, kind):
         return NOT_EXAMINED, (
             f"{found.get('missing') or 'a file this program needs'} is not "
             f"part of this build of the program, so the patch site was never "
-            f"looked at. This is a fault in this program, not in the file on "
-            f"the console")
+            f"looked at. This is a fault in this program. Nothing is wrong "
+            f"with the file on the console.")
     if found["state"] == patchstate.UNKNOWN:
         return UNRECOGNISED, found["evidence"]
     if found.get("offset") != offset:

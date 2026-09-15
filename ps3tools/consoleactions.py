@@ -11,20 +11,28 @@ console to factory settings, and it does all of it over a plain GET with no
 confirmation of any kind. Two of those live one path segment away from the only
 call this program needs:
 
-    /install.ps3/dev_hdd0/packages   install everything in that folder
-    /recovery.ps3                    boot into recovery
-    /rebuild.ps3                     rebuild the database
+    /install.ps3/dev_hdd0/packages/NAME.pkg   install that one package
+    /recovery.ps3                             boot into recovery
+    /rebuild.ps3                              rebuild the database
 
-So the allowlist here is **exact match against a frozen set of complete
-paths**. Not a prefix, not a regular expression, not a starts-with, and not a
-"clean the path and see". A prefix test on "/install.ps3" accepts
-"/install.ps3/../recovery.ps3" and a starts-with test on "/install" accepts
-anything at all that begins with those eight characters. Exact match is the
-only shape of this check that cannot be talked round, which is why it is the
-shape it has.
+So the allowlist here is **one complete prefix, written out whole, followed by
+one path segment that has to look exactly like a package name**. Not a prefix
+test on its own, not a general regular expression over the whole path, and not
+a "clean the path and see". A prefix test alone accepts
+"/install.ps3/dev_hdd0/packages/../../recovery.ps3", which is why the segment
+after the prefix is matched against a pattern that cannot contain a slash, a
+dot pair, or anything but the characters a PS3 package name is made of.
 
-There is one entry on it. Adding a second one is a decision somebody makes
-deliberately, in this file, with the tests below in front of them.
+Everything the check rejects, it rejects before a socket is opened.
+
+The call names **one file**. It used to name the folder, which was read off
+webMAN's documented endpoint list and turned out to do nothing at all: that URL
+returns a page with a dropdown, and the browser appends the chosen filename in
+JavaScript before fetching it --
+
+    install.ps3/dev_hdd0/packages/'+this.value;
+
+-- which is how the real shape of the call was established, on hardware.
 
 Everything that leaves this machine goes through an injected opener. The
 default builds a urllib opener that refuses redirects; the tests pass one of
@@ -33,6 +41,7 @@ network and tests/check-no-network.py fails the build if a single packet
 leaves it.
 """
 
+import re
 import socket
 import urllib.error
 import urllib.request
@@ -43,6 +52,10 @@ from ps3diag.transport import NoRedirects
 #: that a console mid-install is not mistaken for a console that has gone.
 DEFAULT_TIMEOUT = 30.0
 
+#: Enough of the answer to read a reason out of, without putting a whole page
+#: into the log. webMAN's replies to this call are a couple of lines.
+MAX_LOGGED_BODY = 2000
+
 USER_AGENT = "ps3-tools-updates"
 
 #: The folder webMAN installs from. The endpoint installs the whole folder;
@@ -51,16 +64,31 @@ USER_AGENT = "ps3-tools-updates"
 #: something this program did not put there.
 PACKAGES_PATH = "/dev_hdd0/packages"
 
-#: The install call, written out whole. See the module docstring: this is
-#: compared with == and with nothing else.
-INSTALL_PACKAGES = "/install.ps3/dev_hdd0/packages"
+#: The one call this client makes, up to but not including the file name.
+#: Written out whole. Everything before the last slash is fixed.
+INSTALL_PREFIX = "/install.ps3" + PACKAGES_PATH + "/"
 
-#: Every path this client may ever request. Exact match, complete paths.
+#: What may follow it: one segment, and it has to look like a package.
 #:
-#: Never a prefix. /recovery.ps3 and /rebuild.ps3 are one segment away from the
-#: entry above and neither of them is recoverable by the person this program is
-#: written for.
-ALLOWED_ACTIONS = frozenset({INSTALL_PACKAGES})
+#: No slash, so it cannot walk anywhere. No leading dot, so "..", ".." dressed
+#: up, and hidden files are all out. It must end .pkg, which is the only kind
+#: of file this call is for. /recovery.ps3 and /rebuild.ps3 are one segment
+#: away from this prefix and neither of them is recoverable by the person this
+#: program is written for, so the gate is deliberately tighter than it needs
+#: to be rather than looser.
+PACKAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,127}\.pkg$")
+
+
+def install_path(filename):
+    """The install URL for one package. Raises ActionRefused if it is not one.
+
+    Built here rather than by a caller sticking strings together, so there is
+    one place that decides what this URL may look like.
+    """
+    name = (filename or "").strip()
+    if not PACKAGE_NAME.match(name):
+        raise ActionRefused(f"not a package file name: {filename!r}")
+    return INSTALL_PREFIX + name
 
 
 class ActionRefused(Exception):
@@ -88,8 +116,10 @@ def assert_allowed(path):
         raise ActionRefused(f"query strings are never sent: {path!r}")
     if ".." in path:
         raise ActionRefused(f"path traversal: {path!r}")
-    if path not in ALLOWED_ACTIONS:
+    if not path.startswith(INSTALL_PREFIX):
         raise ActionRefused(f"not on the action allowlist: {path!r}")
+    if not PACKAGE_NAME.match(path[len(INSTALL_PREFIX):]):
+        raise ActionRefused(f"not a package file name: {path!r}")
     return path
 
 
@@ -158,28 +188,37 @@ class ConsoleActions:
         if isinstance(raw, bytes):
             raw = raw.decode("utf-8", errors="replace")
         if self.log:
-            self.log.event("console_action", path=path, status=status)
+            # The body is recorded, not just the status. webMAN answers 200 to
+            # the install call and then does nothing, so whatever reason it
+            # gives is in the body or nowhere, and a diagnostic taken
+            # afterwards is the only place anybody will see it.
+            self.log.event("console_action", path=path, status=status,
+                           body=raw[:MAX_LOGGED_BODY])
         return ActionResponse(path, status, raw)
 
-    def install_packages(self):
-        """Ask the console to install everything in /dev_hdd0/packages.
+    def install_package(self, filename):
+        """Ask the console to install one package out of its packages folder.
 
-        UNTESTED AGAINST A CONSOLE. Nobody has ever fired this call. It is
-        written from webMAN's documented endpoint list and it has never been
-        watched working, in the same way the scetool invocation was written
-        from two readmes and never run on the machine these were written on.
-        Treat a success here as "the console answered 200", which is all it
-        is: webMAN answers before the installer has finished, and there is no
-        endpoint that reports how an install went.
+        Confirmed on hardware: the console puts the install up on screen, and
+        the user presses O when it finishes.
 
-        It installs the *whole folder*. The caller is responsible for knowing
-        what is in it -- see ps3tools.updates.inspect_packages_folder.
+        The earlier version of this named the folder and nothing else, which
+        did nothing at all -- see the module docstring. A 200 means the console
+        accepted the request; what happens on the television after that is the
+        console's business and there is no endpoint that reports on it.
+
+        What happens if a second request arrives while the first install
+        dialog is still up is NOT established: it may queue, it may be
+        ignored, it may stack. Until somebody has watched it, callers install
+        one package at a time and wait for the user to say the console has
+        finished.
         """
-        response = self._get(INSTALL_PACKAGES)
+        path = install_path(filename)
+        response = self._get(path)
         if not response.ok:
             raise ActionFailed(
                 f"The console answered {response.status} when it was asked to "
-                f"install the update. The update file has been copied across "
-                f"and is still there: you can install it yourself from the "
-                f"console, under Package Manager.")
+                f"install {filename}. The file has been copied across and is "
+                f"still there: you can install it yourself from the console, "
+                f"under Package Manager.")
         return response

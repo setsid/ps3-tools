@@ -34,6 +34,7 @@ from ps3diag import parsers, transport
 from ps3tools import titles, updates
 from ps3tools.consoleactions import ConsoleActions
 from ps3tools.patching.ftpwrite import FtpWriter
+from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
@@ -48,13 +49,17 @@ NOTHING_TO_DO = (
     "Every game on this console already has the newest title update Sony "
     "published for it, so there is nothing to do here.")
 
-LOOK_INSIDE = "Look inside the unnamed disc images"
+#: What the scan button says before anything has been scanned, and after.
+SCAN_LABEL = "Check for updates"
+RESCAN_LABEL = "Check again"
 
-SLOW_WARNING = (
-    "This opens each of those images on the console and reads a few small "
-    "pieces out of it. It takes several minutes and the console has to stay "
-    "switched on the whole time. Nothing is downloaded and nothing on the "
-    "console is changed.")
+#: Said on arrival, in place of scanning unasked.
+READY_TO_SCAN = (
+    "Press Check for updates below. This reads every game on the console and "
+    "then asks Sony about each one.\n\n"
+    "On a console with a lot of games it takes a few minutes, and it says "
+    "what it is doing as it goes. Nothing is downloaded or changed until you "
+    "tick something afterwards.")
 
 WHAT_THIS_IS = (
     "Games get fixes after they are released. This checks each game on the "
@@ -86,10 +91,16 @@ class GameUpdatesScreen(Screen):
         # Disc images whose names carry no title ID. The slow pass is offered
         # for these and only these. See _on_scanned.
         self._unidentified = []
+        #: Title IDs the last remembered scan found behind.
+        self._behind = []
         # What has already failed verification, and how, for the length of
         # this screen. It is what lets a second identical failure stop telling
         # the user to try again. See updates.verify_download.
         self._verify_history = {}
+        # Seams, so a test does not sit through a real install timeout. The
+        # defaults are what runs against a console.
+        self.install_poll_seconds = updates.INSTALL_POLL_SECONDS
+        self.install_timeout_seconds = updates.INSTALL_TIMEOUT_SECONDS
         self._build()
         if self.theme is not None:
             try:
@@ -180,16 +191,19 @@ class GameUpdatesScreen(Screen):
         self._back.clicked.connect(self._on_back)
         buttons.addWidget(self._back)
         buttons.addStretch(1)
-        self._rescan = QPushButton("Check again")
+        self._rescan = QPushButton(SCAN_LABEL)
         self._rescan.clicked.connect(lambda: self.start_scan())
+        widgets.set_role(self._rescan, widgets.PRIMARY)
+        # Only ever shown when a remembered scan left something behind. See
+        # _offer_remembered.
+        self._partial = QPushButton("Check the ones that were behind")
+        self._partial.clicked.connect(self._on_partial)
+        self._partial.hide()
+        buttons.addWidget(self._partial)
         buttons.addWidget(self._rescan)
         # Only ever shown when there is something it would do, and it says how
         # many images it would open. It is the slow path and it is the user's
         # choice; see ps3tools.updates.image_identifier.
-        self._look = QPushButton(LOOK_INSIDE)
-        self._look.clicked.connect(lambda: self.start_scan(read_images=True))
-        self._look.hide()
-        buttons.addWidget(self._look)
         self._go = QPushButton("Download and install the ticked updates")
         self._go.setEnabled(False)
         self._go.clicked.connect(self._on_go)
@@ -317,7 +331,66 @@ class GameUpdatesScreen(Screen):
     # -- lifecycle
 
     def on_enter(self):
-        self.start_scan()
+        """Wait to be asked.
+
+        It used to scan the moment the screen opened. On a console with a
+        shelf of games that is minutes of reading before anybody has said they
+        want it, with a window that looks stuck while it happens.
+        """
+        if self._rows or self._working:
+            return
+        if self._offer_remembered():
+            return
+        self._show_panel("info", "Ready when you are", READY_TO_SCAN)
+
+    def _offer_remembered(self):
+        """Show what the last check found, and offer the short way round.
+
+        The table is filled from memory so the screen has something in it, and
+        every row is marked as remembered and cannot be ticked: nothing that
+        was true a week ago may be acted on today. Both buttons ask Sony
+        fresh; the short one just looks at fewer games.
+        """
+        host = self.connection.host if self.connection else ""
+        entry = updates.remembered_scan(self._settings(), host)
+        if entry is None:
+            return False
+        rows = updates.remembered_rows(entry)
+        if not rows:
+            return False
+        # Kept, not just drawn: the next scan merges into these rather than
+        # starting from nothing, which is what stops a title vanishing because
+        # one scan did not look where it came from. Every one is blocked, so
+        # none of them can be acted on while it is only a memory.
+        self._rows = rows
+        self._fill_table()
+        self._behind = updates.titles_behind(entry)
+        when = str(entry.get("checked", "")).replace("T", " at ")
+        if self._behind:
+            count = len(self._behind)
+            self._partial.setText(
+                f"Check the {count} that {'was' if count == 1 else 'were'} "
+                f"behind")
+            self._partial.show()
+            body = (f"This is what the last check found, on {when}. "
+                    f"{count} game{'' if count == 1 else 's'} "
+                    f"{'was' if count == 1 else 'were'} behind.\n\n"
+                    f"Checking those again takes seconds, because the console "
+                    f"does not have to be read through from the start. "
+                    f"Checking everything finds games added since.")
+        else:
+            self._partial.hide()
+            body = (f"This is what the last check found, on {when}. Everything "
+                    f"was up to date.\n\n{READY_TO_SCAN}")
+        self._show_panel("info", "What the last check found", body)
+        return True
+
+    def _on_partial(self):
+        return self.start_scan(only=list(self._behind))
+
+    def _settings(self):
+        """The shell's settings dictionary, or nothing if there is not one."""
+        return getattr(self.services, "settings", None)
 
     def on_leave(self):
         if self._task is not None and not self._working:
@@ -334,13 +407,21 @@ class GameUpdatesScreen(Screen):
 
     # -- the scan
 
-    def start_scan(self, read_images=False):
+    def start_scan(self, read_images=True, only=None):
         """Look at the console and ask Sony about what is on it.
 
-        read_images buys the slow pass: the disc images whose names carry no
-        title ID are opened and read. Off by default, and offered only when the
-        previous scan found images it could not name. See
-        ps3tools.updates.image_identifier for why that is not the default.
+        Disc images whose names carry no title ID are opened and read as part
+        of this. It used to be a second button, because reading them one after
+        another took minutes; several connections at a time made it quick
+        enough that a separate pass was only ever going to be a way of showing
+        somebody an incomplete list first. See
+        ps3tools.updates.parallel_image_identifier.
+
+        `only` is a list of title IDs to look at and nothing else. It is the
+        short way round after a first full check: the console is not walked and
+        no disc image is opened, so it comes back in seconds rather than
+        minutes. Everything else about the run is the same, including asking
+        Sony fresh -- nothing remembered is ever acted on.
         """
         if self._working:
             return None
@@ -354,35 +435,54 @@ class GameUpdatesScreen(Screen):
             self._go.setEnabled(False)
             return None
 
-        self._table.clear()
-        self._rows = []
         self._detail.setText("")
         self._hide_panel()
         self._go.setEnabled(False)
         self._rescan.setEnabled(False)
-        self._look.setEnabled(False)
-        self._set_busy(True, "Reading inside the disc images"
-                       if read_images else
-                       "Looking at the games on the console")
+        self._partial.setEnabled(False)
+        self._set_busy(True, "Checking the games that were behind"
+                       if only else "Looking at the games on the console")
 
         open_lister = self._lister
         read_storage = self._storage
         fetcher = self._fetcher()
         read_images = bool(read_images)
+        wanted = list(only or [])
 
         def work(control):
+            stage = lambda text: control.progress(("stage", text))
+            if wanted:
+                with open_lister(host) as lister:
+                    installed = updates.scan_titles(lister, wanted,
+                                                    on_stage=stage)
+                    folder = updates.inspect_packages_folder(lister)
+                control.progress(("scanned", len(installed)))
+                rows = updates.check_titles(
+                    installed, fetcher=fetcher, progress=control.progress,
+                    cancelled=lambda: control.cancelled)
+                return rows, [], folder, [], {"looked_at": wanted}
             devices = _device_names(read_storage, host)
             with open_lister(host) as lister:
-                identifier = (updates.image_identifier(lister)
-                              if read_images else None)
+                identifier = (updates.parallel_image_identifier(
+                    lambda: open_lister(host),
+                    on_progress=lambda done, total, name: control.progress(
+                        ("image", done, total, name)))
+                    if read_images else None)
                 installed, notes, unnamed = updates.scan_console(
-                    lister, devices=devices, image_identifier=identifier)
+                    lister, devices=devices, image_identifier=identifier,
+                    on_stage=lambda text: control.progress(("stage", text)))
                 folder = updates.inspect_packages_folder(lister)
             control.progress(("scanned", len(installed)))
             rows = updates.check_titles(
                 installed, fetcher=fetcher, progress=control.progress,
                 cancelled=lambda: control.cancelled)
-            return rows, notes, folder, unnamed
+            # The image pass counts as looked-in only when it left nothing
+            # unidentified behind. A pass that was skipped, or that lost a
+            # worker, has not looked and may not remove anything.
+            looked = [updates.FROM_GAME_FOLDER]
+            if read_images and not unnamed:
+                looked.append(updates.FROM_DISC_IMAGE)
+            return rows, notes, folder, unnamed, {"looked_in": looked}
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -393,31 +493,45 @@ class GameUpdatesScreen(Screen):
         return task
 
     def _on_scanned(self, result):
-        rows, notes, folder, unnamed = result
-        self._rows = list(rows)
+        rows, notes, folder, unnamed, where = result
+        # Merged, never replaced. A scan that did not look at disc images must
+        # not take the image-only games off the table.
+        self._rows = updates.merge_scan(
+            self._rows, list(rows),
+            looked_in=where.get("looked_in", ()),
+            looked_at=where.get("looked_at"))
         self._packages = folder
         self._unidentified = list(unnamed)
+        host = self.connection.host if self.connection else ""
+        updates.remember_scan(self._settings(), host, self._rows)
+        self._behind = [row.title_id for row in self._rows
+                        if row.out_of_date or (row.nothing_installed
+                                               and row.package is not None)]
+        self._partial.setEnabled(True)
+        self._partial.setVisible(bool(self._behind))
+        if self._behind:
+            count = len(self._behind)
+            self._partial.setText(
+                f"Check the {count} that {'is' if count == 1 else 'are'} "
+                f"behind")
         self._rescan.setEnabled(True)
-        self._look.setEnabled(True)
+        self._rescan.setText(RESCAN_LABEL)
+        # The action moves from "find out" to "do it" once there is a list.
+        # One coloured button at a time, whichever moment it is.
+        widgets.set_role(self._rescan, widgets.NEUTRAL)
+        widgets.set_role(self._go, widgets.PRIMARY)
         self._fill_table()
 
         lines = list(notes)
-        if self._unidentified:
-            self._look.setText(f"Look inside {len(self._unidentified)} disc "
-                               f"image(s)")
-            self._look.show()
-            lines.append(SLOW_WARNING)
-        else:
-            self._look.hide()
         if folder is not None and folder.unknown:
             lines.append(folder.reason)
         elif folder is not None and folder.names:
+            # Said plainly, and no longer as a warning: installs name one file,
+            # so what else is in there is not going anywhere.
             lines.append(
                 "The console's packages folder already holds "
-                f"{_and_list(folder.names)}. The console installs everything "
-                "in that folder at once, so those would be installed as well. "
-                "If you do not know what they are, remove them from the "
-                "console first.")
+                f"{_and_list(folder.names)}. Nothing here installs those; "
+                "only the updates you tick are sent and installed.")
         self._detail.setText("\n\n".join(item for item in lines if item))
 
         if self._wanted:
@@ -556,40 +670,72 @@ class GameUpdatesScreen(Screen):
         self._working = True
         self._go.setEnabled(False)
         self._rescan.setEnabled(False)
-        self._look.setEnabled(False)
         self._set_busy(True, "Downloading from Sony")
 
         open_writer = self._writer
         open_actions = self._actions
+        open_lister = self._lister
         read_storage = self._storage
         stream = self._stream()
         history = self._verify_history
+        poll_seconds = self.install_poll_seconds
+        timeout_seconds = self.install_timeout_seconds
 
         def work(control):
             devices = read_storage(host)
             free = updates.free_bytes_for(devices)
             done = []
-            with open_writer(host) as writer:
-                import tempfile
-                with tempfile.TemporaryDirectory(prefix="ps3-update-") as temp:
-                    for row in chosen:
-                        if control.cancelled:
-                            break
-                        delivered = updates.deliver(
-                            row, writer, temp, stream=stream,
-                            progress=control.progress,
-                            cancelled=lambda: control.cancelled,
-                            free_bytes=free, history=history)
-                        done.append(delivered)
-                        # Each upload eats into what is left, and the console
-                        # is not asked again between them.
-                        if free is not None:
-                            free = max(0, free - delivered.bytes_sent)
+            skipped = []
+            with open_lister(host) as lister:
+                # Asked fresh, per title, right before its download starts.
+                # See updates.deliver: a retry after a part-finished run must
+                # not fetch what already went in.
+                def installed_reader(title_id):
+                    return updates.read_installed_version(
+                        getattr(lister, "download_bytes", None), title_id)
+
+                with open_writer(host) as writer:
+                    import tempfile
+                    with tempfile.TemporaryDirectory(
+                            prefix="ps3-update-") as temp:
+                        for row in chosen:
+                            if control.cancelled:
+                                break
+                            delivered = updates.deliver(
+                                row, writer, temp, stream=stream,
+                                progress=control.progress,
+                                cancelled=lambda: control.cancelled,
+                                free_bytes=free, history=history,
+                                installed_reader=installed_reader)
+                            if delivered.skipped:
+                                skipped.append(delivered)
+                                continue
+                            done.append(delivered)
+                            # Each upload eats into what is left, and the
+                            # console is not asked again between them.
+                            if free is not None:
+                                free = max(0, free - delivered.bytes_sent)
             if not done:
-                return done, None
-            control.progress(("installing", "", 0, 0))
-            response = updates.install(open_actions(host))
-            return done, response
+                return done, [], skipped
+            # One call per file, and each one is confirmed on the console
+            # before the next is fired. Seven sent back to back landed three:
+            # webMAN ignores an install while it is still busy with the last.
+            #
+            # NEVER build this list by listing /dev_hdd0/packages: the folder
+            # may hold packages the user put there themselves and those are
+            # not ours to run. The only thing installed is what this upload
+            # just wrote, by exact name, and the same name is what gets
+            # deleted afterwards.
+            with open_lister(host) as confirm_lister:
+                results = updates.install_queue(
+                    open_actions(host),
+                    [(item.filename, item.title_id) for item in done],
+                    updates.installed_checker(confirm_lister),
+                    on_progress=control.progress,
+                    cancelled=lambda: control.cancelled,
+                    poll_seconds=poll_seconds,
+                    timeout_seconds=timeout_seconds)
+            return done, results, skipped
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -603,33 +749,46 @@ class GameUpdatesScreen(Screen):
         self._working = False
         self._set_busy(False)
         self._rescan.setEnabled(True)
-        self._look.setEnabled(True)
         self._update_go()
 
     def _on_finished(self, result):
-        done, response = result
+        done, results, skipped = result
+        already = "\n\n".join(item.reason for item in skipped if item.reason)
         if not done:
+            if skipped:
+                self._show_panel("ok", "Nothing needed sending", already)
+                return
             self._show_panel("warn", "Nothing was copied to the console",
                              "The update was stopped before anything was "
                              "copied across.")
             return
-        names = _and_list([item.filename for item in done])
-        body = (f"{names} was copied to the console's packages folder and "
-                f"checked against Sony's checksum first.\n\n"
-                f"{updates.INSTALL_NOTICE}")
-        if response is not None and not getattr(response, "ok", False):
+        landed = [item for item in results if item.confirmed]
+        missed = [item for item in results if not item.confirmed]
+        if missed:
             self._show_panel(
-                "warn", "The update was copied across but not installed",
-                f"The console answered {getattr(response, 'status', '?')} "
-                f"when it was asked to install it. Open Package Manager on "
-                f"the console and install {names} from there.")
-            return
-        self._show_panel("ok", "The console has been asked to install it",
-                         body)
+                "warn", "Some updates did not install",
+                _install_report(landed, missed)
+                + ("\n\n" + already if already else ""))
+        else:
+            count = len(landed)
+            body = (f"{_and_list([item.filename for item in landed])} "
+                    f"installed on the console, checked against Sony's "
+                    f"checksum on the way.")
+            body += (" The package files stay in the console's packages "
+                     "folder. Nothing here deletes them, and they can be "
+                     "removed from the console whenever you like.")
+            if already:
+                body += f"\n\n{already}"
+            self._show_panel(
+                "ok",
+                f"{count} updates installed" if count > 1 else "Installed",
+                body)
+        # The table still says what was true before any of this. Read it
+        # again so the versions on screen are the ones on the console.
+        self.start_scan()
 
     def _on_failed(self, message):
         self._rescan.setEnabled(True)
-        self._look.setEnabled(True)
         self._show_panel("error", "This did not finish", message)
 
     # -- progress
@@ -640,6 +799,18 @@ class GameUpdatesScreen(Screen):
         kind = payload[0]
         if kind == "scanned":
             self._stage.setText(f"Asking Sony about {payload[1]} game(s)")
+            return
+        if kind == "stage" and len(payload) >= 2:
+            self._stage.setText(payload[1])
+            return
+        if kind == "image" and len(payload) >= 4:
+            _kind, done, total, name = payload[:4]
+            # Which one and how far through, the same as the transfer screen.
+            # It read thirteen images with nothing on screen and looked hung.
+            self._stage.setText(f"Reading {name} ({done + 1} of {total})")
+            if total:
+                self._bar.setRange(0, 100)
+                self._bar.setValue(int(done * 100 / total))
             return
         if kind == "installing":
             self._stage.setText("Asking the console to install it")
@@ -776,6 +947,24 @@ def _device_names(read_storage, host):
     names = [str(entry.get("device")) for entry in entries
              if entry.get("device")]
     return names or None
+
+
+def _install_report(landed, missed):
+    """Which ones went in and which did not, naming both."""
+    lines = []
+    if landed:
+        lines.append(f"Installed: {_and_list([i.filename for i in landed])}.")
+    unsent = [item for item in missed if "not sent" in item.reason]
+    stalled = [item for item in missed if item not in unsent]
+    for item in stalled:
+        lines.append(item.reason)
+    if unsent:
+        lines.append(f"The queue stopped before these were sent: "
+                     f"{_and_list([i.filename for i in unsent])}.")
+    lines.append("Everything named here is on the console in its packages "
+                 "folder. Open Package Manager on the console and install "
+                 "what is missing from the list.")
+    return "\n\n".join(lines)
 
 
 def _and_list(names):

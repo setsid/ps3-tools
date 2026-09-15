@@ -18,6 +18,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -132,9 +133,27 @@ class ShellCase(unittest.TestCase):
         self.window.pages.animations_enabled = False
 
     def tearDown(self):
+        # Drain the worker pool first. It is QThreadPool.globalInstance(),
+        # shared by every test in this process, so a test that submits work
+        # and returns without waiting leaves it running into the next one.
+        # That is how a later test came to assert on a scan that had not
+        # started yet: its own task was still queued behind the leftovers.
+        if not self.services.wait(10000):
+            raise AssertionError("a test left work running in the pool")
+        application.processEvents()
         self.window.pages.finish_now()
+        # Any graphics effect comes off before the widget it is attached to is
+        # destroyed. A blur left on a window being torn down took the process
+        # with it several hundred tests later, in whatever was running then.
+        central = self.window.centralWidget()
+        if central is not None:
+            central.setGraphicsEffect(None)
         self.window.close()
         self.window.deleteLater()
+        # deleteLater only queues it. Without a pump the windows pile up and
+        # are destroyed at some unpredictable later moment, which is not a
+        # thing a test should leave to chance.
+        application.processEvents()
         registry.clear()
         for screen_class in self._saved:
             registry.register(screen_class)
@@ -453,12 +472,24 @@ class FindTests(ShellCase):
         self.bar._choose = self.asked.append
 
     def _run_find(self):
+        """Start a search and wait for its result to reach the GUI thread.
+
+        wait() drains the pool, but the task's result arrives as a queued
+        signal and one processEvents() can return before the handler has run.
+        Pumping until the pool has stayed idle across three passes is
+        deterministic; a fixed pump was close enough to pass most of the time.
+        """
         task = self.bar.find()
         self.assertIsNotNone(task)
         self.assertEqual(self.connection.scan, "scanning")
-        self.assertTrue(self.services.wait(10000))
-        application.processEvents()
-        return task
+        deadline = time.monotonic() + 10.0
+        quiet = 0
+        while time.monotonic() < deadline:
+            application.processEvents()
+            quiet = quiet + 1 if self.services.wait(50) else 0
+            if quiet >= 3:
+                return task
+        raise AssertionError("the search did not settle within ten seconds")
 
     def test_one_console_fills_the_address_in_and_checks_it(self):
         self.answers["192.168.9.3"] = fixture("webman_root.html")
@@ -1353,6 +1384,252 @@ class ScanProbeTests(unittest.TestCase):
         response = HttpProbe(f"127.0.0.1:{port}", timeout=0.3).get("/")
         self.assertFalse(response.ok)
         self.assertIsNotNone(response.error)
+
+
+
+class TheFirstRunDialog(ShellCase):
+    """Asked once, on a start with no console saved, and never after.
+
+    It drives the connection bar rather than talking to anything itself, so
+    there is still exactly one Find, one Check and one address field in this
+    program. Nothing here opens a socket: the bar's own seams are untouched
+    and no scan is started.
+    """
+
+    def _dialog(self):
+        """The dialog, closed again however the test ends.
+
+        It is modal and it is parented to the window, so a test that leaves
+        one open hands the next one a dialog whose parent is being torn down.
+        Closing it also takes the blur off the window behind it.
+        """
+        dialog = self.window.offer_to_find_console()
+        self.assertIsNotNone(dialog)
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(application.processEvents)
+        self.addCleanup(dialog.reject)
+        return dialog
+
+    def test_it_is_offered_when_no_address_has_ever_been_saved(self):
+        dialog = self._dialog()
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.find_button.text(), "Find my PS3")
+
+    def test_it_is_never_offered_when_an_address_is_already_saved(self):
+        self.connection.set_host("192.168.1.9")
+        self.assertIsNone(self.window.offer_to_find_console())
+
+    def test_the_window_behind_it_is_blurred_and_put_back_afterwards(self):
+        dialog = self._dialog()
+        self.assertIsNotNone(self.window.centralWidget().graphicsEffect())
+        dialog.reject()
+        application.processEvents()
+        self.assertIsNone(self.window.centralWidget().graphicsEffect())
+
+    def test_the_x_dismisses_it_and_leaves_the_application_as_it_was(self):
+        dialog = self._dialog()
+        dialog.dismiss_button.click()
+        application.processEvents()
+        self.assertFalse(dialog.isVisible())
+        self.assertEqual(self.connection.host, "")
+        # Still usable with no console, which is the whole point of the X.
+        self.assertTrue(self.window.isEnabled())
+
+    def test_a_console_answering_draws_the_tick_and_closes_itself(self):
+        dialog = self._dialog()
+        dialog.LINGER_MS = 0
+        self.connection.set_host("192.168.1.50")
+        self.connection.set_connection("connected", "webMAN 1.47.48q")
+        application.processEvents()
+        self.assertTrue(dialog.tick.isVisible())
+        self.assertIn("192.168.1.50", dialog.status.text())
+        # The buttons get out of the way rather than sitting there inviting a
+        # second press while it closes.
+        self.assertTrue(dialog.find_button.isHidden())
+        self.assertTrue(dialog.dismiss_button.isHidden())
+
+    def test_typing_an_address_goes_through_the_one_address_field(self):
+        dialog = self._dialog()
+        checked = []
+        self.window.connection_bar.check = lambda: checked.append(True)
+        dialog.address.setText(" 192.168.1.77 ")
+        dialog.check_button.click()
+        self.assertEqual(self.connection.host, "192.168.1.77")
+        self.assertEqual(checked, [True])
+
+    def test_an_empty_address_says_so_rather_than_checking_nothing(self):
+        dialog = self._dialog()
+        checked = []
+        self.window.connection_bar.check = lambda: checked.append(True)
+        dialog.check_button.click()
+        self.assertEqual(checked, [])
+        self.assertIn("Find my PS3", dialog.status.text())
+
+    def test_the_rounded_corners_have_nothing_square_behind_them(self):
+        # Reported from a screenshot: the stylesheet rounds the dialog but the
+        # window underneath still painted its own square, so the four corners
+        # showed as darker notches.
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage
+        from ps3tools.shell.theme import stylesheet
+        application.setStyleSheet(stylesheet(self.theme))
+        self.addCleanup(application.setStyleSheet, "")
+        dialog = self._dialog()
+        dialog.adjustSize()
+        application.processEvents()
+        image = QImage(dialog.size(), QImage.Format.Format_ARGB32)
+        image.fill(Qt.GlobalColor.transparent)
+        dialog.render(image)
+        corners = ((1, 1), (dialog.width() - 2, 1), (1, dialog.height() - 2),
+                   (dialog.width() - 2, dialog.height() - 2))
+        for x, y in corners:
+            with self.subTest(corner=(x, y)):
+                self.assertEqual(image.pixelColor(x, y).alpha(), 0)
+        # And the body itself is solid. Making the window transparent on its
+        # own takes the background with it and leaves the buttons floating.
+        body = image.pixelColor(24, 24)
+        self.assertEqual(body.alpha(), 255)
+        self.assertEqual(body.name(), self.theme.colour("surface"))
+
+    def test_the_address_box_is_wide_enough_for_its_own_placeholder(self):
+        # It was showing "or type it, for exa..." and eliding the rest.
+        from PySide6.QtGui import QFontMetrics
+        dialog = self._dialog()
+        metrics = QFontMetrics(dialog.address.font())
+        needed = metrics.horizontalAdvance(dialog.address.placeholderText())
+        self.assertGreaterEqual(dialog.address.minimumWidth(), needed)
+
+    def test_searching_shows_a_spinner_and_what_it_is_doing(self):
+        dialog = self._dialog()
+        self.assertTrue(dialog.spinner.isHidden())
+        self.connection.set_scan("scanning", "checked 48 of 253 addresses")
+        application.processEvents()
+        self.assertTrue(dialog.spinner.isVisible())
+        # The same words the bar at the top uses, and they keep up: this is
+        # the whole of what there is to show while a subnet is swept.
+        self.assertEqual(dialog.status.text(), "checked 48 of 253 addresses")
+        self.connection.set_scan("scanning", "checked 200 of 253 addresses")
+        application.processEvents()
+        self.assertEqual(dialog.status.text(), "checked 200 of 253 addresses")
+
+    def test_the_spinner_stops_when_the_search_does(self):
+        dialog = self._dialog()
+        self.connection.set_scan("scanning", "checked 1 of 253 addresses")
+        application.processEvents()
+        self.assertTrue(dialog.spinner.isVisible())
+        self.connection.set_scan("none", "Nothing answered on this network.")
+        application.processEvents()
+        self.assertFalse(dialog.spinner.isVisible())
+        self.assertEqual(dialog.status.text(),
+                         "Nothing answered on this network.")
+
+    def test_find_is_the_bar_s_own_find_and_nothing_new(self):
+        dialog = self._dialog()
+        found = []
+        self.window.connection_bar.find = lambda: found.append(True)
+        dialog.find_button.click()
+        self.assertEqual(found, [True])
+
+
+class TheTick(ShellCase):
+    def test_it_draws_itself_and_says_when_it_has(self):
+        from ps3tools.shell.app import AnimatedTick
+        done = []
+        tick = AnimatedTick("#4caf50", parent=self.window)
+        tick.finished.connect(lambda: done.append(True))
+        self.addCleanup(tick.deleteLater)
+        tick.start()
+        tick.set_progress(1.0)
+        self.assertEqual(tick.get_progress(), 1.0)
+        # Painting at every stage must not throw: the tick is drawn in two
+        # halves and the second one only starts part way through.
+        for step in (0.0, 0.3, 0.5, 0.7, 1.0):
+            tick.set_progress(step)
+            tick.render(tick.grab())
+
+
+def _blues(image):
+    """Every strongly blue pixel in an image, as "#rrggbb"."""
+    seen = set()
+    for x in range(0, image.width(), 3):
+        for y in range(0, image.height(), 3):
+            colour = image.pixelColor(x, y)
+            if (colour.alpha() > 250
+                    and colour.blue() - (colour.red() + colour.green()) / 2
+                    > 60):
+                seen.add(colour.name())
+    return seen
+
+
+class TheBrandLogo(ShellCase):
+    """The wordmark in the top left, and what happens without the file."""
+
+    def test_the_logo_is_shown_rather_than_the_words(self):
+        logo = self.window.brand_logo
+        if logo is None:
+            self.skipTest("logo.png is not in this checkout")
+        self.assertFalse(logo.pixmap().isNull())
+        self.assertIn("setsid", logo.accessibleName())
+
+    def test_the_neutrals_turn_round_for_a_light_palette(self):
+        logo = self.window.brand_logo
+        if logo is None:
+            self.skipTest("logo.png is not in this checkout")
+        # Rendered large: at bar size the wordmark is 26 pixels tall and
+        # every stroke is part anti-aliased, so there is no pixel to read.
+        logo._height = 120
+        logo._cache.clear()
+        dark = logo._render(True)
+        light = logo._render(False)
+
+        def brightest_neutral(image):
+            """Where the lightest grey pixel is: the "PS3" half of the mark."""
+            best = None
+            for x in range(image.width()):
+                for y in range(image.height()):
+                    colour = image.pixelColor(x, y)
+                    if colour.alpha() < 250:
+                        continue
+                    blueness = (colour.blue()
+                                - (colour.red() + colour.green()) / 2)
+                    if blueness > 60:
+                        continue        # the brand blue, which never changes
+                    if best is None or colour.lightness() > best[0]:
+                        best = (colour.lightness(), x, y)
+            return best
+
+        found = brightest_neutral(dark)
+        self.assertIsNotNone(found)
+        _lightness, x, y = found
+        on_dark = dark.pixelColor(x, y)
+        on_light = light.pixelColor(x, y)
+        # The same pixel, light on a dark palette and dark on a light one.
+        # Without this the grey "PS3" is all but invisible on white.
+        self.assertGreater(on_dark.lightness(), 180)
+        self.assertLess(on_light.lightness(), 80)
+        # And the brand blue is left alone in both.
+        self.assertEqual(sorted(_blues(dark)), sorted(_blues(light)))
+
+    def test_a_missing_file_falls_back_to_the_words(self):
+        from ps3tools.shell.app import BrandLogo
+        logo = BrandLogo("no-such-logo.png", "http://example.invalid", 26)
+        self.addCleanup(logo.deleteLater)
+        self.assertFalse(logo.usable)
+
+
+class TheThemeButton(ShellCase):
+    def test_it_is_an_icon_rather_than_a_labelled_drop_down(self):
+        button = self.window.theme_button
+        self.assertEqual(button.text(), "")
+        self.assertFalse(button.icon().isNull())
+        self.assertEqual(button.accessibleName(), "Theme")
+        self.assertIsNotNone(button.menu())
+
+    def test_the_menu_arrow_is_styled_off(self):
+        from ps3tools.shell.theme import stylesheet
+        css = stylesheet(self.theme)
+        self.assertIn("QPushButton#themeButton::menu-indicator", css)
+        self.assertIn("image: none", css)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,12 @@ import threading
 import http.server
 
 HOST = "127.0.0.1"
+
+#: How long stop() waits for a thread it started. Long enough for one pass of
+#: a 0.3s accept timeout and for a session to notice its socket was shut down;
+#: short enough that a thread which is genuinely stuck fails the test rather
+#: than hanging the run.
+JOIN_TIMEOUT = 5.0
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 
@@ -34,7 +40,9 @@ DEFAULT_ROUTES = {
     # string, which is why it fits the transport rule without weakening it.
     # Nobody has fired it at a real console yet: the reply body here is a
     # plausible shape, not an observed one.
-    "/install.ps3/dev_hdd0/packages": ("http", "install.html"),
+    # Per file, which is the only shape that does anything on a real console.
+    # The folder on its own is a picker page and installs nothing.
+    "/install.ps3/dev_hdd0/packages/patch.pkg": ("http", "install.html"),
 }
 
 DEFAULT_LISTINGS = {
@@ -148,10 +156,24 @@ class MockWebmanHttp:
         return self
 
     def stop(self):
-        if self._server:
-            self._server.shutdown()
-            self._server.server_close()
-            self._server = None
+        """Stop, and do not return while the serving thread is still alive.
+
+        shutdown() asks serve_forever to return and waits for it, and the
+        thread is joined before the socket is closed: closing it underneath a
+        live thread is how a descriptor gets recycled while somebody is still
+        using it.
+        """
+        if self._server is None:
+            return
+        self._server.shutdown()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(JOIN_TIMEOUT)
+            if thread.is_alive():
+                raise AssertionError(
+                    "the mock console's HTTP thread did not stop")
+        self._server.server_close()
+        self._server = None
 
     def __enter__(self):
         return self.start()
@@ -218,6 +240,12 @@ class MockWebmanFtp:
         self._server = None
         self._thread = None
         self._stop = threading.Event()
+        #: Every session thread this server has started. stop() waits for all
+        #: of them: a thread still holding a client socket after the test that
+        #: made it has finished is a descriptor this process no longer knows
+        #: it owns.
+        self._sessions = []
+        self._sessions_lock = threading.Lock()
 
     @property
     def port(self):
@@ -228,21 +256,34 @@ class MockWebmanFtp:
         self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._server.bind((HOST, 0))
         self._server.listen(8)
-        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._server.settimeout(0.3)
+        self._thread = threading.Thread(target=self._serve,
+                                        args=(self._server,), daemon=True)
         self._thread.start()
         return self
 
-    def _serve(self):
-        self._server.settimeout(0.3)
+    def _serve(self, listener):
+        """Accept until stopped. The socket is an argument, not an attribute.
+
+        stop() sets self._server to None, and this loop used to read it on
+        every pass: between the check and the accept it could become None, and
+        the thread died on an AttributeError nothing was catching.
+        """
         while not self._stop.is_set():
             try:
-                client, _address = self._server.accept()
+                client, _address = listener.accept()
             except socket.timeout:
                 continue
             except OSError:
                 break
-            threading.Thread(target=self._session, args=(client,),
-                             daemon=True).start()
+            session = threading.Thread(target=self._session, args=(client,),
+                                       daemon=True)
+            with self._sessions_lock:
+                # The socket is kept with the thread so stop() can wake a
+                # session that is blocked reading from a client which never
+                # hung up. Only the session thread ever closes it.
+                self._sessions.append((session, client))
+            session.start()
 
     def _normalise(self, path):
         if not path.startswith("/"):
@@ -456,8 +497,40 @@ class MockWebmanFtp:
             data_socket.close()
 
     def stop(self):
+        """Stop, and do not return while anything this server started runs.
+
+        The order matters. The threads are asked to stop and waited for
+        *before* the listening socket is closed, because closing it while the
+        accept thread is still blocked on it hands that thread a descriptor
+        the kernel is free to give to the next file anybody opens. Measured on
+        this machine: the closed listening fd went to a newly opened file
+        while the serving thread was still alive in forty trials out of forty.
+        """
         self._stop.set()
-        if self._server:
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive():
+            # The accept has a 0.3s timeout, so this is one pass at most.
+            thread.join(JOIN_TIMEOUT)
+            if thread.is_alive():
+                raise AssertionError(
+                    "the mock console's accept thread did not stop")
+        with self._sessions_lock:
+            sessions, self._sessions = self._sessions, []
+        for session, client in sessions:
+            if session.is_alive():
+                # shutdown, not close: it unblocks the session's read without
+                # releasing the descriptor, so the number cannot be handed to
+                # another file while this thread is still holding it. The
+                # session closes its own socket on the way out.
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            session.join(JOIN_TIMEOUT)
+            if session.is_alive():
+                raise AssertionError(
+                    "a mock console session thread did not stop")
+        if self._server is not None:
             try:
                 self._server.close()
             except OSError:

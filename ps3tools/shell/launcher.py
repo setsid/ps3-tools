@@ -19,13 +19,17 @@ from .widgets import IconLabel, ToolCard
 SUPPORT_ADDRESS = "setsid.research@proton.me"
 
 ADDRESS_HINT = (
-    "Not sure of the address? On the PS3: Settings, Network Settings, "
+    "The console shows its own address under Settings, Network Settings, "
     "Settings and Connection Status List. It is near the top of that page, "
     "and it is four numbers with dots between them.")
 
 SUPPORT_HINT = (
-    "Stuck, or something here did not do what it said? Write to "
+    "If something here did not do what it said it would, write to "
     + SUPPORT_ADDRESS + " and say what you saw.")
+
+DISCORD_URL = "https://discord.gg/PDrSPNgeNj"
+
+DISCORD_HINT = "Ask a question or say how you got on in the Discord."
 
 
 def _wording(screen_class):
@@ -280,9 +284,34 @@ class Launcher(QWidget):
             Qt.TextInteractionFlag.TextSelectableByMouse)
         foot_rows.addLayout(self._foot_row("mail", self._support))
 
+        # Last of the three, in the same quiet row as the rest of the footer.
+        self._discord = QLabel(self._foot)
+        self._discord.setObjectName("dim")
+        self._discord.setWordWrap(True)
+        self._discord.setOpenExternalLinks(True)
+        self._discord.setToolTip(f"Open {DISCORD_URL} in your browser.")
+        foot_rows.addLayout(self._foot_row("discord", self._discord))
+        self._paint_discord()
+        self._theme.changed.connect(self._paint_discord)
+
         outer.addWidget(self._foot)
 
         self.rebuild()
+
+    def _paint_discord(self):
+        """The link, in the theme's own accent.
+
+        A QLabel anchor takes its colour from the palette rather than from the
+        stylesheet, so the colour is written into the markup and rewritten
+        whenever the theme changes.
+        """
+        try:
+            accent = self._theme.colour("accent")
+        except Exception:                                   # noqa: BLE001
+            accent = "#4d8dfa"
+        self._discord.setText(
+            f'{DISCORD_HINT} <a href="{DISCORD_URL}" '
+            f'style="color: {accent}; text-decoration: none;">Join it</a>.')
 
     def _foot_row(self, icon_name, label):
         """An icon and a line of text, the icon aligned to the first line."""

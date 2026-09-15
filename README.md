@@ -29,8 +29,8 @@ to whatever it finds. If you would rather type the address in, put it in the
 box and press **Check IP**.
 
 Once it is connected, **Check IP** becomes **Disconnect**, and Find is switched
-off until you press it — so a search cannot go off and change the address out
-from under a tool that is halfway through something. Disconnecting sends
+off until you press it. That stops a search changing the address out from under
+a tool that is halfway through something. Disconnecting sends
 nothing to the console; it only stops this program treating the address as
 live.
 
@@ -42,8 +42,11 @@ report says so rather than failing quietly.
 
 ## Download and run
 
-Get `ps3-tools.exe` from the [latest release](https://github.com/setsid/ps3-tools/releases/latest).
-Put it somewhere you can write to, such as your Desktop. Not Program Files.
+Get `ps3-tools-<version>.exe` from the
+[latest release](https://github.com/setsid/ps3-tools/releases/latest). The
+version is in the file name, so two of them can sit side by side and you can
+tell which is which. Put it somewhere you can write to, such as your Desktop.
+Not Program Files.
 
 ### Windows will warn you
 
@@ -60,7 +63,7 @@ Check it rather than taking that on trust. Every release publishes a sha256,
 and a VirusTotal scan of that exact file is linked from the release notes:
 
 ```
-certutil -hashfile ps3-tools.exe SHA256
+certutil -hashfile ps3-tools-1.2.0.exe SHA256
 ```
 
 If it does not match the hash on the release page, do not run it. The source is
@@ -150,14 +153,14 @@ different build of a binary is how an install stops starting.
 If yours does not match, it says so and offers a route straight to **Game
 updates** for that title. Update, come back, rescan, and Apply enables itself.
 
-The check is *"is this the build the offset was confirmed on"*, not *"is this
-the newest Sony serves"*. Those happen to be the same today, because 1.19 and
-1.24 are the last updates either game received, but they are different
-questions and only the first one protects you.
+The check asks whether this is the build the offset was confirmed on. It does
+not ask whether it is the newest Sony serves. Those happen to be the same
+today, because 1.19 and 1.24 are the last updates either game received, and
+only the first question protects you.
 
-A version that could not be read does not block Apply — an unreadable version
-is not evidence of a wrong build, and the scan still reads the actual bytes at
-the patch site and refuses anything that does not fit.
+A version that could not be read does not block Apply. An unreadable version
+is no evidence either way, and the scan still reads the actual bytes at the
+patch site and refuses anything that does not fit.
 
 > ### Restart the console after patching
 >
@@ -167,7 +170,7 @@ the patch site and refuses anything that does not fit.
 
 The console caches something about the module it has already loaded, so the new
 files are not picked up until it comes back up. A hang on the first launch after
-patching is this, not a bad patch. The program says the same thing on screen when
+patching is this. The patch itself is fine. The program says the same thing on screen when
 it finishes. It does not offer a button to restart the console, because rebooting
 is a write action and webMAN exposes it as a query-string command, which is the
 one thing the read-only guarantee rests on not doing.
@@ -180,8 +183,8 @@ boots where the original did without needing syscalls left switched on.
 
 ## Game updates
 
-Downloads title updates from Sony at full speed and installs them, instead of
-leaving the console to fetch them at its own pace. On a real console the Black
+Downloads title updates from Sony at full speed and puts them on the console,
+instead of leaving it to fetch them at its own pace. On a real console the Black
 Ops II update took over two minutes to download and about ninety seconds to
 install. The same package pulls at around 18 MB/s to a PC, so the download half
 becomes seconds. The install is console-side and is not made any faster.
@@ -198,15 +201,20 @@ mismatch stops everything before a single byte is uploaded.** That check is the
 reason downloading from somebody else and writing the result to your console is
 a reasonable thing to do at all.
 
-It uploads to `/dev_hdd0/packages/` and then asks webMAN to install. Because the
-install command installs **everything in that folder**, it lists the folder
-first and tells you if anything is already in there that it did not put there,
-rather than installing a stranger's package on your behalf.
+It uploads to `/dev_hdd0/packages/` and then you install it from the console:
+**Game, then Package Manager, then Install Package Files.** webMAN is asked to
+start the install as well, but on the firmware this has been tried against
+nothing happens when it is, so do not sit waiting for it.
+
+Because webMAN's install command works on **everything in that folder**, the
+folder is listed first and you are told if anything is already in there that
+this program did not put there.
 
 ## Install packages
 
 The same thing for `.pkg` files you already have: DLC, homebrew, anything on
-your PC. Pick them, and they are uploaded and installed the same way.
+your PC. Pick them, and they are uploaded the same way, and installed from
+Package Manager on the console the same way.
 
 **This one has nothing to verify against.** Game updates checks what it
 downloads against a hash published by Sony. Here you chose the file, and there
@@ -225,7 +233,8 @@ overnight. What it does is make the wait predictable and survivable: you get the
 estimate before you commit, real progress while it runs, and a transfer that
 picks up where it stopped rather than starting again.
 
-- **The platform is read out of the image, not guessed from the filename.** A
+- **The platform is read out of the image itself.** The filename is never
+  guessed from. A
   PS3 image goes to `PS3ISO` and a PS2 image to `PS2ISO`, and anything it cannot
   identify is handed to you to decide rather than filed somewhere wrong.
 - **Files are renamed before upload.** Brackets, commas and ampersands come out.
@@ -298,8 +307,9 @@ setsid.research@proton.me
 bundled here. Everything the diagnostic reads and everything the patcher writes
 goes through it.
 
-**scetool**, by naehrwert — decrypts and re-signs a game binary. Nothing else in
-this program can do that. Bundled in the built exe, not in this repository.
+**scetool**, by naehrwert. Decrypts and re-signs a game binary. Nothing else in
+this program can do that. It is bundled in the built exe. This repository does
+not carry a copy.
 
 **PySide6 and Qt** — the window and the widgets, used as a dynamically linked
 LGPL build.
@@ -378,7 +388,8 @@ two patch scripts in `tools/patchers/`.
 It will **attempt any released version of either game**, and tells you honestly
 when it cannot read one, rather than refusing everything it has not seen before.
 
-The mechanism is attempt-and-verify, not a list of approved SKUs. Decryption is
+The mechanism is attempt-and-verify rather than a list of approved SKUs.
+Decryption is
 self-verifying: with the wrong key it fails outright rather than quietly
 producing something wrong. So the tool tries, and what happens next is one of
 three things:
@@ -449,3 +460,12 @@ codes in the inventory come from file and folder names; a renamed folder has no
 title ID in it, which is common and means nothing is wrong. On webMAN 1.47.48q
 the console reports no network settings of its own on any page that answers, so
 that section holds only the address it was reached on and the FTP greeting.
+
+## Legal
+
+Not affiliated with or endorsed by Activision, Treyarch or Sony. All trademarks
+are the property of their respective owners.
+
+Every reasonable step has been taken to make this software safe, but no
+guarantee is given. Use it at your own risk. The app backs up the files it
+modifies; keep your own backups as well.

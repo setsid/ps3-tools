@@ -390,6 +390,36 @@ def target_folder():
     return config.desktop_dir()
 
 
+#: How many names are tried before giving up and letting the write fail.
+MAX_NAME_ATTEMPTS = 50
+
+
+def free_path(folder, name, version=""):
+    """A path in folder that nothing is using yet.
+
+    Every release ships the same file name. Saving over the last one is how
+    this failed on a real Desktop: the previous copy was the program doing the
+    downloading, Windows had it locked, and the write came back as "write
+    protected" with no way for the user to act on it.
+
+    Nothing is ever overwritten now. The version goes in the name, which also
+    makes it obvious which of two files on a Desktop is the new one, and a
+    number is added after that if something of that name is somehow there too.
+    """
+    stem, extension = os.path.splitext(name)
+    version = (version or "").strip().lstrip("vV")
+    if version and version not in stem:
+        stem = f"{stem}-{version}"
+    candidate = os.path.join(folder, stem + extension)
+    if not os.path.exists(candidate):
+        return candidate
+    for index in range(2, MAX_NAME_ATTEMPTS + 2):
+        candidate = os.path.join(folder, f"{stem} ({index}){extension}")
+        if not os.path.exists(candidate):
+            return candidate
+    return os.path.join(folder, stem + extension)
+
+
 def download(release, fetcher=None, folder=None, timeout=TIMEOUT):
     """Fetch the release's exe to the Desktop and check it against the notes.
 
@@ -423,15 +453,18 @@ def download(release, fetcher=None, folder=None, timeout=TIMEOUT):
                    "copy of it. Try again, and if it fails a second time say "
                    "so before running anything.")
 
-    name = os.path.basename(release.asset_name) or "ps3-tools-update.exe"
-    path = os.path.join(folder, name)
     try:
         os.makedirs(folder, exist_ok=True)
+        path = free_path(folder,
+                         os.path.basename(release.asset_name)
+                         or "ps3-tools-update.exe",
+                         release.tag)
         with open(path, "wb") as handle:
             handle.write(data)
     except OSError:
         return Download(detail="The file could not be saved to your Desktop. "
                                "It may be full or write protected.")
+    name = os.path.basename(path)
 
     if release.sha256:
         return Download(

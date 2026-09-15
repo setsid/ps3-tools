@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog,
 from ps3diag import parsers, transport
 from ps3tools import transfer
 from ps3tools.patching.ftpwrite import FtpWriter
+from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
@@ -254,6 +255,7 @@ class TransferGamesScreen(Screen):
         self._stop.hide()
         buttons.addWidget(self._stop)
         self._go = QPushButton("Copy to the console")
+        widgets.set_role(self._go, widgets.PRIMARY)
         self._go.setEnabled(False)
         self._go.clicked.connect(self._on_go)
         buttons.addWidget(self._go)

@@ -13,6 +13,34 @@ from PySide6.QtWidgets import QAbstractButton, QLayout, QSizePolicy, QWidget
 from . import icons
 
 
+#: What a button does, which is what decides its colour. One spelling of the
+#: three, so a screen cannot invent a fourth.
+#:
+#: PRIMARY  the one action a screen exists to perform
+#: DANGER   writes over or undoes something that is already there
+#: NEUTRAL  everything else: Back, Stop, Choose files, ticking helpers
+PRIMARY = "primary"
+DANGER = "danger"
+NEUTRAL = ""
+
+
+def set_role(button, role=NEUTRAL):
+    """Colour one button by what it does. Returns it, so it can be chained.
+
+    Every button was the same grey, including the ones that write to a
+    console. "Apply the fix" and "Back" looked identical, which is the wrong
+    way round for the two of them.
+    """
+    button.setProperty(PRIMARY, role == PRIMARY)
+    button.setProperty(DANGER, role == DANGER)
+    # A property set after the widget is styled does not repaint on its own.
+    style = button.style()
+    if style is not None:
+        style.unpolish(button)
+        style.polish(button)
+    return button
+
+
 def mix(first, second, amount):
     """`amount` of second blended into first. All three are "#rrggbb"."""
     one, two = QColor(first), QColor(second)

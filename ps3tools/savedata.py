@@ -92,7 +92,7 @@ MAX_SAVE_FILE_BYTES = 32 * 1024 * 1024
 # manifest in six months is the one most likely to assume these can be put
 # back.
 NO_RESTORE_NOTICE = (
-    "This is a copy, not a backup that can be put back. PS3 saves are "
+    "This is a copy. It cannot be put back. PS3 saves are "
     "normally locked to the console and the account that made them, so "
     "copying these files on to a console does not restore them. Keep them "
     "for safekeeping and for reading on a PC. Nothing on the console was "
@@ -893,7 +893,7 @@ def manifest(result):
 def manifest_text(result):
     """The same thing for somebody who will never open a .json file."""
     lines = [
-        "PS3 Tools by setsid -- save data copy",
+        "PS3 Tools by setsid: save data copy",
         "",
         NO_RESTORE_NOTICE,
         "",

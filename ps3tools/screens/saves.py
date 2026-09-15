@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel,
 from ps3diag.transport import DEFAULT_FTP_TIMEOUT, FtpLister
 
 from ps3tools import savedata
+from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
@@ -252,6 +253,7 @@ class SavesScreen(Screen):
         controls.addStretch(1)
 
         self.copy_button = QPushButton("Copy the ticked saves to my Desktop")
+        widgets.set_role(self.copy_button, widgets.PRIMARY)
         self.copy_button.clicked.connect(self.start_copy)
         self.copy_button.setEnabled(False)
         controls.addWidget(self.copy_button)

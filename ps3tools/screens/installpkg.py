@@ -36,10 +36,28 @@ from ps3diag import parsers, transport
 from ps3tools import updates
 from ps3tools.consoleactions import ConsoleActions
 from ps3tools.patching.ftpwrite import FtpWriter
+from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
 COLUMNS = ["File", "Size", "Title ID", "What it says it is"]
+
+#: The same four, for what is already sitting on the console.
+CONSOLE_COLUMNS = ["File", "Size", "Title ID", "What it says it is"]
+
+CHAIN_NOTE = (
+    "One package failing does not stop the others: every one you tick is "
+    "tried, and each is reported on its own. Every package stays in the "
+    "console's packages folder after it is installed, so anything that failed "
+    "can be installed again from the list below without being sent across a "
+    "second time. Nothing here deletes them; remove them from the console "
+    "whenever you like.")
+
+ON_CONSOLE_NOTE = (
+    "These are already in the console's packages folder. Installing from here "
+    "skips the copy entirely. This list is read from the console, so it finds "
+    "what was left behind by a failed or interrupted install even after this "
+    "program or the console has been restarted.")
 
 FILE_FILTER = "PlayStation 3 packages (*.pkg)"
 
@@ -72,6 +90,15 @@ class InstallPackagesScreen(Screen):
         self._task = None
         self._working = False
         self._panel_token = ""
+        #: What the console's packages folder holds, as last read.
+        self._console_rows = []
+        #: True while the panel is showing the folder listing's own notice.
+        #: It is the only thing the listing is allowed to clear.
+        self._listing_owns_panel = False
+        # Seams, so a test does not sit through a real install timeout. The
+        # defaults are what runs against a console.
+        self.install_poll_seconds = updates.INSTALL_POLL_SECONDS
+        self.install_timeout_seconds = updates.INSTALL_TIMEOUT_SECONDS
         self._build()
         if self.theme is not None:
             try:
@@ -143,6 +170,36 @@ class InstallPackagesScreen(Screen):
         self._table.itemChanged.connect(lambda *args: self._update_go())
         layout.addWidget(self._table, 1)
 
+        self._chain_note = QLabel(CHAIN_NOTE)
+        self._chain_note.setWordWrap(True)
+        layout.addWidget(self._chain_note)
+
+        self._console_heading = QLabel("Already on the console")
+        heading_font = self._console_heading.font()
+        heading_font.setBold(True)
+        self._console_heading.setFont(heading_font)
+        layout.addWidget(self._console_heading)
+
+        self._console_note = QLabel(ON_CONSOLE_NOTE)
+        self._console_note.setWordWrap(True)
+        layout.addWidget(self._console_note)
+
+        self._console_table = QTreeWidget()
+        self._console_table.setColumnCount(len(CONSOLE_COLUMNS))
+        self._console_table.setHeaderLabels(CONSOLE_COLUMNS)
+        self._console_table.setRootIsDecorated(False)
+        self._console_table.setUniformRowHeights(True)
+        self._console_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self._console_table.setMaximumHeight(170)
+        self._console_table.itemChanged.connect(
+            lambda *args: self._update_install_here())
+        layout.addWidget(self._console_table)
+
+        self._install_here = QPushButton("Install the ticked packages")
+        self._install_here.setEnabled(False)
+        self._install_here.clicked.connect(self._on_install_here)
+        layout.addWidget(self._install_here, 0, Qt.AlignRight)
+
         self._detail = QLabel("")
         self._detail.setWordWrap(True)
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -180,6 +237,7 @@ class InstallPackagesScreen(Screen):
         self._clear.clicked.connect(self._on_clear)
         buttons.addWidget(self._clear)
         self._go = QPushButton("Copy to the console and install")
+        widgets.set_role(self._go, widgets.PRIMARY)
         self._go.setEnabled(False)
         self._go.clicked.connect(self._on_go)
         buttons.addWidget(self._go)
@@ -238,12 +296,13 @@ class InstallPackagesScreen(Screen):
     # -- the console's packages folder, read before anything starts
 
     def check_console(self):
-        """List /dev_hdd0/packages so the user knows what is already in it.
+        """Read /dev_hdd0/packages and describe what is sitting in it.
 
-        The install call installs the folder rather than a named file, so
-        anything sitting in there will be installed alongside whatever this
-        screen sends. That is the user's decision to make and they cannot make
-        it without being told.
+        Two jobs. It says what is already there before anything is sent, and
+        it is the recovery list: a package left behind by a failed install can
+        be installed from here without being copied across again. The folder
+        is read rather than remembered, so it survives a restart of this
+        program or of the console.
         """
         host = self.connection.host if self.connection else ""
         if not host:
@@ -254,7 +313,9 @@ class InstallPackagesScreen(Screen):
 
         def work(control):
             with open_lister(host) as lister:
-                return updates.inspect_packages_folder(lister)
+                installed = updates.installed_title_ids(lister)
+                rows, problem = updates.console_packages(lister, installed)
+                return updates.inspect_packages_folder(lister), rows, problem
 
         task = self.submit(work)
         task.finished.connect(self._on_folder)
@@ -262,22 +323,127 @@ class InstallPackagesScreen(Screen):
         self._task = task
         return task
 
-    def _on_folder(self, folder):
+    def _on_folder(self, result):
+        folder, rows, problem = result
         self._packages = folder
-        if folder.unknown:
+        self._console_rows = list(rows)
+        self._fill_console_table()
+        trouble = problem or (folder.reason if folder.unknown else "")
+        if trouble:
+            self._listing_owns_panel = True
             self._show_panel("warn", "The console's packages folder could not "
-                                     "be read", folder.reason)
+                                     "be read", trouble)
             return
-        if folder.names:
+        # This runs again straight after an install, so it may only clear a
+        # notice it put up itself. Anything the run reported stays.
+        if self._listing_owns_panel:
+            self._listing_owns_panel = False
+            self._hide_panel()
+
+    # -- what is already on the console
+
+    def _fill_console_table(self):
+        self._console_table.blockSignals(True)
+        self._console_table.clear()
+        for item in self._console_rows:
+            row = QTreeWidgetItem([item.filename, item.size_text,
+                                   item.title_id or "", item.describes_as])
+            if item.installed:
+                row.setFlags(row.flags() & ~Qt.ItemIsUserCheckable)
+                row.setText(3, f"{item.describes_as} (already installed)")
+            else:
+                row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
+                row.setCheckState(0, Qt.Unchecked)
+            row.setData(0, Qt.UserRole, item.filename)
+            row.setData(1, Qt.UserRole, item.title_id or "")
+            self._console_table.addTopLevelItem(row)
+        for index in range(len(CONSOLE_COLUMNS)):
+            self._console_table.resizeColumnToContents(index)
+        self._console_table.blockSignals(False)
+        count = len(self._console_rows)
+        self._console_heading.setText(
+            f"Already on the console: {count} package"
+            f"{'' if count == 1 else 's'}" if count
+            else "Already on the console: nothing in the packages folder")
+        shown = bool(count)
+        self._console_table.setVisible(shown)
+        self._console_note.setVisible(shown)
+        self._install_here.setVisible(shown)
+        self._update_install_here()
+
+    def _console_selection(self):
+        chosen = []
+        for index in range(self._console_table.topLevelItemCount()):
+            row = self._console_table.topLevelItem(index)
+            if row.flags() & Qt.ItemIsUserCheckable and \
+                    row.checkState(0) == Qt.Checked:
+                chosen.append((row.data(0, Qt.UserRole),
+                               row.data(1, Qt.UserRole) or ""))
+        return chosen
+
+    def _update_install_here(self):
+        self._install_here.setEnabled(
+            bool(self._console_selection()) and not self._working)
+
+    def _on_install_here(self):
+        """Install what is already on the console. Nothing is copied across.
+
+        This is the recovery path: the files are in the folder already, so the
+        whole download and upload is skipped and the install call is made
+        straight away.
+        """
+        chosen = self._console_selection()
+        if not chosen:
+            return None
+        host = self.connection.host if self.connection else ""
+        if not host:
+            self._show_panel("warn", "No console address has been entered yet",
+                             NO_HOST)
+            return None
+        self._working = True
+        self._install_here.setEnabled(False)
+        self._go.setEnabled(False)
+        self._add.setEnabled(False)
+        self._set_busy(True, "Installing on the console")
+
+        open_actions = self._actions
+        open_lister = self._lister
+        poll_seconds = self.install_poll_seconds
+        timeout_seconds = self.install_timeout_seconds
+
+        def work(control):
+            with open_lister(host) as confirm_lister:
+                return updates.install_queue(
+                    open_actions(host), chosen,
+                    updates.installed_checker(confirm_lister),
+                    on_progress=control.progress,
+                    cancelled=lambda: control.cancelled,
+                    poll_seconds=poll_seconds,
+                    timeout_seconds=timeout_seconds)
+
+        task = self.submit(work)
+        task.progress.connect(self._on_progress)
+        task.finished.connect(self._on_installed_here)
+        task.failed.connect(self._on_failed)
+        task.done.connect(self._finished_working)
+        self._task = task
+        return task
+
+    def _on_installed_here(self, results):
+        landed = [item for item in results if item.confirmed]
+        missed = [item for item in results if not item.confirmed]
+        if missed:
+            self._show_panel("warn", "Some packages did not install",
+                             _install_report(landed, missed))
+        else:
+            count = len(landed)
             self._show_panel(
-                "warn", "There is already something in the console's packages "
-                        "folder",
-                f"It holds {_and_list(folder.names)}. The console installs "
-                f"everything in that folder at once, so those will be "
-                f"installed as well as anything you send. If you do not know "
-                f"what they are, remove them from the console first.")
-            return
-        self._hide_panel()
+                "ok",
+                f"{count} packages installed" if count > 1 else "Installed",
+                f"{_and_list([item.filename for item in landed])} installed "
+                f"on the console.")
+        # Read the folder again so the list says what is actually there now.
+        self.check_console()
 
     # -- choosing files
 
@@ -400,7 +566,10 @@ class InstallPackagesScreen(Screen):
 
         open_writer = self._writer
         open_actions = self._actions
+        open_lister = self._lister
         read_storage = self._storage
+        poll_seconds = self.install_poll_seconds
+        timeout_seconds = self.install_timeout_seconds
 
         def work(control):
             devices = read_storage(host)
@@ -425,12 +594,31 @@ class InstallPackagesScreen(Screen):
                     remote, count = updates.upload_to_packages(
                         item.path, writer, filename=fresh.filename,
                         progress=control.progress, label=fresh.filename)
-                    sent.append((fresh.filename, remote, count))
+                    # The title ID travels with the upload: it is what the
+                    # console is asked about afterwards to confirm the install
+                    # landed before the next one is fired.
+                    sent.append((fresh.filename, remote, count,
+                                 getattr(item, "title_id", "") or ""))
             if not sent:
-                return sent, None
-            control.progress(("installing", "", 0, 0))
-            response = updates.install(open_actions(host))
-            return sent, response
+                return sent, []
+            # Each install is confirmed on the console before the next is
+            # fired. Firing them back to back drops them: webMAN ignores an
+            # install while it is still busy with the last one.
+            #
+            # NEVER build this list by listing /dev_hdd0/packages: whatever
+            # else is in there belongs to the user and is not ours to run or
+            # to delete. Only what this upload just wrote, by exact name.
+            with open_lister(host) as confirm_lister:
+                results = updates.install_queue(
+                    open_actions(host),
+                    [(name, title)
+                    for name, _remote, _count, title in sent],
+                    updates.installed_checker(confirm_lister),
+                    on_progress=control.progress,
+                    cancelled=lambda: control.cancelled,
+                    poll_seconds=poll_seconds,
+                    timeout_seconds=timeout_seconds)
+            return sent, results
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -445,26 +633,31 @@ class InstallPackagesScreen(Screen):
         self._set_busy(False)
         self._add.setEnabled(True)
         self._update_go()
+        self._update_install_here()
 
     def _on_finished(self, result):
-        sent, response = result
+        sent, results = result
         if not sent:
             self._show_panel("warn", "Nothing was copied to the console",
                              "This was stopped before anything was copied "
                              "across.")
             return
-        names = _and_list([name for name, _remote, _count in sent])
-        if response is not None and not getattr(response, "ok", False):
-            self._show_panel(
-                "warn", "The packages were copied across but not installed",
-                f"The console answered {getattr(response, 'status', '?')} "
-                f"when it was asked to install them. Open Package Manager on "
-                f"the console and install {names} from there.")
+        landed = [item for item in results if item.confirmed]
+        missed = [item for item in results if not item.confirmed]
+        if missed:
+            self._show_panel("warn", "Some packages did not install",
+                             _install_report(landed, missed))
             return
+        count = len(landed)
+        body = (f"{_and_list([item.filename for item in landed])} installed "
+                f"on the console.")
+        body += (" The package files stay in the console's packages folder. "
+                 "Nothing here deletes them, and they can be removed from the "
+                 "console whenever you like.")
         self._show_panel(
-            "ok", "The console has been asked to install them",
-            f"{names} was copied to the console's packages folder.\n\n"
-            f"{updates.INSTALL_NOTICE}")
+            "ok", f"{count} packages installed" if count > 1 else "Installed",
+            body)
+        self.check_console()
 
     def _on_failed(self, message):
         self._show_panel("error", "This did not finish", message)
@@ -590,6 +783,29 @@ class InstallPackagesScreen(Screen):
     def _on_back(self):
         if self.can_leave():
             self.request_home.emit()
+
+
+def _install_report(landed, missed):
+    """Which packages went in and which did not, naming both.
+
+    A queue that stopped is reported in full. Somebody who sent seven and got
+    three needs to know which three, and that the rest are sitting on the
+    console waiting to be installed by hand.
+    """
+    lines = []
+    if landed:
+        lines.append(f"Installed: {_and_list([i.filename for i in landed])}.")
+    unsent = [item for item in missed if "not sent" in item.reason]
+    for item in missed:
+        if item not in unsent and item.reason:
+            lines.append(item.reason)
+    if unsent:
+        lines.append(f"The queue stopped before these were sent: "
+                     f"{_and_list([i.filename for i in unsent])}.")
+    lines.append("Everything named here is on the console in its packages "
+                 "folder. Open Package Manager on the console and install "
+                 "what is missing from the list.")
+    return "\n\n".join(lines)
 
 
 def _and_list(names):

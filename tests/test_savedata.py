@@ -19,6 +19,7 @@ import ftplib
 import hashlib
 import json
 import os
+import time
 import unittest
 import zipfile
 from datetime import datetime
@@ -613,8 +614,7 @@ class BackupTests(BackupCase):
         self.assertIn(savedata.NO_RESTORE_NOTICE, text)
         self.assertEqual(book["restore"], savedata.NO_RESTORE_NOTICE)
         self.assertIn(savedata.NO_RESTORE_NOTICE, readme)
-        self.assertIn("not a backup that can be put back",
-                      savedata.NO_RESTORE_NOTICE)
+        self.assertIn("It cannot be put back", savedata.NO_RESTORE_NOTICE)
 
     def test_several_saves_are_kept_apart_inside_the_zip(self):
         result = self.run_backup(self.pick("00000001/BLES01717-DATA000",
@@ -873,9 +873,25 @@ class ScreenCase(FixtureCase):
         shutil.rmtree(self.folder, ignore_errors=True)
 
     def pump(self, milliseconds=30000):
-        self.services.wait(milliseconds)
-        for _ in range(5):
+        """Wait for the worker AND for its result to reach the GUI thread.
+
+        services.wait() only drains the pool, and it returns straight away if
+        the task has not been picked up yet. A fixed number of pumps after it
+        was close enough to pass most of the time, which is the worst way for
+        a test to behave: this one read the status label while the copy was
+        still reporting progress.
+
+        Pumping until the pool has stayed idle across three passes is
+        deterministic, and the deadline means a real hang still fails.
+        """
+        deadline = time.monotonic() + max(1.0, milliseconds / 1000.0)
+        quiet = 0
+        while time.monotonic() < deadline:
             APP.processEvents()
+            quiet = quiet + 1 if self.services.wait(50) else 0
+            if quiet >= 3:
+                return
+        raise AssertionError("work did not settle in time")
 
     def use_fake_console(self):
         self.screen.lister_factory = lambda host: FakeLister()

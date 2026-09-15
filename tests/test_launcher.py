@@ -883,5 +883,33 @@ class NothingReachesTheNetworkTests(StatsCase):
 
 
 
+
+class TheDiscordLink(LauncherCase):
+    """A quiet third line in the footer, beside the other two."""
+
+    def test_the_link_points_at_the_server(self):
+        launcher = self.launcher
+        self.assertIn("https://discord.gg/PDrSPNgeNj", launcher._discord.text())
+        self.assertTrue(launcher._discord.openExternalLinks())
+
+    def test_it_sits_in_the_footer_with_the_other_hints(self):
+        launcher = self.launcher
+        self.assertEqual(launcher._discord.objectName(), "dim")
+        self.assertIs(launcher._discord.parent(), launcher._foot)
+
+    def test_the_icon_is_in_the_set(self):
+        from ps3tools.shell import icons
+        self.assertIn("discord", icons.names())
+        self.assertFalse(icons.pixmap("discord", "#9aa4b6", 16).isNull())
+
+    def test_the_link_colour_follows_the_theme(self):
+        launcher = self.launcher
+        before = launcher._discord.text()
+        self.theme.set_mode("dark")
+        application.processEvents()
+        self.assertNotEqual(launcher._discord.text(), before)
+        self.assertIn(self.theme.colour("accent"), launcher._discord.text())
+
+
 if __name__ == "__main__":
     unittest.main()

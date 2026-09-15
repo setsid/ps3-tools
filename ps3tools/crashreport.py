@@ -58,9 +58,9 @@ NOTHING_SENT = (
     "attached.")
 
 REDACTED_NOTE = (
-    "Console identifiers -- the IDPS, the PSID, MAC addresses, account and "
-    "sign-in IDs -- have been replaced with placeholders in the file before it "
-    "was written, the same way the diagnostic zip does it.")
+    "Console identifiers have been replaced with placeholders in the file "
+    "before it was written, the same way the diagnostic zip does it. That "
+    "covers the IDPS, the PSID, MAC addresses, and account and sign-in IDs.")
 
 #: Written in place of the report body if redaction itself fails. Withholding
 #: the traceback is the right way round: an unredacted log could carry the
@@ -371,9 +371,9 @@ def build_dialog(path=None, parent=None, report=None):
         line(f"A log of what happened was saved to:\n{path}")
         line(REDACTED_NOTE)
     else:
-        line("A log file could not be written -- there was nowhere on this "
-             "machine to put it. The details are below instead; select them "
-             "and copy them into the email.")
+        line("A log file could not be written. There was nowhere on this "
+             "machine to put it, so the details are below instead. Select "
+             "them and copy them into the email.")
         if report:
             details = QPlainTextEdit(report, dialog)
             details.setReadOnly(True)

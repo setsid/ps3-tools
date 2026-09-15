@@ -455,7 +455,8 @@ class PatcherScreen(Screen):
         layout.addWidget(self._detail)
 
         self._stage = QLabel("")
-        self._stage.setWordWrap(True)
+        # Room for four lines. It was cut off at three, mid-sentence.
+        widgets.fit_progress_label(self._stage)
         layout.addWidget(self._stage)
 
         # The shell styles every progress bar as a three pixel hairline, which

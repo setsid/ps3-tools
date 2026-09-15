@@ -24,7 +24,7 @@ that the tests replace, and there is a test that replaces them with something
 that raises on construction and then runs the whole flow.
 """
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog,
                                QFrame, QHBoxLayout, QLabel, QMessageBox,
                                QProgressBar, QPushButton, QSizePolicy,
@@ -59,6 +59,18 @@ ALREADY_THERE = (
     "copy that would take hours and change nothing does not start by "
     "accident. Tick it again to copy over the top of it.")
 
+CHECKING_AGAIN = "Asking the console what it already has"
+
+NOTHING_LEFT = (
+    "The name and the size both match what is on the console, so nothing was "
+    "copied.\n\n"
+    "Tick a file again to copy it over the top of the one on the console.")
+
+CHECK_FAILED = (
+    "What is already on the console could not be read just now. Each file is "
+    "checked against the folder again as it is about to be copied, and "
+    "anything that is already there in full is left alone.")
+
 NOT_RECOGNISED = (
     "Some of these were not recognised. This program reads the inside of each "
     "file to find out what it is, rather than trusting what it is called, and "
@@ -90,6 +102,10 @@ class TransferGamesScreen(Screen):
         # something else. A background scan finishing afterwards must not wipe
         # the only record of what happened off the screen.
         self._sticky_panel = False
+        # Set when the console could not be read again on the way to the
+        # confirmation box, so that the box can say so instead of the user
+        # being asked to commit to hours without knowing the check was missed.
+        self._check_note = ""
         self._devices = []
         self._build()
         if self.theme is not None:
@@ -195,6 +211,13 @@ class TransferGamesScreen(Screen):
         self._table.setSelectionMode(QAbstractItemView.NoSelection)
         self._table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._table.itemChanged.connect(self._on_ticked)
+        # The redraw a tick causes is queued rather than done inside the
+        # signal. Owned by the screen so it dies with it: a bare singleShot
+        # firing into a deleted widget is a crash on shutdown, and the whole
+        # reason this timer exists is a crash of exactly that kind.
+        self._redraw = QTimer(self)
+        self._redraw.setSingleShot(True)
+        self._redraw.timeout.connect(self._fill_table)
         layout.addWidget(self._table, 1)
 
         self._detail = QLabel("")
@@ -207,7 +230,8 @@ class TransferGamesScreen(Screen):
         layout.addWidget(self._estimate)
 
         self._stage = QLabel("")
-        self._stage.setWordWrap(True)
+        # Room for four lines. It was cut off at three, mid-sentence.
+        widgets.fit_progress_label(self._stage)
         layout.addWidget(self._stage)
 
         self._file_line = QLabel("")
@@ -402,6 +426,12 @@ class TransferGamesScreen(Screen):
         for item in self._items:
             item.device = name
         self._show_space()
+        # The marks on the queue were made against the folders of the device
+        # that was selected a moment ago. Matching again against the listings
+        # in hand drops them, so a row cannot go on claiming the console has a
+        # file in a folder nobody has looked in yet; the scan below then fills
+        # in what the new device really holds.
+        transfer.match_console(self._items, self._listings)
         self._fill_table()
         self.scan_console()
 
@@ -493,7 +523,16 @@ class TransferGamesScreen(Screen):
         # The plan column and the estimate both change with the tick, so the
         # table is redrawn rather than left saying something that is no longer
         # true.
-        self._fill_table()
+        #
+        # Queued, and that is not a detail. itemChanged is emitted from inside
+        # QTreeWidgetItem::setCheckState, and _fill_table clears the table,
+        # which deletes every item including the one that call is still
+        # running on. Qt then carries on against freed memory. It survived for
+        # a long time because the block is usually still mapped; under a long
+        # test run it stopped surviving and took the process down with SIGBUS.
+        # Redrawing after Qt has finished with the item costs nothing and
+        # cannot do that.
+        self._redraw.start(0)
 
     def _show_unidentified(self):
         unknown = transfer.unidentified(self._items)
@@ -519,20 +558,23 @@ class TransferGamesScreen(Screen):
 
     # -- doing it
 
-    def confirm(self, queue):
-        """Asked before anything is sent. Overridden in tests."""
+    def confirm_text(self, queue):
+        """The last thing the user reads before committing to several hours.
+
+        Built from the whole list rather than from the ticked part of it, so
+        that a file the console already has is named here as well. It is
+        unticked by then and was therefore missing from this box altogether,
+        which is half of why somebody copied a game they already had.
+
+        Kept apart from confirm() so that what it says can be read back
+        without a modal dialog being put on the screen.
+        """
         lines = [transfer.time_estimate(self._items), "", transfer.HONEST_SPEED]
-        resuming = [item for item in queue if item.present == "shorter"]
-        if resuming:
-            lines += ["", "These are part copied on the console already and "
-                          "will carry on from where they stopped rather than "
-                          "starting again:"]
-            lines += [f"    {item.name}" for item in resuming]
-        again = [item for item in queue if item.present == "same"]
-        if again:
-            lines += ["", "These are already on the console and you have "
-                          "asked for them to be copied over the top:"]
-            lines += [f"    {item.name}" for item in again]
+        if self._check_note:
+            lines += ["", self._check_note]
+        notes = transfer.console_notes(self._items)
+        if notes:
+            lines += [""] + notes
         renamed = [item for item in queue if item.filename != item.name]
         if renamed:
             lines += ["", "These will be given shorter names on the console, "
@@ -540,18 +582,103 @@ class TransferGamesScreen(Screen):
                           "list properly on it:"]
             lines += [f"    {item.filename}  becomes  {item.name}"
                       for item in renamed]
+        return "\n".join(lines)
+
+    def confirm(self, queue):
+        """Asked before anything is sent. Overridden in tests."""
         box = QMessageBox(self)
         box.setWindowTitle("Copy to the console")
-        box.setText("\n".join(lines))
+        box.setText(self.confirm_text(queue))
         box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
         box.setDefaultButton(QMessageBox.Cancel)
         return box.exec() == QMessageBox.Yes
 
     def _on_go(self):
+        """The button, and the check that should have been here all along.
+
+        The list of what is on the console was read when the screen was
+        entered. By the time the button is pressed it can be an hour old and a
+        run in between can have put a game on the console that it does not
+        mention, which is how somebody was shown "It will be copied" for a game
+        they had just finished copying. So the console is asked again here,
+        before the confirmation is shown and before a byte is sent. It costs
+        one read-only listing per folder.
+        """
+        if self._working or not transfer.chosen(self._items):
+            return None
+        host = self.connection.host if self.connection else ""
+        if not host:
+            self._show_panel("warn", "No console address has been entered yet",
+                             NO_HOST)
+            return None
+        open_lister = self._lister
+        device = self._device.currentText() or transfer.DEFAULT_DEVICE
+
+        def work(control):
+            with open_lister(host) as lister:
+                return transfer.console_games(lister, device)
+
+        self._check_note = ""
+        self._go.setEnabled(False)
+        self._stage.setText(CHECKING_AGAIN)
+        task = self.submit(work)
+        task.finished.connect(self._on_recheck)
+        task.failed.connect(self._on_recheck_failed)
+        self._task = task
+        return task
+
+    def _on_recheck(self, result):
+        """What the console says now, put on the screen before the question."""
+        files, listings = result
+        self._console_files = list(files or [])
+        self._listings = dict(listings or {})
+        self._fill_console_table()
+        transfer.match_console(self._items, self._listings)
+        self._stage.setText("")
+        # Redrawn first so that the rows and the ticks behind the box already
+        # say what the box is about to say. A dialog that contradicts the table
+        # under it is worse than either of them alone.
+        self._fill_table()
+        if not transfer.chosen(self._items):
+            self._say_nothing_left()
+            return None
+        return self._start_confirmed()
+
+    def _on_recheck_failed(self, message):
+        # The console could not be read again. It is said in the box the user
+        # is about to answer rather than in a panel behind it, and the run is
+        # still offered, because every file is checked against a fresh listing
+        # of its folder at the moment it is about to be copied and an identical
+        # file already there is left alone by that check on its own.
+        self._stage.setText("")
+        self._check_note = CHECK_FAILED
+        self._update_go()
+        return self._start_confirmed()
+
+    def _say_nothing_left(self):
+        """Everything ticked turned out to be on the console already.
+
+        Said in the panel and left there, because this is the answer to the
+        button the user just pressed and they are entitled to see what became
+        of it rather than watching the ticks come out of the rows.
+        """
+        group = transfer.already_on_console(self._items)
+        names = _and_list([item.name for item in group])
+        one = len(group) == 1
+        heading = ("It is already on the console" if one
+                   else "They are already on the console")
+        lead = ("This is already on the console" if one
+                else "These are already on the console")
+        self._show_panel("ok", heading,
+                         f"{lead}: {names}.\n\n{NOTHING_LEFT}", sticky=True)
+        self._update_go()
+
+    def _start_confirmed(self):
         queue = transfer.chosen(self._items)
-        if not queue or self._working:
+        if not queue:
             return None
         if not self.confirm(queue):
+            self._update_go()
             return None
         return self.start_run()
 
@@ -625,6 +752,12 @@ class TransferGamesScreen(Screen):
         self._device.setEnabled(True)
         self._pause.hide()
         self._stop.hide()
+        # What the run did to the console is known here, and the queue is told
+        # before the table is redrawn. Without this a game that had just
+        # finished copying kept its tick and the button came back enabled, and
+        # the console was not listed again until seconds later: enough of a gap
+        # for somebody to press it and start the whole file over.
+        transfer.settle_after_run(self._items)
         self._fill_table()
         self._update_go()
         # What is on the console has just changed, so the list of it is read

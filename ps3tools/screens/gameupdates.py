@@ -25,10 +25,11 @@ being asked is all this program can honestly claim.
 """
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout, QLabel,
-                               QMessageBox, QProgressBar, QPushButton,
-                               QSizePolicy, QTreeWidget, QTreeWidgetItem,
-                               QVBoxLayout)
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QFrame,
+                               QGraphicsBlurEffect, QHBoxLayout, QLabel,
+                               QProgressBar, QPushButton, QSizePolicy,
+                               QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from ps3diag import parsers, transport
 from ps3tools import titles, updates
@@ -49,14 +50,15 @@ NOTHING_TO_DO = (
     "Every game on this console already has the newest title update Sony "
     "published for it, so there is nothing to do here.")
 
-#: What the scan button says before anything has been scanned, and after.
-SCAN_LABEL = "Check for updates"
-RESCAN_LABEL = "Check again"
+#: The one scan button, and the tick box that decides which check it runs.
+#: The button always says which of the two it would do; see _scan_label.
+FULL_SCAN_LABEL = "Check everything"
+FULL_SCAN_OPTION = "Include every game"
 
 #: Said on arrival, in place of scanning unasked.
 READY_TO_SCAN = (
-    "Press Check for updates below. This reads every game on the console and "
-    "then asks Sony about each one.\n\n"
+    "Press the button below. This reads every game on the console and then "
+    "asks Sony about each one.\n\n"
     "On a console with a lot of games it takes a few minutes, and it says "
     "what it is doing as it goes. Nothing is downloaded or changed until you "
     "tick something afterwards.")
@@ -65,6 +67,120 @@ WHAT_THIS_IS = (
     "Games get fixes after they are released. This checks each game on the "
     "console against Sony's own list and offers the ones that are behind. "
     "Tick the ones you want and press the button underneath.")
+
+#: Why this finishes sooner than doing the same job on the console. It is
+#: shown at the top, where it is read before anything has been pressed.
+ONLY_THE_NEWEST = (
+    "Only the newest title update for each game is fetched. The console "
+    "works through every update Sony ever published for a game, one after "
+    "another, which is why updating there takes longer than this does.")
+
+
+class InstallWizard(QDialog):
+    """What is about to happen, one step at a time, before anything happens.
+
+    Two things go wrong at this point and both are avoidable. The console has
+    to be sat on its own menu rather than inside a game, and somebody who has
+    pressed the button expects it to be over in seconds when it is minutes of
+    downloading. Saying both once, in front of the thing they are about to
+    start, costs a press and saves a failed run.
+
+    It asks and returns. Nothing here touches a console or a network.
+    """
+
+    XMB_STEP = (
+        "Go to the console first and leave it on the main menu, out of any "
+        "game. An update cannot be installed while the game it belongs to is "
+        "running, and the console will refuse it.")
+
+    PACE_STEP = (
+        "Each update is downloaded from Sony, checked against Sony's own "
+        "checksum, and copied across. A download that does not match is "
+        "deleted and nothing is copied.\n\n"
+        "They are then installed one at a time. The console shows each "
+        "install on the television and waits for you to press O, and this "
+        "window asks before it sends the next one.")
+
+    def __init__(self, chosen, theme, parent=None):
+        super().__init__(parent)
+        self._theme = theme
+        self._chosen = list(chosen)
+        self._step = 0
+        self.setObjectName("firstRun")
+        self.setWindowTitle("Download and install updates")
+        self.setModal(True)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+
+        shell = QVBoxLayout(self)
+        shell.setContentsMargins(0, 0, 0, 0)
+        self.body = QFrame(self)
+        self.body.setObjectName("firstRunBody")
+        self.body.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        shell.addWidget(self.body)
+
+        column = QVBoxLayout(self.body)
+        column.setContentsMargins(28, 22, 28, 24)
+        column.setSpacing(14)
+
+        self.heading = QLabel("", self.body)
+        font = QFont(self.heading.font())
+        font.setPointSize(font.pointSize() + 5)
+        font.setBold(True)
+        self.heading.setFont(font)
+        self.heading.setWordWrap(True)
+        column.addWidget(self.heading)
+
+        self.body_text = QLabel("", self.body)
+        self.body_text.setWordWrap(True)
+        self.body_text.setMinimumWidth(420)
+        column.addWidget(self.body_text)
+
+        buttons = QHBoxLayout()
+        self.back_button = QPushButton("Back", self.body)
+        self.back_button.clicked.connect(self._back)
+        buttons.addWidget(self.back_button)
+        buttons.addStretch(1)
+        self.cancel_button = QPushButton("Cancel", self.body)
+        self.cancel_button.clicked.connect(self.reject)
+        buttons.addWidget(self.cancel_button)
+        self.next_button = QPushButton("Next", self.body)
+        widgets.set_role(self.next_button, widgets.PRIMARY)
+        self.next_button.clicked.connect(self._forward)
+        buttons.addWidget(self.next_button)
+        column.addLayout(buttons)
+
+        self._paint()
+
+    @property
+    def steps(self):
+        total = sum(row.package.size for row in self._chosen if row.package)
+        count = len(self._chosen)
+        return [
+            ("Go to the console's main menu", self.XMB_STEP),
+            (f"{count} update{'' if count == 1 else 's'}, "
+             f"{parsers.human_size(total)}", self.PACE_STEP),
+        ]
+
+    def _paint(self):
+        heading, body = self.steps[self._step]
+        self.heading.setText(heading)
+        self.body_text.setText(body)
+        self.back_button.setEnabled(self._step > 0)
+        last = self._step == len(self.steps) - 1
+        self.next_button.setText("Start" if last else "Next")
+
+    def _back(self):
+        if self._step > 0:
+            self._step -= 1
+            self._paint()
+
+    def _forward(self):
+        if self._step < len(self.steps) - 1:
+            self._step += 1
+            self._paint()
+        else:
+            self.accept()
 
 
 @register
@@ -93,14 +209,23 @@ class GameUpdatesScreen(Screen):
         self._unidentified = []
         #: Title IDs the last remembered scan found behind.
         self._behind = []
+        # Whether the user asked for the full check. Kept apart from the tick
+        # box because the box is ticked and locked whenever there is nothing
+        # behind, and that is the screen's doing rather than a choice worth
+        # remembering. See _refresh_scan_button.
+        self._full_choice = False
         # What has already failed verification, and how, for the length of
         # this screen. It is what lets a second identical failure stop telling
         # the user to try again. See updates.verify_download.
         self._verify_history = {}
         # Seams, so a test does not sit through a real install timeout. The
-        # defaults are what runs against a console.
+        # defaults are what runs against a console: None means each package
+        # is allowed a wait worked out from its own size.
         self.install_poll_seconds = updates.INSTALL_POLL_SECONDS
-        self.install_timeout_seconds = updates.INSTALL_TIMEOUT_SECONDS
+        self.install_timeout_seconds = None
+        #: One line per package in the run, for the list under the table.
+        #: [key, what it is called, what it is doing].
+        self._queue_rows = []
         self._build()
         if self.theme is not None:
             try:
@@ -126,6 +251,12 @@ class GameUpdatesScreen(Screen):
         blurb.setWordWrap(True)
         layout.addWidget(blurb)
 
+        # Above the table and above every button, because it is the reason
+        # somebody would do this here rather than on the console.
+        self._why_quicker = QLabel(ONLY_THE_NEWEST)
+        self._why_quicker.setWordWrap(True)
+        layout.addWidget(self._why_quicker)
+
         # Said once, loudly, above the table. It is the whole answer whenever
         # the table is empty, and an empty grid under a grey sentence reads as
         # the program having failed rather than as an answer.
@@ -148,6 +279,15 @@ class GameUpdatesScreen(Screen):
         self._panel.hide()
         layout.addWidget(self._panel)
 
+        picks = QHBoxLayout()
+        picks.setContentsMargins(0, 0, 0, 0)
+        self._all_box = QCheckBox("Tick every game that can be updated")
+        self._all_box.setEnabled(False)
+        self._all_box.toggled.connect(self._on_all_toggled)
+        picks.addWidget(self._all_box)
+        picks.addStretch(1)
+        layout.addLayout(picks)
+
         self._table = QTreeWidget()
         self._table.setColumnCount(len(COLUMNS))
         self._table.setHeaderLabels(COLUMNS)
@@ -163,8 +303,18 @@ class GameUpdatesScreen(Screen):
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self._detail)
 
+        # One line per package, saying which stage it is in. It stays on
+        # screen when the run ends, so a package that did not install is
+        # still there to be read.
+        self._queue = QLabel("")
+        self._queue.setWordWrap(True)
+        self._queue.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._queue.hide()
+        layout.addWidget(self._queue)
+
         self._stage = QLabel("")
-        self._stage.setWordWrap(True)
+        # Room for four lines. It was cut off at three, mid-sentence.
+        widgets.fit_progress_label(self._stage)
         layout.addWidget(self._stage)
 
         # The shell paints every progress bar as a hairline with nowhere to put
@@ -191,16 +341,17 @@ class GameUpdatesScreen(Screen):
         self._back.clicked.connect(self._on_back)
         buttons.addWidget(self._back)
         buttons.addStretch(1)
-        self._rescan = QPushButton(SCAN_LABEL)
-        self._rescan.clicked.connect(lambda: self.start_scan())
+        # One button, with a tick box that decides which check it runs. Two
+        # buttons sat here before and both of them started a scan, so which
+        # one to press had to be read off a pair of long labels.
+        self._full_box = QCheckBox(FULL_SCAN_OPTION)
+        self._full_box.toggled.connect(self._on_full_toggled)
+        buttons.addWidget(self._full_box)
+        self._rescan = QPushButton(FULL_SCAN_LABEL)
+        self._rescan.clicked.connect(self._on_scan)
         widgets.set_role(self._rescan, widgets.PRIMARY)
-        # Only ever shown when a remembered scan left something behind. See
-        # _offer_remembered.
-        self._partial = QPushButton("Check the ones that were behind")
-        self._partial.clicked.connect(self._on_partial)
-        self._partial.hide()
-        buttons.addWidget(self._partial)
         buttons.addWidget(self._rescan)
+        self._refresh_scan_button()
         # Only ever shown when there is something it would do, and it says how
         # many images it would open. It is the slow path and it is the user's
         # choice; see ps3tools.updates.image_identifier.
@@ -348,7 +499,7 @@ class GameUpdatesScreen(Screen):
 
         The table is filled from memory so the screen has something in it, and
         every row is marked as remembered and cannot be ticked: nothing that
-        was true a week ago may be acted on today. Both buttons ask Sony
+        was true a week ago may be acted on today. Either check asks Sony
         fresh; the short one just looks at fewer games.
         """
         host = self.connection.host if self.connection else ""
@@ -366,27 +517,56 @@ class GameUpdatesScreen(Screen):
         self._fill_table()
         self._behind = updates.titles_behind(entry)
         when = str(entry.get("checked", "")).replace("T", " at ")
+        self._refresh_scan_button()
         if self._behind:
             count = len(self._behind)
-            self._partial.setText(
-                f"Check the {count} that {'was' if count == 1 else 'were'} "
-                f"behind")
-            self._partial.show()
             body = (f"This is what the last check found, on {when}. "
                     f"{count} game{'' if count == 1 else 's'} "
                     f"{'was' if count == 1 else 'were'} behind.\n\n"
                     f"Checking those again takes seconds, because the console "
-                    f"does not have to be read through from the start. "
-                    f"Checking everything finds games added since.")
+                    f"does not have to be read through from the start. Tick "
+                    f"{FULL_SCAN_OPTION} beside the button to look at all of "
+                    f"them and pick up anything added since.")
         else:
-            self._partial.hide()
-            body = (f"This is what the last check found, on {when}. Everything "
-                    f"was up to date.\n\n{READY_TO_SCAN}")
+            body = (f"This is what the last check found, on {when}. "
+                    f"Everything was up to date.\n\n{READY_TO_SCAN}")
         self._show_panel("info", "What the last check found", body)
         return True
 
-    def _on_partial(self):
+    def _on_scan(self):
+        """The one scan button. The tick box beside it says which check."""
+        if self._full_box.isChecked():
+            return self.start_scan()
         return self.start_scan(only=list(self._behind))
+
+    def _on_full_toggled(self, _checked):
+        # The user's own answer, which is why _refresh_scan_button blocks this
+        # signal when it ticks the box on their behalf.
+        self._full_choice = self._full_box.isChecked()
+        self._rescan.setText(self._scan_label())
+
+    def _scan_label(self):
+        """What the button would do if it were pressed now."""
+        if self._full_box.isChecked() or not self._behind:
+            return FULL_SCAN_LABEL
+        count = len(self._behind)
+        return (f"Check the {count} that "
+                f"{'was' if count == 1 else 'were'} behind")
+
+    def _refresh_scan_button(self):
+        """Put the button and its tick box in step with what is known.
+
+        With nothing remembered as behind there is no shorter check to run.
+        The box is ticked and disabled in that state, because a box that can
+        be cleared and still runs the same check says something untrue about
+        the button next to it.
+        """
+        short = bool(self._behind)
+        self._full_box.blockSignals(True)
+        self._full_box.setChecked(self._full_choice if short else True)
+        self._full_box.setEnabled(short)
+        self._full_box.blockSignals(False)
+        self._rescan.setText(self._scan_label())
 
     def _settings(self):
         """The shell's settings dictionary, or nothing if there is not one."""
@@ -439,7 +619,7 @@ class GameUpdatesScreen(Screen):
         self._hide_panel()
         self._go.setEnabled(False)
         self._rescan.setEnabled(False)
-        self._partial.setEnabled(False)
+        self._full_box.setEnabled(False)
         self._set_busy(True, "Checking the games that were behind"
                        if only else "Looking at the games on the console")
 
@@ -468,9 +648,11 @@ class GameUpdatesScreen(Screen):
                     on_progress=lambda done, total, name: control.progress(
                         ("image", done, total, name)))
                     if read_images else None)
+                verdict = {}
                 installed, notes, unnamed = updates.scan_console(
                     lister, devices=devices, image_identifier=identifier,
-                    on_stage=lambda text: control.progress(("stage", text)))
+                    on_stage=lambda text: control.progress(("stage", text)),
+                    verdict=verdict)
                 folder = updates.inspect_packages_folder(lister)
             control.progress(("scanned", len(installed)))
             rows = updates.check_titles(
@@ -480,7 +662,13 @@ class GameUpdatesScreen(Screen):
             # unidentified behind. A pass that was skipped, or that lost a
             # worker, has not looked and may not remove anything.
             looked = [updates.FROM_GAME_FOLDER]
-            if read_images and not unnamed:
+            # Only a pass that read every image AND got a title ID out of each
+            # one may remove a game found in an image before. An image that
+            # was read and yielded nothing is not evidence the game is gone,
+            # and an earlier positive identification is better evidence than a
+            # later blank.
+            if read_images and not unnamed and verdict.get(
+                    "images_conclusive"):
                 looked.append(updates.FROM_DISC_IMAGE)
             return rows, notes, folder, unnamed, {"looked_in": looked}
 
@@ -507,15 +695,8 @@ class GameUpdatesScreen(Screen):
         self._behind = [row.title_id for row in self._rows
                         if row.out_of_date or (row.nothing_installed
                                                and row.package is not None)]
-        self._partial.setEnabled(True)
-        self._partial.setVisible(bool(self._behind))
-        if self._behind:
-            count = len(self._behind)
-            self._partial.setText(
-                f"Check the {count} that {'is' if count == 1 else 'are'} "
-                f"behind")
         self._rescan.setEnabled(True)
-        self._rescan.setText(RESCAN_LABEL)
+        self._refresh_scan_button()
         # The action moves from "find out" to "do it" once there is a list.
         # One coloured button at a time, whichever moment it is.
         widgets.set_role(self._rescan, widgets.NEUTRAL)
@@ -604,53 +785,58 @@ class GameUpdatesScreen(Screen):
                 return row
         return None
 
+    def _items(self):
+        """Every row in the table, in the order they are shown."""
+        return [self._table.topLevelItem(index)
+                for index in range(self._table.topLevelItemCount())]
+
     def selected_rows(self):
         """The ticked rows, in the order they are shown."""
         out = []
-        for index in range(self._table.topLevelItemCount()):
-            item = self._table.topLevelItem(index)
+        for item in self._items():
             if item.checkState(0) == Qt.Checked:
                 row = self._row_for_item(item)
                 if row is not None:
                     out.append(row)
         return out
 
+    def _on_all_toggled(self, checked):
+        """Tick or untick every row that carries a tick box.
+
+        A row that is up to date, or blocked for any other reason, has the
+        checkable flag cleared in _fill_table and is passed over here. Giving
+        one a tick would offer to download something this screen has already
+        said it cannot fetch.
+        """
+        state = Qt.Checked if checked else Qt.Unchecked
+        self._table.blockSignals(True)
+        for item in self._items():
+            if item.flags() & Qt.ItemIsUserCheckable:
+                item.setCheckState(0, state)
+        self._table.blockSignals(False)
+        self._update_go()
+
+    def _sync_all_box(self):
+        """Keep the bulk tick in step with the rows under it.
+
+        Ticking the last row by hand leaves every updatable row ticked, and a
+        bulk box still sitting empty at that point reads as a control that has
+        stopped working.
+        """
+        tickable = [item for item in self._items()
+                    if item.flags() & Qt.ItemIsUserCheckable]
+        every = bool(tickable) and all(
+            item.checkState(0) == Qt.Checked for item in tickable)
+        self._all_box.blockSignals(True)
+        self._all_box.setEnabled(bool(tickable))
+        self._all_box.setChecked(every)
+        self._all_box.blockSignals(False)
+
     def _update_go(self):
+        self._sync_all_box()
         self._go.setEnabled(bool(self.selected_rows()) and not self._working)
 
     # -- doing it
-
-    def confirm(self, chosen):
-        """Asked before anything is downloaded. Overridden in tests.
-
-        The packages folder is named here rather than only on the scan, because
-        this is the moment it matters: pressing this button installs everything
-        in that folder and not just the files this program put there.
-        """
-        total = sum(row.package.size for row in chosen if row.package)
-        lines = [
-            f"{len(chosen)} update(s) will be downloaded from Sony, "
-            f"{parsers.human_size(total)} in total, and copied to the "
-            f"console.",
-            "",
-            "Each one is checked against Sony's own checksum before it is "
-            "copied. If a download does not match, it is deleted and nothing "
-            "is copied.",
-        ]
-        if self._packages is not None and self._packages.names:
-            lines += [
-                "",
-                "The console's packages folder already holds "
-                f"{_and_list(self._packages.names)}. The console installs "
-                "everything in that folder at once, so those will be "
-                "installed too. Continue only if you know what they are.",
-            ]
-        box = QMessageBox(self)
-        box.setWindowTitle("Download and install updates")
-        box.setText("\n".join(lines))
-        box.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
-        box.setDefaultButton(QMessageBox.Cancel)
-        return box.exec() == QMessageBox.Yes
 
     def _on_go(self):
         chosen = self.selected_rows()
@@ -659,6 +845,42 @@ class GameUpdatesScreen(Screen):
         if not self.confirm(chosen):
             return None
         return self.start_run(chosen)
+
+    def confirm(self, chosen):
+        """Walk through what is about to happen, then say whether to do it.
+
+        A modal over the window rather than a line of text on it. Everything
+        after this point takes minutes and writes to somebody's console, and
+        the one thing that makes it go wrong is the console being inside a
+        game rather than sat on its own menu. That is worth stopping for.
+
+        Overridden wholesale in tests, which is why the work is in a dialog of
+        its own rather than inline here.
+        """
+        dialog = InstallWizard(chosen, self.theme, self)
+        try:
+            self._blur(True)
+            return bool(dialog.exec())
+        finally:
+            self._blur(False)
+            dialog.deleteLater()
+
+    def _blur(self, on):
+        """Soften the screen behind the wizard.
+
+        Wrapped because a graphics effect is the sort of thing a remote
+        desktop or a software renderer refuses, and a blur that will not apply
+        is no reason to withhold the dialog.
+        """
+        try:
+            if on:
+                effect = QGraphicsBlurEffect(self)
+                effect.setBlurRadius(9)
+                self.setGraphicsEffect(effect)
+            else:
+                self.setGraphicsEffect(None)
+        except Exception:                                   # noqa: BLE001
+            pass
 
     def start_run(self, chosen):
         host = self.connection.host if self.connection else ""
@@ -670,7 +892,10 @@ class GameUpdatesScreen(Screen):
         self._working = True
         self._go.setEnabled(False)
         self._rescan.setEnabled(False)
+        self._full_box.setEnabled(False)
         self._set_busy(True, "Downloading from Sony")
+        self._start_queue([(row.title_id, row.name or row.title_id)
+                           for row in chosen])
 
         open_writer = self._writer
         open_actions = self._actions
@@ -726,11 +951,19 @@ class GameUpdatesScreen(Screen):
             # not ours to run. The only thing installed is what this upload
             # just wrote, by exact name, and the same name is what gets
             # deleted afterwards.
+            #
+            # One connection for the whole install stage: the poll that waits
+            # for the console to delete each package runs down it every
+            # second, and the version read that confirms the install goes the
+            # same way.
             with open_lister(host) as confirm_lister:
                 results = updates.install_queue(
                     open_actions(host),
-                    [(item.filename, item.title_id) for item in done],
-                    updates.installed_checker(confirm_lister),
+                    [(item.filename, item.title_id, item.bytes_sent,
+                      item.version) for item in done],
+                    updates.package_checker(confirm_lister),
+                    confirm=updates.version_confirmation(
+                        updates.version_reader(confirm_lister)),
                     on_progress=control.progress,
                     cancelled=lambda: control.cancelled,
                     poll_seconds=poll_seconds,
@@ -749,10 +982,12 @@ class GameUpdatesScreen(Screen):
         self._working = False
         self._set_busy(False)
         self._rescan.setEnabled(True)
+        self._refresh_scan_button()
         self._update_go()
 
     def _on_finished(self, result):
         done, results, skipped = result
+        self._queue_results(results)
         already = "\n\n".join(item.reason for item in skipped if item.reason)
         if not done:
             if skipped:
@@ -765,8 +1000,14 @@ class GameUpdatesScreen(Screen):
         landed = [item for item in results if item.confirmed]
         missed = [item for item in results if not item.confirmed]
         if missed:
+            # An update the version read could not settle is not an update
+            # that failed, and the heading says which of the two happened.
+            failed = [item for item in missed
+                      if item.state == updates.STATE_FAILED]
             self._show_panel(
-                "warn", "Some updates did not install",
+                "warn",
+                "Some updates did not install" if failed
+                else "Some installs could not be confirmed",
                 _install_report(landed, missed)
                 + ("\n\n" + already if already else ""))
         else:
@@ -789,6 +1030,7 @@ class GameUpdatesScreen(Screen):
 
     def _on_failed(self, message):
         self._rescan.setEnabled(True)
+        self._refresh_scan_button()
         self._show_panel("error", "This did not finish", message)
 
     # -- progress
@@ -812,16 +1054,31 @@ class GameUpdatesScreen(Screen):
                 self._bar.setRange(0, 100)
                 self._bar.setValue(int(done * 100 / total))
             return
-        if kind == "installing":
-            self._stage.setText("Asking the console to install it")
-            self._show_count("")
-            self._bar.setRange(0, 0)
+        if kind in updates.INSTALL_QUEUE_STAGES and len(payload) >= 5:
+            _kind, filename, first, second, title_id = payload[:5]
+            self._queue_stage(title_id or filename,
+                              updates.install_stage_text(kind, first, second))
+            if kind == "installing":
+                self._stage.setText("Asking the console to install it")
+                self._show_count("")
+                self._bar.setRange(0, 0)
+            elif kind == "waiting":
+                # Seconds and the name of the stage. The console reports
+                # nothing else until it deletes the package, so a bar here
+                # would be moving on a guess.
+                self._stage.setText(
+                    f"Installing {filename}. {int(first)} seconds so far, "
+                    f"of {int(second)} allowed")
+            elif kind == "checking":
+                self._stage.setText(
+                    f"Reading the version {title_id or filename} reports now")
             return
         if kind in ("download", "upload") and len(payload) >= 4:
             _kind, title_id, done, total = payload[:4]
             word = "Downloading from Sony" if kind == "download" \
                 else "Copying to the console"
             self._stage.setText(f"{word}: {title_id}")
+            self._queue_stage(title_id, updates.install_stage_text(kind))
             if total:
                 self._bar.setRange(0, 100)
                 self._bar.setValue(int(done * 100 / total))
@@ -834,6 +1091,42 @@ class GameUpdatesScreen(Screen):
             if total:
                 self._bar.setRange(0, 100)
                 self._bar.setValue(int(index * 100 / total))
+
+    # -- the per-package list
+
+    def _start_queue(self, rows):
+        """Begin the list: every package named, none of them started."""
+        self._queue_rows = [[key, name, "waiting to start"]
+                            for key, name in rows]
+        self._paint_queue()
+
+    def _queue_stage(self, key, text):
+        """Put one package at a stage. An unlisted one is added as it is."""
+        if not text:
+            return
+        for row in self._queue_rows:
+            if row[0] == key:
+                row[2] = text
+                break
+        else:
+            self._queue_rows.append([key, key, text])
+        self._paint_queue()
+
+    def _queue_results(self, results):
+        """The state each package ended in, left on screen to be read.
+
+        A package that did not install stays in the list saying so. It is the
+        line somebody needs after the run, and a list that quietly dropped it
+        would leave them thinking everything went in.
+        """
+        for item in results:
+            self._queue_stage(item.title_id or item.filename,
+                              item.state or updates.STATE_UNCONFIRMED)
+
+    def _paint_queue(self):
+        self._queue.setText("\n".join(f"{row[1]}: {row[2]}"
+                                      for row in self._queue_rows))
+        self._queue.setVisible(bool(self._queue_rows))
 
     # -- panel, colours and chrome
 

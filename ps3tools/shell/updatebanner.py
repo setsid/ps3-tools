@@ -308,6 +308,19 @@ class UpdateBanner(QWidget):
             self.show_release(release)
         self.checked.emit(release)
 
+    def reassert(self):
+        """Show the banner again if there is news and it was never dismissed.
+
+        The first run puts a modal over the window while the update check is
+        still in flight, and the news arrived underneath it. Nothing was wrong
+        with the check: it was simply announced to a window nobody could see.
+        This is called when the modal closes.
+        """
+        if self.release is None or self._dismissed:
+            return False
+        self.setVisible(True)
+        return True
+
     def show_release(self, release):
         """Display a release. Public so the About screen can hand one over."""
         self.release = release

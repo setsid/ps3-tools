@@ -189,7 +189,7 @@ class FetchTests(NoNetworkCase):
         obstacle to it. It exists so a version change is always a decision
         somebody made rather than something noticed later on a screenshot.
         """
-        self.assertEqual(update.VERSION, "1.2.0")
+        self.assertEqual(update.VERSION, "1.2.1")
         # Plain dotted numbers, or the tag comparison silently stops working.
         self.assertIsNotNone(update.parse_version(update.VERSION))
 

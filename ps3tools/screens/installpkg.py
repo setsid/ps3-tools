@@ -92,13 +92,21 @@ class InstallPackagesScreen(Screen):
         self._panel_token = ""
         #: What the console's packages folder holds, as last read.
         self._console_rows = []
+        #: Packages still to install, when they are being done one at a time.
+        self._install_rest = []
+        #: What has gone in across the whole run, however many presses it took.
+        self._installed_so_far = []
         #: True while the panel is showing the folder listing's own notice.
         #: It is the only thing the listing is allowed to clear.
         self._listing_owns_panel = False
         # Seams, so a test does not sit through a real install timeout. The
-        # defaults are what runs against a console.
+        # defaults are what runs against a console: None means each package
+        # is allowed a wait worked out from its own size.
         self.install_poll_seconds = updates.INSTALL_POLL_SECONDS
-        self.install_timeout_seconds = updates.INSTALL_TIMEOUT_SECONDS
+        self.install_timeout_seconds = None
+        #: One line per package in the run, for the list under the tables.
+        #: [key, what it is called, what it is doing].
+        self._queue_rows = []
         self._build()
         if self.theme is not None:
             try:
@@ -195,6 +203,14 @@ class InstallPackagesScreen(Screen):
             lambda *args: self._update_install_here())
         layout.addWidget(self._console_table)
 
+        # Shown between one install and the next when they are being done one
+        # at a time. The console puts a dialog on the television and nothing
+        # on this end is told when it closes, so the user says.
+        self._next_button = QPushButton("Install the next one")
+        self._next_button.clicked.connect(self._on_next_install)
+        self._next_button.hide()
+        layout.addWidget(self._next_button, 0, Qt.AlignRight)
+
         self._install_here = QPushButton("Install the ticked packages")
         self._install_here.setEnabled(False)
         self._install_here.clicked.connect(self._on_install_here)
@@ -205,8 +221,18 @@ class InstallPackagesScreen(Screen):
         self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self._detail)
 
+        # One line per package, saying which stage it is in. It stays on
+        # screen when the run ends, so a package that did not install is
+        # still there to be read.
+        self._queue = QLabel("")
+        self._queue.setWordWrap(True)
+        self._queue.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._queue.hide()
+        layout.addWidget(self._queue)
+
         self._stage = QLabel("")
-        self._stage.setWordWrap(True)
+        # Room for four lines. It was cut off at three, mid-sentence.
+        widgets.fit_progress_label(self._stage)
         layout.addWidget(self._stage)
 
         self._count = QLabel("")
@@ -356,6 +382,9 @@ class InstallPackagesScreen(Screen):
                 row.setCheckState(0, Qt.Unchecked)
             row.setData(0, Qt.UserRole, item.filename)
             row.setData(1, Qt.UserRole, item.title_id or "")
+            # How long the install is given is worked out from the size, so
+            # the size travels with the row rather than being read again.
+            row.setData(2, Qt.UserRole, item.size or 0)
             self._console_table.addTopLevelItem(row)
         for index in range(len(CONSOLE_COLUMNS)):
             self._console_table.resizeColumnToContents(index)
@@ -378,7 +407,8 @@ class InstallPackagesScreen(Screen):
             if row.flags() & Qt.ItemIsUserCheckable and \
                     row.checkState(0) == Qt.Checked:
                 chosen.append((row.data(0, Qt.UserRole),
-                               row.data(1, Qt.UserRole) or ""))
+                               row.data(1, Qt.UserRole) or "",
+                               row.data(2, Qt.UserRole) or 0))
         return chosen
 
     def _update_install_here(self):
@@ -395,6 +425,21 @@ class InstallPackagesScreen(Screen):
         chosen = self._console_selection()
         if not chosen:
             return None
+        # A run of its own, so the list starts with these and holds every one
+        # of them until the last has been through.
+        self._start_queue([(item[0], item[0]) for item in chosen])
+        return self._install_these(chosen)
+
+    def _install_these(self, chosen):
+        """Install a list of (filename, title_id, size). One at a time.
+
+        Firing them in a row drops installs: webMAN ignores a request while it
+        is still busy with the last one and says nothing about having done so.
+        The queue now waits for the console to delete each package, which is
+        the signal that was missing, and a setting turns it on. The default
+        stays one press per package until that has been run against hardware
+        with several of them queued.
+        """
         host = self.connection.host if self.connection else ""
         if not host:
             self._show_panel("warn", "No console address has been entered yet",
@@ -402,6 +447,7 @@ class InstallPackagesScreen(Screen):
             return None
         self._working = True
         self._install_here.setEnabled(False)
+        self._next_button.hide()
         self._go.setEnabled(False)
         self._add.setEnabled(False)
         self._set_busy(True, "Installing on the console")
@@ -410,16 +456,31 @@ class InstallPackagesScreen(Screen):
         open_lister = self._lister
         poll_seconds = self.install_poll_seconds
         timeout_seconds = self.install_timeout_seconds
+        settings = getattr(self.services, "settings", None)
+        in_a_row = updates.queue_installs(settings)
+        batch = list(chosen) if in_a_row else list(chosen[:1])
+        self._install_rest = [] if in_a_row else list(chosen[1:])
+        self._queue_add([(item[0], item[0]) for item in batch])
 
         def work(control):
+            # One connection for the whole stage. The poll that waits for the
+            # console to delete each package runs down it every second, and
+            # opening a connection per poll is what webMANftpd hangs up over.
             with open_lister(host) as confirm_lister:
                 return updates.install_queue(
-                    open_actions(host), chosen,
-                    updates.installed_checker(confirm_lister),
+                    open_actions(host), batch,
+                    updates.package_checker(confirm_lister),
+                    # A package somebody supplied has no published version to
+                    # check against, so the console is asked whether the title
+                    # is there instead. Whole games take longer to install
+                    # than a title update, hence the second timeout.
+                    confirm=updates.directory_confirmation(
+                        updates.title_reader(confirm_lister)),
                     on_progress=control.progress,
                     cancelled=lambda: control.cancelled,
                     poll_seconds=poll_seconds,
-                    timeout_seconds=timeout_seconds)
+                    timeout_seconds=timeout_seconds,
+                    timeout_for=updates.package_timeout_for)
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -429,19 +490,69 @@ class InstallPackagesScreen(Screen):
         self._task = task
         return task
 
+    def _offer_the_next(self):
+        """Ask the user to confirm the console has finished, then go again."""
+        if not self._install_rest:
+            self._next_button.hide()
+            return
+        left = len(self._install_rest)
+        self._next_button.setText(
+            f"The console has finished: install the next "
+            f"({left} left)")
+        self._next_button.show()
+
+    def _on_next_install(self):
+        rest, self._install_rest = self._install_rest, []
+        if rest:
+            self._next_button.hide()
+            self._install_these(rest)
+
     def _on_installed_here(self, results):
+        """One install has come back. Report it, then offer the next.
+
+        `_installed_so_far` is what has gone in across the whole run however
+        many presses it took, so the final message names all of them rather
+        than only the last.
+        """
+        self._queue_results(results)
         landed = [item for item in results if item.confirmed]
         missed = [item for item in results if not item.confirmed]
+        self._installed_so_far.extend(landed)
         if missed:
-            self._show_panel("warn", "Some packages did not install",
-                             _install_report(landed, missed))
-        else:
-            count = len(landed)
+            # An install this end could not check is not an install that
+            # failed, and the heading says which happened. Plenty of packages
+            # are DLC or a patch for a game that is already on the console and
+            # leave nothing new to be asked about afterwards.
+            failed = [item for item in missed
+                      if item.state == updates.STATE_FAILED]
+            # One failing says nothing about the rest, so whatever is left is
+            # still offered rather than being thrown away with it.
+            self._show_panel("warn",
+                             "Some packages did not install" if failed
+                             else "Some installs could not be confirmed",
+                             _install_report(self._installed_so_far, missed))
+            self._offer_the_next()
+            return
+        if self._install_rest:
+            done = len(self._installed_so_far)
+            left = len(self._install_rest)
             self._show_panel(
-                "ok",
-                f"{count} packages installed" if count > 1 else "Installed",
+                "ok", f"{done} installed, {left} to go",
                 f"{_and_list([item.filename for item in landed])} installed "
-                f"on the console.")
+                f"on the console.\n\nPress O on the console when it has "
+                f"finished, then use the button below for the next one. They "
+                f"are done one at a time because firing them in a row drops "
+                f"some of them.")
+            self._offer_the_next()
+            return
+        done = list(self._installed_so_far)
+        count = len(done)
+        self._show_panel(
+            "ok", f"{count} packages installed" if count > 1 else "Installed",
+            f"{_and_list([item.filename for item in done])} installed on the "
+            f"console. The package files stay in the console's packages "
+            f"folder. Nothing here deletes them, and they can be removed from "
+            f"the console whenever you like.")
         # Read the folder again so the list says what is actually there now.
         self.check_console()
 
@@ -563,6 +674,8 @@ class InstallPackagesScreen(Screen):
         self._go.setEnabled(False)
         self._add.setEnabled(False)
         self._set_busy(True, "Copying to the console")
+        self._start_queue([(item.filename, item.filename)
+                           for item in chosen])
 
         open_writer = self._writer
         open_actions = self._actions
@@ -599,26 +712,14 @@ class InstallPackagesScreen(Screen):
                     # landed before the next one is fired.
                     sent.append((fresh.filename, remote, count,
                                  getattr(item, "title_id", "") or ""))
-            if not sent:
-                return sent, []
-            # Each install is confirmed on the console before the next is
-            # fired. Firing them back to back drops them: webMAN ignores an
-            # install while it is still busy with the last one.
+            # Uploads only. Installing runs from the screen, because by
+            # default it is one package at a time with the user saying when
+            # the console has finished each one.
             #
-            # NEVER build this list by listing /dev_hdd0/packages: whatever
-            # else is in there belongs to the user and is not ours to run or
-            # to delete. Only what this upload just wrote, by exact name.
-            with open_lister(host) as confirm_lister:
-                results = updates.install_queue(
-                    open_actions(host),
-                    [(name, title)
-                    for name, _remote, _count, title in sent],
-                    updates.installed_checker(confirm_lister),
-                    on_progress=control.progress,
-                    cancelled=lambda: control.cancelled,
-                    poll_seconds=poll_seconds,
-                    timeout_seconds=timeout_seconds)
-            return sent, results
+            # NEVER build the install list by listing /dev_hdd0/packages:
+            # whatever else is in there belongs to the user and is not ours to
+            # run. Only what this upload just wrote, by exact name.
+            return sent, []
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -636,28 +737,17 @@ class InstallPackagesScreen(Screen):
         self._update_install_here()
 
     def _on_finished(self, result):
-        sent, results = result
+        sent, _results = result
         if not sent:
             self._show_panel("warn", "Nothing was copied to the console",
                              "This was stopped before anything was copied "
                              "across.")
             return
-        landed = [item for item in results if item.confirmed]
-        missed = [item for item in results if not item.confirmed]
-        if missed:
-            self._show_panel("warn", "Some packages did not install",
-                             _install_report(landed, missed))
-            return
-        count = len(landed)
-        body = (f"{_and_list([item.filename for item in landed])} installed "
-                f"on the console.")
-        body += (" The package files stay in the console's packages folder. "
-                 "Nothing here deletes them, and they can be removed from the "
-                 "console whenever you like.")
-        self._show_panel(
-            "ok", f"{count} packages installed" if count > 1 else "Installed",
-            body)
-        self.check_console()
+        # Everything is on the console. Now install it, which is its own job
+        # and its own pace.
+        self._installed_so_far = []
+        self._install_these([(name, title, count)
+                             for name, _remote, count, title in sent])
 
     def _on_failed(self, message):
         self._show_panel("error", "This did not finish", message)
@@ -668,18 +758,80 @@ class InstallPackagesScreen(Screen):
         if not isinstance(payload, tuple) or len(payload) < 4:
             return
         kind, label, done, total = payload[:4]
-        if kind == "installing":
-            self._stage.setText("Asking the console to install them")
-            self._show_count("")
-            self._bar.setRange(0, 0)
+        if kind in updates.INSTALL_QUEUE_STAGES:
+            self._queue_stage(label,
+                              updates.install_stage_text(kind, done, total))
+            if kind == "installing":
+                self._stage.setText("Asking the console to install it")
+                self._show_count("")
+                self._bar.setRange(0, 0)
+            elif kind == "waiting":
+                # The seconds that have passed and the seconds allowed. The
+                # console says nothing else until it deletes the package, so
+                # a bar here would be moving on a guess.
+                self._stage.setText(
+                    f"Installing {label}. {int(done)} seconds so far, of "
+                    f"{int(total)} allowed")
+            elif kind == "checking":
+                self._stage.setText(f"Reading what the console reports for "
+                                    f"{label}")
             return
         if kind == "upload":
             self._stage.setText(f"Copying {label} to the console")
+            self._queue_stage(label, updates.install_stage_text(kind))
             if total:
                 self._bar.setRange(0, 100)
                 self._bar.setValue(int(done * 100 / total))
                 self._show_count(f"{parsers.human_size(done)} of "
                                  f"{parsers.human_size(total)}")
+
+    # -- the per-package list
+
+    def _start_queue(self, rows):
+        """Begin the list: every package named, none of them started."""
+        self._queue_rows = []
+        self._queue_add(rows)
+
+    def _queue_add(self, rows):
+        """Name packages that are not in the list yet.
+
+        Installing one at a time takes several presses, and each press
+        installs part of the same run. Rows already there keep whatever they
+        say, so the one that did not install stays where it can be read.
+        """
+        known = {row[0] for row in self._queue_rows}
+        for key, name in rows:
+            if key not in known:
+                self._queue_rows.append([key, name, "waiting to start"])
+        self._paint_queue()
+
+    def _queue_stage(self, key, text):
+        """Put one package at a stage. An unlisted one is added as it is."""
+        if not text:
+            return
+        for row in self._queue_rows:
+            if row[0] == key:
+                row[2] = text
+                break
+        else:
+            self._queue_rows.append([key, key, text])
+        self._paint_queue()
+
+    def _queue_results(self, results):
+        """The state each package ended in, left on screen to be read.
+
+        A package that did not install stays in the list saying so. It is the
+        line somebody needs after the run, and a list that quietly dropped it
+        would leave them thinking everything went in.
+        """
+        for item in results:
+            self._queue_stage(item.filename,
+                              item.state or updates.STATE_UNCONFIRMED)
+
+    def _paint_queue(self):
+        self._queue.setText("\n".join(f"{row[1]}: {row[2]}"
+                                      for row in self._queue_rows))
+        self._queue.setVisible(bool(self._queue_rows))
 
     # -- panel, colours and chrome
 

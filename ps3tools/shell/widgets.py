@@ -41,6 +41,27 @@ def set_role(button, role=NEUTRAL):
     return button
 
 
+#: How many lines of progress text a screen makes room for.
+#:
+#: A word-wrapped QLabel in a vertical layout reports the height of one line
+#: until it has been laid out, and the layout settles on that. The text then
+#: wraps inside a box too short for it and the fourth line is cut in half.
+#: Asking for the room up front is what stops that.
+PROGRESS_LINES = 4
+
+
+def fit_progress_label(label, lines=PROGRESS_LINES):
+    """Give a progress label room to grow to `lines` without being clipped."""
+    metrics = QFontMetrics(label.font())
+    label.setWordWrap(True)
+    label.setMinimumHeight(metrics.lineSpacing() * lines)
+    label.setSizePolicy(QSizePolicy.Policy.Preferred,
+                        QSizePolicy.Policy.MinimumExpanding)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft
+                       | Qt.AlignmentFlag.AlignTop)
+    return label
+
+
 def mix(first, second, amount):
     """`amount` of second blended into first. All three are "#rrggbb"."""
     one, two = QColor(first), QColor(second)

@@ -21,9 +21,21 @@ socket. One attempt, and whatever the server said comes back to the caller.
 import ftplib
 import hashlib
 import os
+import time
 
 from ps3diag.parsers import recode_ftp_line
 from ps3diag.transport import force_byte_safe
+
+#: How long before a pause is pointless. A connection that last worked more
+#: than this ago was dropped by the server's idle timeout, and the console is
+#: not busy: reconnecting immediately is right. Below it, the drop is the
+#: console having had too many connections too quickly, and a moment's wait is
+#: what lets the next one succeed.
+IDLE_DROP_SECONDS = 20.0
+
+#: The wait in the hurried case. The read client uses 0.5 then 1.5 across two
+#: attempts; this client retries once, so it takes the longer of the two.
+RECONNECT_PAUSE = 1.5
 
 DEFAULT_TIMEOUT = 60.0
 
@@ -64,6 +76,9 @@ class FtpWriter:
         self.banner = ""
         self._factory = factory or self._connect
         self._ftp = None
+        #: When a command last succeeded. A drop long after that one is the
+        #: server's idle timeout rather than the console being overwhelmed.
+        self._last_ok = None
 
     # -- connection
 
@@ -115,7 +130,7 @@ class FtpWriter:
         on a fresh connection; a second failure is real.
         """
         try:
-            return run(self.open())
+            answer = run(self.open())
         except ftplib.error_perm:
             # A refusal is an answer: the path is not there, or the server will
             # not do it. Asking again gets the same reply.
@@ -125,7 +140,28 @@ class FtpWriter:
                 self.log.event("ftp_write_reconnect",
                                reason=exc.__class__.__name__)
             self.close()
-            return run(self.open())
+            self._pause_if_hurried()
+            answer = run(self.open())
+        self._last_ok = time.monotonic()
+        return answer
+
+    def _pause_if_hurried(self):
+        """Wait before reconnecting, but only when haste is what broke it.
+
+        webMANftpd hangs up when it has had several data connections in quick
+        succession, and a fresh connection opened microseconds later meets it
+        in the same state. That is what the pause is for.
+
+        A connection that has been sitting unused for a long time died of the
+        server's idle timeout instead, and there is nothing to wait for: the
+        console is not busy, it simply let go. Pausing there added seconds to
+        the start of every upload that followed a long download, which is a
+        cost paid on the normal path for a case that is not happening.
+        """
+        if self._last_ok is None:
+            return
+        if time.monotonic() - self._last_ok < IDLE_DROP_SECONDS:
+            time.sleep(RECONNECT_PAUSE)
 
     def __enter__(self):
         return self

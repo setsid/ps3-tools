@@ -72,6 +72,18 @@ def may_range_read(path):
     return any(pattern.match(path) for pattern in RANGED_READABLE)
 
 
+class RangeReadFailed(OSError):
+    """The console stopped sending part way through a ranged read.
+
+    Its own exception because the alternative was returning b"", which is
+    also what the end of a file looks like. A dropped transfer then read as
+    "there is nothing more here": the image was parsed from truncated bytes,
+    no title ID was found, and the game disappeared from the list with the
+    read recorded as a success. The same file identified on the next scan,
+    which is what made it look non-deterministic.
+    """
+
+
 class RangeReadRefused(transport.UnsafeRequest):
     """Raised before anything leaves this machine."""
 
@@ -204,10 +216,13 @@ class FtpRangeReader:
             ftp.voidcmd("TYPE I")
             connection = ftp.transfercmd(f"RETR {path}",
                                          rest=offset or None)
-        except ftplib.all_errors:
+        except ftplib.all_errors as exc:
             self._drop()
-            return b""
+            raise RangeReadFailed(
+                f"the console would not start the read "
+                f"({exc.__class__.__name__})") from exc
         data = bytearray()
+        broke = None
         try:
             connection.settimeout(self.timeout)
             while len(data) < length:
@@ -215,8 +230,10 @@ class FtpRangeReader:
                 if not block:
                     break
                 data += block
-        except (OSError, socket.timeout):
-            pass
+        except (OSError, socket.timeout) as exc:
+            # Stopping early is not the same as the file ending. Remembered
+            # here and raised below, once the connection has been settled.
+            broke = exc
         finally:
             try:
                 connection.close()
@@ -232,6 +249,11 @@ class FtpRangeReader:
         if self.log:
             self.log.event("ftp_range", path=path, offset=offset,
                            wanted=length, bytes=len(data), aborted=cut_short)
+        if broke is not None:
+            self._drop()
+            raise RangeReadFailed(
+                f"the console stopped sending after {len(data)} of {length} "
+                f"bytes ({broke.__class__.__name__})") from broke
         return bytes(data)
 
 
@@ -289,6 +311,8 @@ class _BudgetedRanges:
         self.bytes_read = 0
         self.exhausted = False
         self.refused = None
+        #: True once any read came back with less than was asked for.
+        self.short = False
         self._blocks = {}
 
     def _block(self, index):
@@ -310,6 +334,15 @@ class _BudgetedRanges:
         except Exception as exc:                       # noqa: BLE001
             self.refused = str(exc) or exc.__class__.__name__
             data = b""
+        else:
+            # A read that came back short may be the end of the file or a
+            # transfer that stopped. This cannot tell which: the size in the
+            # directory listing is what the console said earlier and is not
+            # always what it will send. It records the fact, and identify_isos
+            # uses it only to decide whether "no title ID" is an answer or a
+            # read worth trying again.
+            if len(data) < self.block:
+                self.short = True
         self._blocks[index] = data
         self.bytes_read += len(data)
         return data
@@ -442,6 +475,14 @@ def identify_isos(entries, reader, block=DEFAULT_BLOCK,
             elif ranges.exhausted:
                 reason = (f"stopped after {ranges.bytes_read} bytes without "
                           f"finding the identity")
+                opened = False
+            elif ranges.short:
+                # Nothing was found and part of what was asked for never
+                # arrived. The two together are not evidence that the image
+                # holds no game: this is the state that had an image identify
+                # on one scan and come back empty on the next.
+                reason = ("part of the image did not arrive, so what is in "
+                          "it is still unknown")
                 opened = False
         isos.append(_row(entry, path, identity, ranges.bytes_read, reason,
                          opened=opened))

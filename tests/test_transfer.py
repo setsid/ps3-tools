@@ -137,8 +137,45 @@ class FakeLister:
         return False
 
 
+class WriterBackedLister(FakeLister):
+    """A lister that reports whatever the writer actually holds.
+
+    The screen lists the console again after a run and again when the button
+    is pressed, and a fake that kept answering with what was there beforehand
+    would make those reads prove the opposite of what just happened. This one
+    is the same console the writer wrote to.
+    """
+
+    def __init__(self, writer, folders=(PS3_DIR, PS2_DIR)):
+        FakeLister.__init__(self)
+        self.writer = writer
+        self.folders = tuple(folders)
+
+    def list_dir(self, path):
+        self.asked.append(path)
+        if path not in self.folders:
+            raise ftplib.error_perm("550 no such directory")
+        return listing_text(
+            [(os.path.basename(name), len(body))
+             for name, body in sorted(self.writer.files.items())
+             if os.path.dirname(name) == path])
+
+
 class ConsoleGone(Exception):
     """The console stopped answering partway through."""
+
+
+class UnreachableLister(FakeLister):
+    """A console that has stopped answering, from the moment it is opened.
+
+    console_games() treats a folder it cannot list as a folder it knows
+    nothing about, which is right for a console with no PSPISO. A console that
+    has gone is a different thing, so this fails where that one does: at the
+    connection.
+    """
+
+    def __enter__(self):
+        raise ConsoleGone("the console stopped answering")
 
 
 class FakeWriter:
@@ -431,6 +468,102 @@ class WhatIsAlreadyThere(ImageCase):
         items[0].wanted = False
         self.assertEqual(transfer.bytes_to_send(items), 0)
         self.assertEqual(transfer.chosen(items), [])
+
+
+# --- recognising a game that is already there --------------------------------
+
+class RecognisingWhatIsAlreadyThere(ImageCase):
+    """Item 10. A game was copied, and copying it again copied all of it.
+
+    Three things had to line up for that. The list of what is on the console
+    was read when the screen was entered and never again, so a game put there
+    by the run a minute earlier was not in it. The item that had just finished
+    kept its tick, because nothing told the queue what the run had done. And
+    the permission to write over the top of a file outlived the file it was
+    given about, which disarmed the one check made at the moment of the copy.
+    """
+
+    def item(self, size=8192, name="A Game.iso", **kwargs):
+        return transfer.QueueItem(path="x", filename=name, size=size,
+                                  platform=transfer.PS3, name=name, **kwargs)
+
+    def test_a_finished_transfer_leaves_the_queue_saying_it_is_there_now(self):
+        # The reported fault. The run put the file on the console and proved
+        # it with a fresh listing; leaving the row ticked and the button live
+        # invited the user to spend the hours a second time.
+        item = self.item(status=transfer.DONE, wanted=True)
+        transfer.settle_after_run([item])
+        self.assertEqual(item.present, "same")
+        self.assertEqual(item.present_bytes, item.size)
+        self.assertFalse(item.wanted)
+        self.assertIn("on the console", item.plan_text)
+
+    def test_a_stopped_transfer_leaves_it_marked_as_part_copied(self):
+        # A run that stopped leaves a short file under the right name, and the
+        # next one has to be offered as carrying on from it.
+        item = self.item(status=transfer.PARTIAL, resume_from=3000)
+        transfer.settle_after_run([item])
+        self.assertEqual(item.present, "shorter")
+        self.assertEqual(item.present_bytes, 3000)
+
+    def test_a_tick_survives_the_console_being_read_again(self):
+        # The user was shown the row, told the console already had it, and
+        # ticked it anyway. Re-reading the console on the way to the copy must
+        # not quietly undo that decision.
+        item = self.item(present="same", wanted=True, overwrite=True)
+        transfer.match_console([item], {PS3_DIR: {"a game.iso": 8192}})
+        self.assertTrue(item.wanted)
+        self.assertTrue(item.overwrite)
+        self.assertIn("copied over again", item.plan_text)
+
+    def test_permission_to_copy_over_the_top_does_not_outlive_its_file(self):
+        # This is what made a whole copy possible. The tick authorised writing
+        # over one particular file; once the console no longer has that file,
+        # keeping the authorisation set would let a later identical file
+        # through the last check in plan() without anybody deciding anything.
+        item = self.item(present="same", wanted=True, overwrite=True)
+        transfer.match_console([item], {PS3_DIR: {}})
+        self.assertFalse(item.overwrite)
+        transfer.plan([item], {PS3_DIR: {"a game.iso": 8192}})
+        self.assertEqual(item.status, transfer.ALREADY)
+
+    def test_the_same_name_at_a_different_size_is_still_offered(self):
+        # A partial and a different file share a name with this one and must
+        # both still be copyable, each saying which of the two it is.
+        part = self.item()
+        transfer.match_console([part], {PS3_DIR: {"a game.iso": 3000}})
+        self.assertTrue(part.wanted)
+        self.assertIn("Part copied already", part.plan_text)
+        other = self.item()
+        transfer.match_console([other], {PS3_DIR: {"a game.iso": 90000}})
+        self.assertTrue(other.wanted)
+        self.assertIn("different file", other.plan_text)
+
+    def test_the_notes_name_every_file_the_console_already_has(self):
+        # One wording, used by the table, the confirmation and the panel, so
+        # that the three cannot come to disagree about the same file.
+        same = self.item(name="Same.iso", present="same", wanted=False)
+        part = self.item(name="Part.iso", present="shorter", wanted=True)
+        other = self.item(name="Other.iso", present="different", wanted=True)
+        again = self.item(name="Again.iso", present="same", wanted=True,
+                          overwrite=True)
+        notes = "\n".join(transfer.console_notes([same, part, other, again]))
+        self.assertIn(transfer.ALREADY_LEAD, notes)
+        self.assertIn("Same.iso", notes)
+        self.assertIn("Part.iso", notes)
+        self.assertIn("Other.iso", notes)
+        self.assertIn(transfer.OVERWRITE_LEAD, notes)
+        self.assertIn("Again.iso", notes)
+
+    def test_a_queue_the_console_has_nothing_of_is_given_no_notes(self):
+        self.assertEqual(transfer.console_notes([self.item()]), [])
+
+    def test_a_row_ticked_again_after_the_run_stops_saying_copied(self):
+        # Otherwise the column reports the last run while the tick beside it
+        # asks for another, and the two say opposite things.
+        item = self.item(status=transfer.DONE, present="same", wanted=True,
+                         overwrite=True)
+        self.assertIn("copied over again", item.plan_text)
 
 
 # --- free space --------------------------------------------------------------
@@ -1074,6 +1207,150 @@ class TheScreen(ScreenCase):
         self.assertIn("No console address", screen._panel_heading.text())
 
 
+# --- item 10: the game that was copied twice ---------------------------------
+
+class TheGameItAlreadyHas(ScreenCase):
+    """Reported off hardware. Minecraft was copied, then copied again in full.
+
+    The list of what is on the console was read when the screen was entered
+    and at no point after it, so by the time the button was pressed it was
+    describing a console that no longer existed. The row said "It will be
+    copied", the tick was in it, and the confirmation box did not mention the
+    console at all.
+    """
+
+    def console_from(self, writer):
+        """A lister reading the same console the writer is writing to."""
+        self.lister = WriterBackedLister(writer)
+        return lambda host: self.lister
+
+    def test_a_game_that_has_just_been_copied_is_not_offered_again(self):
+        # The fault itself, end to end: copy it, and then find out whether the
+        # screen still invites you to spend the hours a second time.
+        path = self.ps3("Minecraft [BLES01976].iso", 8192)
+        writer = FakeWriter()
+        screen = self.build(writer=writer)
+        screen._lister = self.console_from(writer)
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        self.assertIn("It will be copied", self.rows()[0].text(5))
+        screen._on_go()
+        self.settle(screen)
+        self.assertEqual(len(writer.stores), 1)
+
+        row = self.rows()[0]
+        self.assertEqual(row.checkState(0), Qt.Unchecked)
+        self.assertIn("on the console", row.text(5))
+        self.assertFalse(screen._go.isEnabled())
+        writer.stores.clear()
+        screen._on_go()
+        self.settle(screen)
+        self.assertEqual(writer.stores, [])
+
+    def test_the_console_is_asked_again_when_the_button_is_pressed(self):
+        # A game can arrive between entering the screen and pressing the
+        # button: from the run a minute ago, or from another computer. The
+        # snapshot taken on entry knows nothing about it.
+        path = self.ps3("A Game.iso", 8192)
+        screen = self.build(listings={PS3_DIR: [], PS2_DIR: []})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        self.assertIn("It will be copied", self.rows()[0].text(5))
+
+        size = self.size(path)
+        self.lister.listings[PS3_DIR] = [("A Game.iso", size)]
+        self.writer.files[f"{PS3_DIR}/A Game.iso"] = b"x" * size
+        screen._on_go()
+        self.settle(screen)
+        self.assertEqual(self.writer.stores, [])
+        self.assertIn("already on the console",
+                      screen._panel_heading.text().lower())
+        self.assertIn("A Game.iso", screen._panel_body.text())
+        row = self.rows()[0]
+        self.assertEqual(row.checkState(0), Qt.Unchecked)
+        self.assertIn("Already on the console", row.text(5))
+
+    def test_the_confirmation_names_what_the_console_already_has(self):
+        # It has to be said before the button as well as at the copy, and the
+        # box was the one place it was not said: the file is unticked by then
+        # and the box was built from the ticked ones only.
+        path = self.ps3("A Game.iso", 8192)
+        screen = self.build(
+            listings={PS3_DIR: [("A Game.iso", self.size(path))],
+                      PS2_DIR: []})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path, self.ps3("B Game.iso", 4096)])
+        text = screen.confirm_text(transfer.chosen(screen._items))
+        self.assertIn(transfer.ALREADY_LEAD, text)
+        self.assertIn("A Game.iso", text)
+
+    def test_a_part_copied_file_is_still_offered_and_says_which_it_is(self):
+        # Same name, different size. That is a run that stopped or another
+        # dump of the game, and either way it must still be copyable.
+        path = self.ps3("A Game.iso", 8192)
+        with open(path, "rb") as handle:
+            head = handle.read(3000)
+        writer = FakeWriter(files={f"{PS3_DIR}/A Game.iso": head})
+        screen = self.build(listings={PS3_DIR: [("A Game.iso", 3000)],
+                                      PS2_DIR: []}, writer=writer)
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        row = self.rows()[0]
+        self.assertEqual(row.checkState(0), Qt.Checked)
+        self.assertIn("Part copied already", row.text(5))
+        self.assertIn(transfer.PART_LEAD,
+                      screen.confirm_text(transfer.chosen(screen._items)))
+        screen._on_go()
+        self.settle(screen)
+        self.assertEqual(len(writer.stores), 1)
+        self.assertEqual(writer.stores[0][1], 3000)
+
+    def test_a_console_that_cannot_be_read_again_says_so_in_the_box(self):
+        # The check is not always possible. Saying nothing and copying anyway
+        # is how the hours get spent, so the box says the check was missed and
+        # the run still refuses to send a file that is already there in full.
+        path = self.ps3("A Game.iso", 8192)
+        with open(path, "rb") as handle:
+            whole = handle.read()
+        writer = FakeWriter(files={f"{PS3_DIR}/A Game.iso": whole})
+        screen = self.build(writer=writer)
+        screen.add_files([path])
+        seen = []
+        screen.confirm = lambda queue: (seen.append(screen.confirm_text(queue))
+                                        or True)
+        screen._lister = lambda host: UnreachableLister()
+        screen._on_go()
+        self.settle(screen)
+        self.assertTrue(seen)
+        self.assertIn(transfer_screen.CHECK_FAILED, seen[0])
+        self.assertEqual(writer.stores, [])
+        self.assertIn("Already on the console", screen._panel_body.text())
+
+    def test_ticking_it_again_survives_the_check_the_button_makes(self):
+        # The user was told and ticked it anyway. The new listing on the way
+        # to the copy must not quietly take their decision back off them.
+        path = self.ps3("A Game.iso", 8192)
+        with open(path, "rb") as handle:
+            whole = handle.read()
+        writer = FakeWriter(files={f"{PS3_DIR}/A Game.iso": whole})
+        screen = self.build(
+            listings={PS3_DIR: [("A Game.iso", len(whole))], PS2_DIR: []},
+            writer=writer)
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        self.rows()[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        screen._on_go()
+        self.settle(screen)
+        self.assertEqual(len(writer.stores), 1)
+        self.assertEqual(writer.stores[0][1], 0)
+
+
 # --- the guard ---------------------------------------------------------------
 
 class NothingReachesTheNetwork(ScreenCase):
@@ -1108,6 +1385,32 @@ class NothingReachesTheNetwork(ScreenCase):
                               self.ps2("B & C.iso", 4096),
                               make_transfer.not_an_image(self.folder)])
             screen.start_run()
+            self.settle(screen)
+        self.assertIn(f"{PS3_DIR}/A.iso", self.writer.files)
+        self.assertIn("Finished", screen._panel_heading.text())
+
+    def test_the_button_itself_reaches_nothing_real_either(self):
+        # The button now reads the console before it writes to it, which is a
+        # new place for a real client to be built. It goes through the same
+        # seam as the scan on entry, and this is what proves it.
+        with mock.patch.object(transfer_screen, "FtpWriter",
+                               ExplodingClient), \
+                mock.patch.object(real_ftpwrite, "FtpWriter",
+                                  ExplodingClient), \
+                mock.patch.object(real_transport, "FtpLister",
+                                  ExplodingClient), \
+                mock.patch.object(real_transport, "HttpProbe",
+                                  ExplodingClient), \
+                mock.patch.object(transfer_screen.transport, "FtpLister",
+                                  ExplodingClient), \
+                mock.patch.object(transfer_screen.transport, "HttpProbe",
+                                  ExplodingClient):
+            screen = self.build(listings={PS3_DIR: [("Old.iso", 512)],
+                                          PS2_DIR: []})
+            screen.on_enter()
+            self.settle(screen)
+            screen.add_files([self.ps3("A [BLES01428].iso", 8192)])
+            screen._on_go()
             self.settle(screen)
         self.assertIn(f"{PS3_DIR}/A.iso", self.writer.files)
         self.assertIn("Finished", screen._panel_heading.text())
@@ -1158,6 +1461,56 @@ class WhatTheScreenSays(unittest.TestCase):
         self.assertEqual(transfer_screen.TransferGamesScreen.key, "transfer")
         self.assertEqual(transfer_screen.TransferGamesScreen.order, 60)
         self.assertTrue(transfer_screen.TransferGamesScreen.tile)
+
+
+
+class TickingARowDoesNotDeleteItUnderQt(ScreenCase):
+    """The redraw a tick causes happens after Qt has finished with the item.
+
+    itemChanged is emitted from inside QTreeWidgetItem::setCheckState. The
+    handler used to rebuild the table straight away, and rebuilding clears it,
+    which deletes every item including the one that call is still running on.
+    Qt then carried on against freed memory. It survived for a long time
+    because the block is usually still mapped; under a long test run it
+    stopped surviving and took the whole process down with SIGBUS.
+    """
+
+    def ticked_screen(self):
+        path = self.ps3("A Game.iso", 8192)
+        screen = self.build(listings={PS3_DIR: [], PS2_DIR: []})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        return screen
+
+    def test_the_item_survives_the_call_that_ticked_it(self):
+        screen = self.ticked_screen()
+        row = self.rows()[0]
+        row.setCheckState(0, Qt.Checked)
+        # Reading it is the whole test: a deleted item raises RuntimeError
+        # from shiboken rather than returning its text.
+        self.assertEqual(row.checkState(0), Qt.Checked)
+        self.assertTrue(row.text(0))
+
+    def test_the_table_is_redrawn_once_qt_has_finished(self):
+        screen = self.ticked_screen()
+        self.rows()[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        self.assertIn("copied", self.rows()[0].text(5).lower())
+
+    def test_the_tick_is_recorded_straight_away(self):
+        # Only the redraw is deferred. What the user chose is acted on inside
+        # the handler, so nothing depends on the timer having run.
+        screen = self.ticked_screen()
+        self.rows()[0].setCheckState(0, Qt.Checked)
+        self.assertTrue([item for item in screen._items if item.wanted])
+
+    def test_the_redraw_timer_belongs_to_the_screen(self):
+        # A bare singleShot outliving the widget is a crash on shutdown, and
+        # a crash on shutdown is what this whole area is about.
+        screen = self.ticked_screen()
+        self.assertIs(screen._redraw.parent(), screen)
+        self.assertTrue(screen._redraw.isSingleShot())
 
 
 if __name__ == "__main__":

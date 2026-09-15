@@ -1,18 +1,33 @@
 """The handful of settings that are remembered between runs.
 
-Kept beside the exe, which is what someone who has been handed a single file
-expects: delete the exe and nothing of it is left behind. Program Files is not
-writable by a normal user though, so a failure to write there falls back to the
-usual per-user location rather than losing the setting silently.
+Kept in the user's own application data folder. It used to sit beside the exe,
+on the reasoning that deleting the exe should leave nothing behind, and that
+turned out to cost more than it was worth: a folder the program cannot write
+to, a Downloads folder that gets swept, and an exe moved to a new place all
+lost somebody their saved address and their remembered game lists. A file in
+APPDATA survives all three.
+
+A settings file already beside the exe is moved on the first run that finds
+one, so upgrading keeps everything.
+
+There is one function that says where the file is. Anything working it out for
+itself is how two parts of one program came to disagree about which file they
+were reading.
 """
 
 import json
 import os
+import shutil
 import sys
 
 from . import APP_NAME
 
 FILENAME = f"{APP_NAME}.json"
+
+#: The folder under APPDATA, or under ~/.config away from Windows. Named for
+#: the program the user runs rather than for this package: ps3diag ships
+#: inside PS3 Tools, and two folders for one program is one too many.
+USER_FOLDER = "ps3-tools"
 
 DEFAULTS = {
     "ip": "",
@@ -50,12 +65,53 @@ def user_dir():
     else:
         base = (os.environ.get("XDG_CONFIG_HOME")
                 or os.path.join(os.path.expanduser("~"), ".config"))
-    return os.path.join(base, APP_NAME)
+    return os.path.join(base, USER_FOLDER)
 
 
-def candidate_paths():
-    return [os.path.join(app_dir(), FILENAME),
-            os.path.join(user_dir(), FILENAME)]
+def settings_path(filename=None):
+    """Where settings live. The one answer to that question."""
+    return os.path.join(user_dir(), filename or FILENAME)
+
+
+def legacy_path(filename=None):
+    """Where they used to live, beside the exe."""
+    return os.path.join(app_dir(), filename or FILENAME)
+
+
+def migrate(filename=None):
+    """Move a settings file left beside the exe into the user folder.
+
+    Moved rather than copied, so there is exactly one file afterwards and no
+    chance of a later run reading the stale one. Does nothing when the user
+    folder already has a file: that one is newer by definition, and quietly
+    overwriting somebody's current settings with an old copy is the one
+    outcome here that cannot be undone.
+
+    Never raises. Failing to migrate costs a saved address, and a program that
+    will not start costs everything.
+    """
+    target = settings_path(filename)
+    source = legacy_path(filename)
+    if os.path.abspath(source) == os.path.abspath(target):
+        return None
+    if not os.path.isfile(source) or os.path.exists(target):
+        return None
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.move(source, target)
+        return target
+    except OSError:
+        return None
+
+
+def candidate_paths(filename=None):
+    """Every place a settings file may be, newest first.
+
+    The user folder comes first now. The old location is still read so that an
+    upgrade finds the settings even if the move could not be made, on a
+    read-only folder for instance.
+    """
+    return [settings_path(filename), legacy_path(filename)]
 
 
 def desktop_dir():
@@ -75,6 +131,7 @@ def desktop_dir():
 
 
 def load():
+    migrate()
     settings = dict(DEFAULTS)
     for path in candidate_paths():
         try:

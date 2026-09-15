@@ -56,6 +56,28 @@ from test_updates import (ExplodingWriter, FakeLister,      # noqa: E402
 
 APP = QApplication.instance() or QApplication([])
 
+#: The two title IDs the package fixtures carry. An install here is confirmed
+#: by asking the console about the title afterwards, so a console where
+#: installs land is one that can describe them.
+FIXTURE_TITLES = ("BLES01717", "BLES01807")
+
+
+def title_details(title_id, version="01.00"):
+    """What the console has under /dev_hdd0/game/<title ID> afterwards."""
+    return {f"/dev_hdd0/game/{title_id}/PARAM.SFO":
+            make_packages.param_sfo((("APP_VER", version),
+                                     ("CATEGORY", "GD"),
+                                     ("TITLE", "A Game"),
+                                     ("TITLE_ID", title_id)))}
+
+
+def a_console_that_installs():
+    """Blobs for a console that finishes the installs it is given."""
+    blobs = {}
+    for title_id in FIXTURE_TITLES:
+        blobs.update(title_details(title_id))
+    return blobs
+
 COLOURS = {token: "#%06x" % (0x010203 + index * 0x111111)
            for index, token in enumerate(THEME_TOKENS)}
 
@@ -221,7 +243,7 @@ class ScreenCase(unittest.TestCase):
         return path
 
     def build(self, listings=None, writer=None, actions=None, devices=None,
-              host="127.0.0.1"):
+              host="127.0.0.1", blobs=None):
         connection = ConnectionState(host)
         services = Services(connection, StubTheme(), {})
         self.addCleanup(services.wait)
@@ -229,7 +251,8 @@ class ScreenCase(unittest.TestCase):
 
         self.lister = FakeLister(
             listings=listings if listings is not None
-            else {"/dev_hdd0/packages": ""})
+            else {"/dev_hdd0/packages": ""},
+            blobs=a_console_that_installs() if blobs is None else blobs)
         self.writer = writer if writer is not None else RecordingWriter()
         self.actions = actions if actions is not None else RecordingActions()
         storage = devices if devices is not None else [
@@ -439,17 +462,34 @@ class TheRun(ScreenCase):
         self.assertIn("stay in the console's packages folder",
                       screen._panel_body.text())
 
-    def test_every_file_is_sent_and_then_each_one_is_installed_by_name(self):
-        # One install call per package, naming the package, in the order they
-        # went up. The console queues them behind its own dialog.
+    def test_every_file_is_sent_and_then_installed_one_at_a_time(self):
+        # Everything is uploaded in one go, then installed one at a time with
+        # the user saying when the console has finished each. Firing them in a
+        # row drops some: seven sent back to back installed three.
         screen = self.build()
         screen.add_files([self.write("one.pkg"), self.write("two.pkg")])
         self.settle(screen.start_run(screen.selected_files()))
         self.assertEqual([remote for remote, _body in self.writer.stored],
                          ["/dev_hdd0/packages/one.pkg",
                           "/dev_hdd0/packages/two.pkg"])
-        self.assertEqual(self.actions.calls, 2)
+        self.assertEqual(self.actions.installed, ["one.pkg"])
+        self.assertFalse(screen._next_button.isHidden())
+        self.assertIn("1 left", screen._next_button.text())
+
+        self.settle(screen._on_next_install())
         self.assertEqual(self.actions.installed, ["one.pkg", "two.pkg"])
+        self.assertTrue(screen._next_button.isHidden())
+        self.assertIn("2 packages installed", screen._panel_heading.text())
+
+    def test_the_queue_can_be_turned_back_on_by_a_setting(self):
+        # Kept so the batch can come back without a code change once the
+        # console's install timing is understood.
+        screen = self.build()
+        updates.set_queue_installs(screen.services.settings, True)
+        screen.add_files([self.write("one.pkg"), self.write("two.pkg")])
+        self.settle(screen.start_run(screen.selected_files()))
+        self.assertEqual(self.actions.installed, ["one.pkg", "two.pkg"])
+        self.assertTrue(screen._next_button.isHidden())
 
     def test_only_what_was_uploaded_is_ever_installed(self):
         # The folder may hold packages the user put there themselves. Those
@@ -576,10 +616,11 @@ class WhatIsAlreadyOnTheConsole(ScreenCase):
     and that has to work after this program or the console has been restarted.
     """
 
-    def build_with(self, names, installed=None, heads=None):
+    def build_with(self, names, installed=None, heads=None, blobs=None):
         screen = self.build(
             listings={"/dev_hdd0/packages": files(*names),
-                      "/dev_hdd0/game": folders(*(installed or []))})
+                      "/dev_hdd0/game": folders(*(installed or []))},
+            blobs=blobs)
         heads = heads or {}
         real = self.lister.download_bytes
 
@@ -641,6 +682,101 @@ class WhatIsAlreadyOnTheConsole(ScreenCase):
         after = len([path for path in self.lister.asked
                      if path.startswith("/dev_hdd0/packages")])
         self.assertGreater(after, asked)
+
+    def test_the_console_is_asked_about_the_title_after_a_package_goes(self):
+        # A file somebody chose themselves carries no version Sony published,
+        # so there is nothing to compare. What is asked instead is whether the
+        # console can describe the title afterwards, and the point of this
+        # test is that it is asked at all: the version check on the other card
+        # shipped once in a state where it never ran and its tests all passed.
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        self.actions.on_install = lambda name: self.lister.listings.update(
+            {"/dev_hdd0/packages": ""})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        asked = []
+        real = self.lister.download_bytes
+
+        def watched(path, max_bytes=None):
+            asked.append(path)
+            return real(path, max_bytes)
+
+        self.lister.download_bytes = watched
+        self.settle(screen._on_install_here())
+        self.assertIn("/dev_hdd0/game/BLES01807/PARAM.SFO", asked)
+
+    def test_a_title_the_console_cannot_describe_is_not_called_installed(self):
+        # The package has gone from the folder and the console says nothing
+        # about the title. Plenty of packages add to a game that is already
+        # there and leave no folder of their own, so this is not reported as a
+        # failure either. It is reported as what it is: unchecked.
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")},
+            blobs={})
+        self.actions.on_install = lambda name: self.lister.listings.update(
+            {"/dev_hdd0/packages": ""})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        self.settle(screen._on_install_here())
+        self.assertIn("could not be confirmed", screen._panel_heading.text())
+        self.assertIn(updates.STATE_UNCONFIRMED, screen._queue.text())
+        self.assertNotIn(updates.STATE_FAILED, screen._queue.text())
+
+    def test_a_package_the_console_deletes_is_reported_as_installed(self):
+        # The console deletes the package from its packages folder when the
+        # install finishes. That is the signal the queue waits for, measured
+        # twice on hardware with a 39 MB update.
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        self.actions.on_install = lambda name: self.lister.listings.update(
+            {"/dev_hdd0/packages": ""})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        self.settle(screen._on_install_here())
+        self.assertIn("Installed", screen._panel_heading.text())
+        self.assertIn(updates.STATE_INSTALLED, screen._queue.text())
+
+    def test_a_package_the_console_never_finishes_with_stays_listed(self):
+        # The file is still in the folder when the wait runs out, so nothing
+        # here knows the install finished. It is reported as not confirmed
+        # and it stays in the list saying so, where it can be read after the
+        # run rather than disappearing.
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        self.settle(screen._on_install_here())
+        listed = screen._queue.text()
+        self.assertIn("EP0002-BLES01807_00-GTAV.pkg", listed)
+        self.assertIn(updates.STATE_UNCONFIRMED, listed)
+        # Not "did not install": nothing here knows that. The console was
+        # still holding the package when the wait ran out, and it may be
+        # installing it still.
+        self.assertIn("could not be confirmed", screen._panel_heading.text())
+
+    def test_the_stage_line_says_the_seconds_spent_and_the_seconds_given(self):
+        # There is no bar and no percentage for the install: the console
+        # reports nothing between being asked and deleting the package.
+        screen = self.build()
+        screen._start_queue([("a.pkg", "a.pkg")])
+        screen._on_progress(("waiting", "a.pkg", 14.0, 108.0, "BLES01807"))
+        self.assertIn("14 seconds so far", screen._stage.text())
+        self.assertIn("108", screen._stage.text())
+        self.assertIn("installing, 14 seconds of 108", screen._queue.text())
+
+    def test_every_stage_of_the_run_reaches_the_list(self):
+        screen = self.build()
+        screen._start_queue([("a.pkg", "a.pkg")])
+        self.assertIn("waiting to start", screen._queue.text())
+        for stage, first, second in (("upload", 1, 2), ("installing", 1, 1),
+                                     ("checking", 1, 1)):
+            screen._on_progress((stage, "a.pkg", first, second, ""))
+            self.assertIn(updates.INSTALL_STAGES[stage], screen._queue.text())
 
     def test_the_screen_says_one_failure_does_not_stop_the_rest(self):
         screen = self.build()

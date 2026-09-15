@@ -355,15 +355,20 @@ QPushButton[flat="true"]:hover {
 }
 QPushButton[flat="true"]:disabled { color: %(text_dim)s; }
 
+/* A bar, deliberately. The work being measured here is a download, a copy or
+   a run of files, and all three have a real proportion done: a spinner would
+   throw that away and say only "still going". Three pixels was too fine to
+   read across a window this wide, so it is now the height of a line of text
+   with the rounding to match. */
 QProgressBar {
     background: %(surface_alt)s;
     border: 0;
-    border-radius: 2px;
-    max-height: 3px;
-    min-height: 3px;
+    border-radius: 4px;
+    max-height: 8px;
+    min-height: 8px;
     text-align: center;
 }
-QProgressBar::chunk { background: %(accent)s; border-radius: 2px; }
+QProgressBar::chunk { background: %(accent)s; border-radius: 4px; }
 
 /* Popup menus are separate top level windows, so every colour they use is
    named here rather than left to whatever the desktop would have painted. */

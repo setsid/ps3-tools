@@ -29,7 +29,8 @@ from PySide6.QtCore import (QByteArray, QEasingCurve, QParallelAnimationGroup,
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
                            QFont, QGuiApplication, QIcon, QImage, QPainter,
                            QPainterPath, QPen, QPixmap)
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame,
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame, QInputDialog,
+                               QMessageBox,
                                QGraphicsBlurEffect, QGraphicsOpacityEffect,
                                QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem,
@@ -37,6 +38,7 @@ from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame,
                                QVBoxLayout, QWidget)
 
 from ps3diag import config, discovery
+from .. import profiles
 from ps3diag.parsers import SIGNATURE_THRESHOLD, looks_like_webman, \
     webman_score
 from ps3diag.transport import HttpProbe, tcp_open
@@ -134,11 +136,18 @@ SETTINGS_FILE = "ps3-tools.json"
 
 
 def settings_paths():
-    return [os.path.join(config.app_dir(), SETTINGS_FILE),
-            os.path.join(config.user_dir(), SETTINGS_FILE)]
+    """Where the shell's settings may be. config decides, not this module.
+
+    It used to look beside the exe first. See ps3diag.config: that cost people
+    their saved address whenever the exe moved or sat somewhere unwritable.
+    """
+    return config.candidate_paths(SETTINGS_FILE)
 
 
 def load_settings():
+    # Moves a file left beside the exe by an older version, so an upgrade
+    # keeps the saved address and the remembered game lists.
+    config.migrate(SETTINGS_FILE)
     for path in settings_paths():
         try:
             with open(path, encoding="utf-8") as handle:
@@ -941,6 +950,22 @@ class ConnectionBar(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(10)
 
+        # Which console this is. Only shown once there is more than one, so
+        # somebody with a single PS3 never has to think about profiles at all.
+        self._console_button = QPushButton(self)
+        self._console_button.setObjectName("consoleButton")
+        self._console_button.setProperty("flat", True)
+        self._console_button.setToolTip("Switch between your consoles, or "
+                                        "give this one a name.")
+        self._console_menu = QMenu(self._console_button)
+        self._console_button.setMenu(self._console_menu)
+        self._console_menu.aboutToShow.connect(self._fill_console_menu)
+        self._console_button.clicked.connect(self._console_pressed)
+        # Hidden until it has something to say. Painted here rather than left
+        # to the first address change, or it shows blank on the way up.
+        self._console_button.hide()
+        row.addWidget(self._console_button)
+
         label = QLabel("PlayStation 3 address", self)
         row.addWidget(label)
 
@@ -1327,6 +1352,9 @@ class ConnectionBar(QWidget):
             self.check()
 
     def _refresh(self):
+        # A console that has just answered can be saved, so the control that
+        # saves it appears now rather than on the next address change.
+        self._paint_console_button()
         state = self._connection.connection
         word, token = CONNECTION_WORDS.get(state, ("Not checked", "text_dim"))
         colour = self._theme.colour(token)
@@ -1389,6 +1417,155 @@ class ConnectionBar(QWidget):
 
     def set_address(self, host):
         self._address.setText(host)
+        # A saved console answering on a new address is still that console,
+        # so the profile follows it. An address nobody has saved creates
+        # nothing: that is what the Save button is for.
+        settings = getattr(self.services, "settings", None)
+        if settings is not None and host:
+            key = profiles.current_id(settings)
+            if key and not profiles.for_host(settings, host):
+                profiles.set_host(settings, key, host)
+        self._paint_console_button()
+
+    # -- which console
+
+    def _paint_console_button(self):
+        """Name the console, or offer to save it.
+
+        Shown as soon as a console answers. It used to appear only once there
+        were two, which left no way to make the second: the menu that adds one
+        was behind a button that needed one to exist.
+        """
+        settings = getattr(self.services, "settings", None)
+        if settings is None:
+            self._console_button.hide()
+            return
+        host = self._connection.host
+        connected = self._connection.connection == "connected"
+        known = profiles.all_profiles(settings)
+        saved = profiles.named_id(settings, host) if host else ""
+        self._console_button.setVisible(bool(connected or len(known) > 1))
+        if saved:
+            self._console_button.setText(known[saved]["name"])
+            self._console_button.setMenu(self._console_menu)
+            self._console_button.setToolTip(
+                "Switch between your consoles, rename this one, or forget it.")
+        else:
+            # No menu while there is nothing to choose between: the press
+            # saves rather than opening a list of one thing.
+            self._console_button.setText("Save this console")
+            self._console_button.setMenu(None)
+            self._console_button.setToolTip(
+                "Give this PS3 a name so it is remembered separately from "
+                "any other.")
+
+    def _console_pressed(self):
+        """Save this console, when it is not one yet. The menu handles the
+        rest, and a button with a menu does not reach here at all."""
+        settings = getattr(self.services, "settings", None)
+        host = self._connection.host
+        if settings is None or not host or profiles.named_id(settings, host):
+            return
+        name, taken = QInputDialog.getText(
+            self, "Save this console", "What do you call this PS3?",
+            text=profiles.DEFAULT_NAME)
+        if not taken:
+            return
+        # It may already have an unnamed profile holding what was remembered
+        # about it. Naming that one keeps the remembered list.
+        key = profiles.for_host(settings, host)
+        if key:
+            profiles.rename(settings, key, name)
+            profiles.select(settings, key)
+        else:
+            profiles.add(settings, host=host, name=name)
+        self._paint_console_button()
+
+    def _fill_console_menu(self):
+        settings = getattr(self.services, "settings", None)
+        menu = self._console_menu
+        menu.clear()
+        if settings is None:
+            return
+        here = profiles.current_id(settings)
+        for key, profile in profiles.all_profiles(settings).items():
+            label = profile["name"]
+            if profile["host"]:
+                label = f"{label}  ({profile['host']})"
+            action = QAction(label, menu)
+            action.setCheckable(True)
+            action.setChecked(key == here)
+            action.triggered.connect(
+                lambda _checked=False, chosen=key: self._switch_console(chosen))
+            menu.addAction(action)
+        menu.addSeparator()
+        rename = QAction("Rename this console...", menu)
+        rename.triggered.connect(self._rename_console)
+        menu.addAction(rename)
+        another = QAction("Add another console...", menu)
+        another.triggered.connect(self._add_console)
+        menu.addAction(another)
+        forget = QAction("Forget this console", menu)
+        forget.triggered.connect(self._forget_console)
+        menu.addAction(forget)
+
+    def _forget_console(self):
+        """Remove this console and everything remembered about it."""
+        settings = getattr(self.services, "settings", None)
+        if settings is None:
+            return
+        key = profiles.current_id(settings)
+        current = profiles.all_profiles(settings).get(key)
+        if not current:
+            return
+        answer = QMessageBox.question(
+            self, "Forget this console",
+            f"Forget {current['name']}?\n\nIts saved address and the list "
+            f"of games this program last found on it are removed from this "
+            f"computer. Nothing on the console itself is changed.",
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if answer != QMessageBox.Yes:
+            return
+        profiles.forget(settings, key)
+        host = str(settings.get(profiles.HOST_KEY) or "")
+        self._connection.set_host(host)
+        self._address.setText(host)
+        self._paint_console_button()
+
+    def _switch_console(self, key):
+        settings = getattr(self.services, "settings", None)
+        if settings is None:
+            return
+        host = profiles.select(settings, key)
+        self._connection.set_host(host)
+        self._address.setText(host)
+        self._paint_console_button()
+
+    def _rename_console(self):
+        settings = getattr(self.services, "settings", None)
+        if settings is None:
+            return
+        key = profiles.ensure(settings, host=self._connection.host)
+        current = profiles.all_profiles(settings).get(key, {})
+        name, taken = QInputDialog.getText(
+            self, "Name this console", "What do you call this PS3?",
+            text=current.get("name", ""))
+        if taken:
+            profiles.rename(settings, key, name)
+            self._paint_console_button()
+
+    def _add_console(self):
+        settings = getattr(self.services, "settings", None)
+        if settings is None:
+            return
+        name, taken = QInputDialog.getText(
+            self, "Add a console", "What do you call it?")
+        if not taken:
+            return
+        profiles.add(settings, host="", name=name)
+        self._connection.set_host("")
+        self._address.setText("")
+        self._paint_console_button()
 
 
 # --- navigation ------------------------------------------------------------
@@ -2010,6 +2187,35 @@ class MainWindow(QMainWindow):
         self.store_settings()
         super().closeEvent(event)
 
+    def start_launch(self):
+        """Everything that happens once, at the start, in a settled order.
+
+        The order is the point. These used to be two singleShot calls with no
+        relationship to each other, and the result depended on which finished
+        first: on a fresh install the update check was announced to a window
+        with a modal over it and the news was never seen.
+
+        1. A console that is already known is connected to straight away, so
+           the window is usable by the time somebody looks at it.
+        2. A console that is not known is asked for, first thing, before
+           anything else can take the foreground.
+        3. The update check runs either way, and whatever it finds is shown
+           when there is a window to show it on.
+        """
+        host = self.connection.host if self.connection else ""
+        dialog = None
+        if host:
+            self.connection_bar.check()
+        else:
+            dialog = self.offer_to_find_console()
+        if dialog is not None:
+            # The news may arrive while this is up, over a blurred window.
+            # Say it again when the window comes back.
+            dialog.finished.connect(
+                lambda _result: self.update_banner.reassert())
+        self.update_banner.start_check()
+        return dialog
+
     def _drain_workers(self):
         """Wait for the worker pool, but never hold the window open on it.
 
@@ -2099,11 +2305,8 @@ def main(argv=None):
 
     window = build(application)
     window.show()
-    # After the window is up, and only from the real entry point. build() is
-    # left free of it so that anything constructing a window for another
-    # reason -- a test, a screenshot -- asks nobody anything.
-    QTimer.singleShot(0, window.update_banner.start_check)
-    # Same rule as the update check: only from the real entry point, so
-    # nothing that builds a window for its own reasons is asked anything.
-    QTimer.singleShot(0, window.offer_to_find_console)
+    # Only from the real entry point. build() is left free of it so that
+    # anything constructing a window for another reason -- a test, a
+    # screenshot -- asks nobody anything and reaches no network.
+    QTimer.singleShot(0, window.start_launch)
     return application.exec()

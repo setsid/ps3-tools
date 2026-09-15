@@ -1632,5 +1632,75 @@ class TheThemeButton(ShellCase):
         self.assertIn("image: none", css)
 
 
+
+class SavingAConsole(ShellCase):
+    """The control that names a console, and how it is reached.
+
+    It used to appear only once there were two consoles, which left no way to
+    make the second: the menu that adds one was behind a button that needed
+    one to exist.
+    """
+
+    def bar(self):
+        return self.window.connection_bar
+
+    def connect_to(self, host="192.168.50.95"):
+        self.connection.set_host(host)
+        self.connection.set_connection("connected", "webMAN 1.47.48q")
+        application.processEvents()
+        return self.bar()._console_button
+
+    def test_nothing_is_offered_before_a_console_answers(self):
+        self.assertTrue(self.bar()._console_button.isHidden())
+
+    def test_a_console_that_answers_can_be_saved(self):
+        button = self.connect_to()
+        self.assertFalse(button.isHidden())
+        self.assertEqual(button.text(), "Save this console")
+        # No menu while there is nothing to choose between: the press saves.
+        self.assertIsNone(button.menu())
+
+    def test_saving_it_gives_it_the_name_and_a_menu(self):
+        from ps3tools import profiles
+        button = self.connect_to()
+        profiles.add(self.settings, host="192.168.50.95", name="Living room")
+        self.bar()._paint_console_button()
+        self.assertEqual(button.text(), "Living room")
+        self.assertIsNotNone(button.menu())
+
+    def test_naming_it_keeps_what_was_already_remembered(self):
+        # A profile is made as soon as there is state to keep. Saving must
+        # name that one rather than starting a second and orphaning the list.
+        from ps3tools import profiles, updates
+        self.connect_to()
+        updates.remember_scan(self.settings, "192.168.50.95",
+                              [updates.TitleUpdate(title_id="BLES01717",
+                                                   name="BO2")])
+        key = profiles.for_host(self.settings, "192.168.50.95")
+        profiles.rename(self.settings, key, "Living room")
+        self.assertTrue(profiles.is_saved(self.settings, "192.168.50.95"))
+        self.assertIsNotNone(
+            updates.remembered_scan(self.settings, "192.168.50.95"))
+
+    def test_a_profile_on_its_own_is_not_a_saved_console(self):
+        from ps3tools import profiles, updates
+        self.connect_to()
+        updates.remember_scan(self.settings, "192.168.50.95", [])
+        self.assertFalse(profiles.is_saved(self.settings, "192.168.50.95"))
+        self.assertEqual(self.bar()._console_button.text(),
+                         "Save this console")
+
+    def test_forgetting_a_console_takes_its_address_and_games(self):
+        from ps3tools import profiles, updates
+        self.connect_to()
+        updates.remember_scan(self.settings, "192.168.50.95", [])
+        key = profiles.for_host(self.settings, "192.168.50.95")
+        profiles.rename(self.settings, key, "Living room")
+        self.assertTrue(profiles.forget(self.settings, key))
+        self.assertEqual(profiles.all_profiles(self.settings), {})
+        self.assertIsNone(
+            updates.remembered_scan(self.settings, "192.168.50.95"))
+
+
 if __name__ == "__main__":
     unittest.main()

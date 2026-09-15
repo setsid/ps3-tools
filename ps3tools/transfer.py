@@ -305,9 +305,13 @@ class QueueItem:
         # Once a run has been through it, the column says what happened rather
         # than what was going to happen. A table still describing its plan
         # after the event is how somebody comes away believing a file copied.
-        if self.status == DONE:
-            return "Copied"
-        if self.status == ALREADY:
+        # The two "it is on the console" outcomes give way to a fresh tick,
+        # because a tick put in after the run is a decision about the next one
+        # and a column still reading "Copied" would hide it.
+        again = self.wanted and self.overwrite
+        if self.status == DONE and not again:
+            return "Copied, and it is on the console now"
+        if self.status == ALREADY and not again:
             return "Already on the console; not copied again"
         if self.status == PARTIAL:
             return (f"Part copied ({parsers.human_size(self.resume_from)} of "
@@ -472,14 +476,27 @@ def match_console(items, listings):
         item.present_bytes = 0
         if not item.identified:
             item.wanted = False
+            item.overwrite = False
             continue
         found = listings.get(item.destination, {}).get(item.name.lower())
         if found is None:
             item.wanted = True
+            # Permission to write over the top was given about the file that
+            # was on the console at the time. The console has nothing under
+            # this name now, so that permission has stopped meaning anything,
+            # and leaving it set would disarm the last check in plan() if an
+            # identical file turned up under the name before the copy.
+            item.overwrite = False
             continue
         item.present_bytes = found
         if found == item.size:
             item.present = "same"
+            if item.wanted and item.overwrite:
+                # Already told, already ticked, and nothing has changed about
+                # what is there. Reading the console again must not quietly
+                # undo a decision the user made looking at the row that said
+                # the file was already on it.
+                continue
             # Shown, marked, and left to the user. Unticked is a proposal, not
             # a decision: ticking it again copies over the top.
             item.wanted = False
@@ -487,9 +504,102 @@ def match_console(items, listings):
         elif found < item.size:
             item.present = "shorter"
             item.wanted = True
+            item.overwrite = False
         else:
             item.present = "different"
             item.wanted = True
+            item.overwrite = False
+    return items
+
+
+#: The leads for the four things the console can already have to say about a
+#: queued file. They live here so that the table, the confirmation box and the
+#: panel afterwards all say it in the same words; the fault being fixed was in
+#: part that the confirmation said nothing at all.
+ALREADY_LEAD = ("These are already on the console. The name and the size both "
+                "match what is there, so they will not be copied again:")
+
+PART_LEAD = ("These are part copied on the console already. Each one carries "
+             "on from where it stopped:")
+
+DIFFERENT_LEAD = ("The console already has a different file under each of "
+                  "these names. Each one is copied under a name of its own so "
+                  "that what is already there is left alone:")
+
+OVERWRITE_LEAD = ("These are already on the console and you have ticked them, "
+                  "so they will be copied over the top:")
+
+
+def already_on_console(items):
+    """The ones the console holds in full that are not going to be sent."""
+    return [item for item in items
+            if item.identified and item.present == "same"
+            and not (item.wanted and item.overwrite)]
+
+
+def part_on_console(items):
+    """The ones the console holds part of, which carry on from there."""
+    return [item for item in items
+            if item.identified and item.present == "shorter"]
+
+
+def clashing_on_console(items):
+    """The ones whose name on the console is taken by a different file."""
+    return [item for item in items
+            if item.identified and item.present == "different"]
+
+
+def overwriting(items):
+    """The ones the console holds in full that the user has ticked anyway."""
+    return [item for item in items
+            if item.identified and item.present == "same"
+            and item.wanted and item.overwrite]
+
+
+def console_notes(items):
+    """Lines saying what the console already holds. Empty when it holds none.
+
+    A queue that has never been checked against the console produces nothing
+    here, which is a different thing from a queue that was checked and found
+    clear. The caller that asked for the check is the one that knows which it
+    has, so this does not guess on its behalf.
+    """
+    lines = []
+    for lead, group in ((ALREADY_LEAD, already_on_console(items)),
+                        (PART_LEAD, part_on_console(items)),
+                        (DIFFERENT_LEAD, clashing_on_console(items)),
+                        (OVERWRITE_LEAD, overwriting(items))):
+        if not group:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(lead)
+        lines += [f"    {item.name}" for item in group]
+    return lines
+
+
+def settle_after_run(items):
+    """Bring "what the console has" up to date with the run that just ended.
+
+    This is the fault that was reported. A game that had just finished copying
+    kept its tick, the button went live again the moment the run ended, and
+    pressing it started the whole file a second time; the list of what is on
+    the console was only read when the screen was entered, so it still said
+    the game was not there. The run has since listed the folder and proved
+    otherwise, and that is what the queue is set to say.
+    """
+    for item in items:
+        if item.status in (DONE, ALREADY):
+            item.present = "same"
+            item.present_bytes = item.size
+            item.wanted = False
+            item.overwrite = False
+        elif item.status == PARTIAL and item.resume_from:
+            # What a stopped run left behind is a short file under the right
+            # name, and the next run should be offered as carrying on from it.
+            item.present = "shorter"
+            item.present_bytes = item.resume_from
+            item.overwrite = False
     return items
 
 

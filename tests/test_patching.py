@@ -26,7 +26,9 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
+import unittest.mock as mock
 
 from support import ROOT  # noqa: F401  (puts the project on sys.path)
 
@@ -1156,6 +1158,98 @@ class TheStateTheScreenReports(ScreenCase):
         self.assertEqual(screen._files.topLevelItemCount(), 2)
         self.assertTrue(screen._patch.isEnabled())
         self.assertEqual(self.server.written, {})
+
+
+
+class ReconnectingCostsNothingWhenNobodyIsInAHurry(unittest.TestCase):
+    """The pause before a reconnect is for one cause and should cost only it.
+
+    webMANftpd hangs up when it has had several data connections in quick
+    succession, and a fresh one opened microseconds later meets it in the same
+    state. That is what the pause is for. A connection that sat unused through
+    a several hundred megabyte download died of the server's idle timeout
+    instead, and waiting there added seconds to the start of every upload that
+    followed a download.
+    """
+
+    def writer_that_drops_once(self, last_ok_ago):
+        from ps3tools.patching import ftpwrite
+        slept = []
+        attempts = []
+
+        # The counter lives outside the class: reconnecting builds a fresh
+        # connection through the factory, so per-instance state would reset
+        # and the retry would fail the same way for ever.
+        class Flaky:
+            sock = None
+
+            def getwelcome(inner):
+                return "220 webMANftpd 1.47.48q MOD [NTFS:0]"
+
+            def voidcmd(inner, command):
+                attempts.append(command)
+                if len(attempts) == 1:
+                    raise ftplib.error_temp("421 goodbye")
+                return "200 ok"
+
+            def quit(inner):
+                raise ftplib.error_temp("421 already gone")
+
+            def close(inner):
+                pass
+
+        writer = ftpwrite.FtpWriter("127.0.0.1", factory=Flaky)
+        writer._last_ok = (None if last_ok_ago is None
+                           else time.monotonic() - last_ok_ago)
+        with mock.patch.object(ftpwrite.time, "sleep", slept.append):
+            writer._command(lambda ftp: ftp.voidcmd("NOOP"))
+        return slept, attempts
+
+    def test_a_drop_moments_after_working_waits_before_retrying(self):
+        slept, attempts = self.writer_that_drops_once(last_ok_ago=1.0)
+        self.assertEqual(slept, [ftpwrite_pause()])
+        self.assertEqual(len(attempts), 2)
+
+    def test_a_drop_long_after_working_retries_straight_away(self):
+        # The console let go because nothing was happening. There is nothing
+        # to wait for, and waiting is what made every upload start slowly.
+        slept, attempts = self.writer_that_drops_once(last_ok_ago=600.0)
+        self.assertEqual(slept, [])
+        self.assertEqual(len(attempts), 2)
+
+    def test_a_first_command_that_drops_does_not_wait(self):
+        slept, _attempts = self.writer_that_drops_once(last_ok_ago=None)
+        self.assertEqual(slept, [])
+
+    def test_a_command_that_works_is_not_delayed_at_all(self):
+        from ps3tools.patching import ftpwrite
+        slept = []
+
+        class Fine:
+            sock = None
+
+            def getwelcome(inner):
+                return "220 webMANftpd 1.47.48q MOD [NTFS:0]"
+
+            def voidcmd(inner, command):
+                return "200 ok"
+
+            def quit(inner):
+                return "221 bye"
+
+            def close(inner):
+                pass
+
+        writer = ftpwrite.FtpWriter("127.0.0.1", factory=Fine)
+        with mock.patch.object(ftpwrite.time, "sleep", slept.append):
+            writer._command(lambda ftp: ftp.voidcmd("NOOP"))
+        self.assertEqual(slept, [])
+        self.assertIsNotNone(writer._last_ok)
+
+
+def ftpwrite_pause():
+    from ps3tools.patching import ftpwrite
+    return ftpwrite.RECONNECT_PAUSE
 
 
 if __name__ == "__main__":

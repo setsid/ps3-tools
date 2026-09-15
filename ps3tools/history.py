@@ -29,6 +29,32 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.2.1",
+        date="2026-09-15",
+        summary="Fixes and a tidier Game updates screen.",
+        changes=(
+            "The quick check no longer says it cannot tell what is installed "
+            "for a game that simply has no update installed.",
+            "One button for checking, with a tick box for checking "
+            "everything instead of only what was behind.",
+            "Tick or untick every game that has an update, in one go.",
+            "Settings and remembered game lists are kept in your user folder "
+            "rather than beside the program, and are moved there the first "
+            "time this version runs.",
+            "Consoles can be given names, so two PS3s on one network keep "
+            "their own saved address and their own remembered games.",
+            "A saved address is connected to when the program opens.",
+            "Transferring a game the console already has is recognised and "
+            "said, rather than copying the whole thing again.",
+            "Installs are followed through on the console: each package is "
+            "waited for, checked afterwards, and reported as installed only "
+            "where that check answered.",
+            "Bigger packages are given longer to install, and running out of "
+            "time says the console may still be installing rather than "
+            "reporting a failure.",
+        ),
+    ),
+    Release(
         version="1.2.0",
         date="2026-09-15",
         summary="Packages now tell you the truth about installing, and the "

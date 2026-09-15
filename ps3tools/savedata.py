@@ -171,10 +171,6 @@ class SaveFolder:
     #: shown the same way: an empty list on a folder nobody has opened would
     #: read as "this save is empty" on the row.
     listed: bool = False
-    #: The size the parent listing gave for the folder, where it gave one. The
-    #: PS3 reports 0 for every directory, so this is normally 0 and the size is
-    #: simply not known until the folder is read.
-    listed_size: int = 0
     #: Present when the folder could not be read. The folder is still listed,
     #: because a save the user cannot see is a save they will assume was taken.
     note: str = None
@@ -205,14 +201,18 @@ class SaveFolder:
         total_bytes is 0 either way, so a caller that shows a size has to ask
         this first or it will print "0 bytes" for a save it has never looked
         inside.
+
+        The size the parent listing gives for a save folder is the directory
+        entry rather than what is inside it. One console reported 512 for
+        every one of them, and every row on the screen said 512 bytes. A
+        directory's own entry is not a measurement of its contents on any
+        console, so it is not read as one here.
         """
-        return self.listed or self.listed_size > 0
+        return self.listed
 
     @property
     def total_bytes(self):
-        if self.listed:
-            return sum(item.size for item in self.files)
-        return self.listed_size
+        return sum(item.size for item in self.files) if self.listed else 0
 
 
 @dataclass
@@ -364,7 +364,7 @@ def name_for(title_id, inventory=None):
     return (inventory or {}).get(title_id.upper())
 
 
-def describe_folder(user_id, folder, inventory=None, listed_size=0):
+def describe_folder(user_id, folder, inventory=None):
     """A SaveFolder with its identity filled in and no files read yet."""
     title_id = find_title_id(folder)
     info = describe_name(folder)
@@ -376,7 +376,6 @@ def describe_folder(user_id, folder, inventory=None, listed_size=0):
         game_name=name_for(title_id, inventory),
         region=info.get("region"),
         platform=info.get("platform"),
-        listed_size=int(listed_size or 0),
     )
 
 
@@ -480,12 +479,9 @@ def _walk_user(lister, report, user):
                        f"savedata listing were in a format this tool does not "
                        f"recognise and were skipped, so a save may have been "
                        f"missed.")
-    sizes = {}
-    for entry in entries:
-        name = entry.get("name", "")
-        if entry.get("kind") == "directory" and name not in (".", ".."):
-            sizes[name] = int(entry.get("size") or 0)
-    folders = sorted(sizes)
+    folders = sorted({entry.get("name", "") for entry in entries
+                      if entry.get("kind") == "directory"
+                      and entry.get("name", "") not in (".", "..")})
     if len(folders) > MAX_SAVES_PER_USER:
         report.problem(f"User {user.user_id} has {len(folders)} save folders, "
                        f"which is more than expected. Only the first "
@@ -494,7 +490,7 @@ def _walk_user(lister, report, user):
 
     for folder in folders:
         user.saves.append(describe_folder(user.user_id, folder,
-                                          report.inventory, sizes[folder]))
+                                          report.inventory))
 
     if not user.saves and user.note is None:
         user.note = ("This user's savedata folder is empty, so they have no "

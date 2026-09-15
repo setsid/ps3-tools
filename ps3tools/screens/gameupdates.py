@@ -24,6 +24,8 @@ screen says so in the words it uses afterwards: the console was asked, and
 being asked is all this program can honestly claim.
 """
 
+import html
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog, QFrame,
@@ -40,6 +42,27 @@ from ps3tools.shell.registry import register
 from ps3tools.shell.screen import Screen
 
 COLUMNS = ["Game", "Title ID", "Installed", "Newest", "Size", ""]
+
+#: The header over the summary block while there is nothing to count.
+DETAIL_SUMMARY = "What this scan found"
+
+
+def _detail_summary(counts):
+    """One line saying what is inside the block, so it can be left closed.
+
+    Numbers rather than a word like "details": the question somebody has is
+    whether anything in there needs them, and 2 unread answers it.
+    """
+    if not counts or not counts.get("opened"):
+        return DETAIL_SUMMARY
+    opened = counts.get("opened", 0)
+    parts = [f"{opened} disc image{'' if opened == 1 else 's'} checked"]
+    for key, word in (("added", "added"), ("unreadable", "with no game in"),
+                      ("unread", "unread")):
+        if counts.get(key):
+            parts.append(f"{counts[key]} {word}")
+    return ", ".join(parts)
+
 
 NO_HOST = (
     "Type the console's address into the box at the top of this window, or "
@@ -226,6 +249,10 @@ class GameUpdatesScreen(Screen):
         #: One line per package in the run, for the list under the table.
         #: [key, what it is called, what it is doing].
         self._queue_rows = []
+        #: What the last image pass counted, for the header over the summary.
+        self._image_counts = None
+        #: Where the last scan spent its time, measured. See updates.ScanMeter.
+        self._timing = ""
         self._build()
         if self.theme is not None:
             try:
@@ -298,9 +325,9 @@ class GameUpdatesScreen(Screen):
         self._table.itemChanged.connect(self._on_tick)
         layout.addWidget(self._table, 1)
 
-        self._detail = QLabel("")
-        self._detail.setWordWrap(True)
-        self._detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # Behind an arrow and closed to start with. It runs to a paragraph a
+        # game on a full console and pushed everything else off the screen.
+        self._detail = widgets.Disclosure(DETAIL_SUMMARY)
         layout.addWidget(self._detail)
 
         # One line per package, saying which stage it is in. It stays on
@@ -628,6 +655,7 @@ class GameUpdatesScreen(Screen):
         fetcher = self._fetcher()
         read_images = bool(read_images)
         wanted = list(only or [])
+        settings = self._settings()
 
         def work(control):
             stage = lambda text: control.progress(("stage", text))
@@ -643,16 +671,23 @@ class GameUpdatesScreen(Screen):
                 return rows, [], folder, [], {"looked_at": wanted}
             devices = _device_names(read_storage, host)
             with open_lister(host) as lister:
-                identifier = (updates.parallel_image_identifier(
-                    lambda: open_lister(host),
-                    on_progress=lambda done, total, name: control.progress(
-                        ("image", done, total, name)))
+                # An image already identified is not opened again. The title
+                # ID is inside the file and cannot change, and opening one is
+                # most of what makes a full scan take minutes.
+                meter = updates.ScanMeter()
+                identifier = (updates.cached_image_identifier(
+                    updates.parallel_image_identifier(
+                        lambda: open_lister(host),
+                        on_progress=lambda done, total, name:
+                            control.progress(("image", done, total, name)),
+                        meter=meter),
+                    settings)
                     if read_images else None)
                 verdict = {}
                 installed, notes, unnamed = updates.scan_console(
                     lister, devices=devices, image_identifier=identifier,
                     on_stage=lambda text: control.progress(("stage", text)),
-                    verdict=verdict)
+                    verdict=verdict, meter=meter)
                 folder = updates.inspect_packages_folder(lister)
             control.progress(("scanned", len(installed)))
             rows = updates.check_titles(
@@ -670,7 +705,9 @@ class GameUpdatesScreen(Screen):
             if read_images and not unnamed and verdict.get(
                     "images_conclusive"):
                 looked.append(updates.FROM_DISC_IMAGE)
-            return rows, notes, folder, unnamed, {"looked_in": looked}
+            return rows, notes, folder, unnamed, {
+                "looked_in": looked, "images": verdict.get("images"),
+                "timing": meter.report()}
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -690,6 +727,8 @@ class GameUpdatesScreen(Screen):
             looked_at=where.get("looked_at"))
         self._packages = folder
         self._unidentified = list(unnamed)
+        self._image_counts = where.get("images")
+        self._timing = where.get("timing") or ""
         host = self.connection.host if self.connection else ""
         updates.remember_scan(self._settings(), host, self._rows)
         self._behind = [row.title_id for row in self._rows
@@ -704,6 +743,8 @@ class GameUpdatesScreen(Screen):
         self._fill_table()
 
         lines = list(notes)
+        if self._timing:
+            lines.append(f"Where the time went: {self._timing}")
         if folder is not None and folder.unknown:
             lines.append(folder.reason)
         elif folder is not None and folder.names:
@@ -713,6 +754,7 @@ class GameUpdatesScreen(Screen):
                 "The console's packages folder already holds "
                 f"{_and_list(folder.names)}. Nothing here installs those; "
                 "only the updates you tick are sent and installed.")
+        self._detail.set_summary(_detail_summary(self._image_counts))
         self._detail.setText("\n\n".join(item for item in lines if item))
 
         if self._wanted:
@@ -919,27 +961,31 @@ class GameUpdatesScreen(Screen):
                     return updates.read_installed_version(
                         getattr(lister, "download_bytes", None), title_id)
 
-                with open_writer(host) as writer:
-                    import tempfile
-                    with tempfile.TemporaryDirectory(
-                            prefix="ps3-update-") as temp:
-                        for row in chosen:
-                            if control.cancelled:
-                                break
-                            delivered = updates.deliver(
-                                row, writer, temp, stream=stream,
-                                progress=control.progress,
-                                cancelled=lambda: control.cancelled,
-                                free_bytes=free, history=history,
-                                installed_reader=installed_reader)
-                            if delivered.skipped:
-                                skipped.append(delivered)
-                                continue
-                            done.append(delivered)
-                            # Each upload eats into what is left, and the
-                            # console is not asked again between them.
-                            if free is not None:
-                                free = max(0, free - delivered.bytes_sent)
+                # The write connection is opened when each upload is ready
+                # to start rather than held open across the download in front
+                # of it. webMANftpd lets go of an idle one, and the first
+                # upload command then met a socket that was already dead and
+                # sat waiting on it.
+                import tempfile
+                with tempfile.TemporaryDirectory(prefix="ps3-update-") as temp:
+                    for row in chosen:
+                        if control.cancelled:
+                            break
+                        delivered = updates.deliver(
+                            row, lambda: open_writer(host), temp,
+                            stream=stream,
+                            progress=control.progress,
+                            cancelled=lambda: control.cancelled,
+                            free_bytes=free, history=history,
+                            installed_reader=installed_reader)
+                        if delivered.skipped:
+                            skipped.append(delivered)
+                            continue
+                        done.append(delivered)
+                        # Each upload eats into what is left, and the console
+                        # is not asked again between them.
+                        if free is not None:
+                            free = max(0, free - delivered.bytes_sent)
             if not done:
                 return done, [], skipped
             # One call per file, and each one is confirmed on the console
@@ -1124,8 +1170,19 @@ class GameUpdatesScreen(Screen):
                               item.state or updates.STATE_UNCONFIRMED)
 
     def _paint_queue(self):
-        self._queue.setText("\n".join(f"{row[1]}: {row[2]}"
-                                      for row in self._queue_rows))
+        """The list, with where each package ended up in its own colour.
+
+        Rich text rather than a stylesheet: the colour is per line, and the
+        row it belongs to is the one that changed.
+        """
+        lines = []
+        for _key, name, state in self._queue_rows:
+            said = html.escape(str(state))
+            colour = self._colour_name(updates.install_state_token(state))
+            if colour:
+                said = f'<span style="color: {colour}">{said}</span>'
+            lines.append(f"{html.escape(str(name))}: {said}")
+        self._queue.setText("<br>".join(lines))
         self._queue.setVisible(bool(self._queue_rows))
 
     # -- panel, colours and chrome
@@ -1213,6 +1270,7 @@ class GameUpdatesScreen(Screen):
     def _repaint(self):
         self._paint_go()
         self._paint_count()
+        self._paint_queue()
         if not self._panel.isHidden():
             self._paint_panel()
         for index in range(self._table.topLevelItemCount()):

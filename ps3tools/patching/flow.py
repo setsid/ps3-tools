@@ -173,7 +173,14 @@ def site_state(site, image, kind):
             f"with the file on the console.")
     if found["state"] == patchstate.UNKNOWN:
         return UNRECOGNISED, found["evidence"]
-    if found.get("offset") != offset:
+    # A patched file can offer more than one candidate: a nop sitting between
+    # the size argument and the call looks exactly like a call that has been
+    # nopped out. The site finding narrows the field and the recorded offset
+    # says which of them this build uses, so agreement is the offset being
+    # among the candidates rather than being the first of them.
+    candidates = found.get("offsets") or (
+        (found["offset"],) if found.get("offset") is not None else ())
+    if offset not in candidates:
         return UNRECOGNISED, (
             f"the fix's own site finding puts the patch at file offset "
             f"{found.get('offset', 0):08X}, where the verified table for this "
@@ -213,6 +220,9 @@ class FileScan:
         self.image_sha1 = ""
         self.info = {}
         self.present = False
+        #: Whether the user wants this one written. Every file that can be
+        #: acted on starts ticked; the screen unticks what they exclude.
+        self.selected = True
         # Set only for NOT_EXAMINED: what this program was missing. Carried as
         # a field so the screen can name it without picking it back out of a
         # sentence.
@@ -278,18 +288,73 @@ class ScanReport:
                 if not item.present and item.site]
 
     @property
-    def can_patch(self):
-        """Everything with a patch site has to be understood, not just most.
+    def chosen(self):
+        """The files that will actually be written."""
+        return [item for item in self.to_patch if item.selected]
 
-        Black Ops II carries the same fault in three files and the readme is
-        explicit that doing two of them leaves campaign and zombies freezing.
-        Patching the files that were understood and skipping the one that was
-        not produces exactly that half-fixed install, so one unrecognised file
-        stops the whole title.
+    @property
+    def blocked(self):
+        """Files with a patch site that this program cannot act on.
+
+        Unrecognised, unexamined, and would not decrypt. Each of them is left
+        alone, and each of them is named on the screen.
         """
-        return bool(self.ok and self.to_patch and not self.unrecognised
-                    and not self.not_examined and not self.cannot_decrypt
-                    and not self.missing)
+        return [item for item in self.files
+                if item.site and item.state in (UNRECOGNISED, NOT_EXAMINED,
+                                                CANNOT_DECRYPT)]
+
+    @property
+    def already_patched(self):
+        return [item for item in self.files if item.state == PATCHED]
+
+    def half_pairs(self):
+        """Files that are one binary where only one of them is being written.
+
+        Black Ops II's EBOOT.BIN and t6_ps3f.self are the same binary signed
+        twice under different names. Writing one and leaving the other stock
+        is a half-finished campaign, and the fix's own readme says that
+        freezes.
+
+        It is said rather than refused. The other file may be one this program
+        cannot open at all, and whether to go ahead with what can be done is
+        the user's decision to make with that in front of them.
+
+        A file that is already patched is not one being left behind, which is
+        the ordinary mixed install: one of the pair done on an earlier run and
+        the other about to be.
+        """
+        chosen = {item.name for item in self.chosen}
+        by_image = {}
+        for item in self.files:
+            if item.image and item.present:
+                by_image.setdefault(item.image, []).append(item)
+        out = []
+        for image, items in sorted(by_image.items()):
+            writing = [item.name for item in items if item.name in chosen]
+            leaving = [item.name for item in items
+                       if item.name not in chosen and item.state != PATCHED]
+            if writing and leaving:
+                out.append((image, writing, leaving))
+        return out
+
+    @property
+    def can_patch(self):
+        """Whether there is at least one file this run can act on.
+
+        Judged one file at a time. These are separate binaries patched
+        separately: Black Ops II's EBOOT.BIN and t6_ps3f.self carry campaign
+        and zombies, t6mp_ps3f.self carries multiplayer, and one of them being
+        a build this program does not recognise says nothing about whether the
+        others can be patched safely.
+
+        This used to require every file with a patch site to be understood, so
+        a console with one file already patched, one stock and one
+        unrecognised was refused outright and could do nothing at all. That is
+        an ordinary mixed install and it was measured on hardware.
+
+        An unrecognised file is still never written. That part has not moved.
+        """
+        return bool(self.ok and self.chosen)
 
     def file_for(self, name):
         for item in self.files:
@@ -371,6 +436,10 @@ def _scan_one(writer, tool, config, item, workdir, states, index, total,
     """Pull one file, read its header, and read the state out of its bytes."""
     kind = config["key"]
     local = os.path.join(workdir, item.name)
+    # What the console's own listing said this file is. Kept before the
+    # download overwrites item.size with what actually arrived, because the
+    # two differing is the whole of how a short copy is noticed.
+    listed_size = item.size
 
     def step(message, **extra):
         if progress:
@@ -384,12 +453,29 @@ def _scan_one(writer, tool, config, item, workdir, states, index, total,
             on_block=lambda sent, size: step(f"copying {item.name}",
                                              bytes=sent, of=size))
     except Exception as exc:
-        item.state = UNRECOGNISED
+        # A copy that did not finish says nothing about the file. Reported as
+        # a read this program could not complete rather than as a file it has
+        # read and rejected: the two ask different things of the user.
+        item.state = NOT_EXAMINED
         item.detail = (f"it could not be copied off the console "
                        f"({exc.__class__.__name__}: {exc})")
         return
     item.sha1 = pulled["sha1"]
     item.size = pulled["bytes"]
+    if isinstance(listed_size, int) and listed_size > 0 \
+            and pulled["bytes"] != listed_size:
+        # The console said one size and sent another, and no exception was
+        # raised because the server would not answer SIZE. Everything below
+        # would then be read out of part of a file: scetool prints the first
+        # header and stops, which came back as the file having no App type in
+        # it while the file on the console was complete.
+        item.state = NOT_EXAMINED
+        item.detail = (
+            f"{pulled['bytes']} bytes arrived and the console's own listing "
+            f"says it is {listed_size}, so what was copied is part of the "
+            f"file. Nothing was read out of it. Switch the console off and on "
+            f"and scan again.")
+        return
 
     step(f"reading the header of {item.name}")
     try:
@@ -460,39 +546,54 @@ def _cross_check(report):
                 f"Nothing will be written.")
             return
 
-    # BO2's EBOOT.BIN and t6_ps3f.self are the same binary signed twice under
-    # different names. If they do not decrypt to the same image then one of
-    # them has been replaced, and the patch that suits one will not suit the
-    # other.
-    by_image = {}
-    for item in present:
-        if item.image and item.image_sha1:
-            by_image.setdefault(item.image, set()).add(item.image_sha1)
-    for image, hashes in sorted(by_image.items()):
-        if len(hashes) > 1:
-            report.error = (
-                f"The files that should both decrypt to {image} do not "
-                f"decrypt to the same thing, so one of them has been replaced "
-                f"or came from a different install. Nothing will be written.")
-            return
+    _same_image_check(report, present)
 
     if report.missing:
         report.notes.append(
             "not in this folder: " + ", ".join(report.missing))
     for item in report.unrecognised:
-        report.notes.append(f"{item.name} was not recognised, so nothing "
-                            f"will be patched: {item.detail}")
+        report.notes.append(f"{item.name} was not recognised and will be left "
+                            f"alone: {item.detail}")
     for item in report.not_examined:
         report.notes.append(f"{item.name} could not be checked by this "
-                            f"program, so nothing will be patched: "
-                            f"{item.detail}")
+                            f"program and will be left alone: {item.detail}")
     if report.cannot_decrypt:
         # One note for the set rather than one per file. All three of Black
         # Ops II's files fail together for the same single reason, and saying
         # it three times reads as three separate faults.
         names = ", ".join(item.name for item in report.cannot_decrypt)
         report.notes.append(
-            f"could not be opened, so nothing will be patched: {names}")
+            f"could not be opened and will be left alone: {names}")
+
+
+def _same_image_check(report, present):
+    """BO2's EBOOT.BIN and t6_ps3f.self are one binary signed twice.
+
+    Two files that should decrypt to the same image and do not used to stop
+    the whole title. On a console with one of them patched and the other still
+    stock that refused a perfectly ordinary install: they differ by exactly the
+    four bytes of the fix, which is what a half-finished patch looks like and
+    is the state this screen exists to get somebody out of.
+
+    So the comparison is made within each state. Two stock copies that differ,
+    or two patched copies that differ, is one of them having been replaced and
+    is worth saying. It is said and named, and it stops nothing: a file is
+    judged on its own bytes, and these two are read separately.
+    """
+    by_image = {}
+    for item in present:
+        if item.image and item.image_sha1 and item.state:
+            by_image.setdefault((item.image, item.state), []).append(item)
+    for (image, state), items in sorted(by_image.items()):
+        if len({item.image_sha1 for item in items}) < 2:
+            continue
+        names = ", ".join(sorted(item.name for item in items))
+        report.notes.append(
+            f"{names} should all decrypt to {image} and each read as {state}, "
+            f"and they do not decrypt to the same thing. One of them has been "
+            f"replaced or came from a different install. Each file is still "
+            f"judged on its own bytes, so what can be patched safely still "
+            f"can be.")
 
 
 # --- applying the fix ------------------------------------------------------
@@ -564,6 +665,7 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
         out.error = (report.error or
                      "There is nothing here that can safely be patched.")
         return out
+    chosen = report.chosen
 
     kind = report.title_key
     module = patchstate.patcher_module(kind)
@@ -574,7 +676,7 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
                      f"program. Nothing has been changed.")
         return out
 
-    wanted = [item.name for item in report.to_patch]
+    wanted = [item.name for item in chosen]
     folder = backups.folder_for(report.title_id, root, when)
     try:
         saved = backups.make(writer, report.usrdir, wanted, folder,
@@ -589,7 +691,7 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
     workdir = workdir or tempfile.mkdtemp(prefix="ps3tools-patch-")
     try:
         try:
-            built = _build_all(tool, report, saved, kind, module, workdir,
+            built = _build_all(tool, chosen, saved, kind, module, workdir,
                                progress, out)
         except (PatchFailed, ScetoolError) as exc:
             out.error = (f"{exc} Nothing has been written to the console, and "
@@ -602,7 +704,7 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
     return out
 
 
-def _build_all(tool, report, saved, kind, module, workdir, progress, out):
+def _build_all(tool, chosen, saved, kind, module, workdir, progress, out):
     """Every file rebuilt and checked locally before any of them is uploaded.
 
     Built from the backup copies rather than from what the scan downloaded, so
@@ -613,8 +715,8 @@ def _build_all(tool, report, saved, kind, module, workdir, progress, out):
     fallbacks = FIELD_FALLBACKS.get(kind, {})
     built = {}
     images = {}
-    total = len(report.to_patch)
-    for index, item in enumerate(report.to_patch):
+    total = len(chosen)
+    for index, item in enumerate(chosen):
         entry = saved.entry_for(item.name)
         source = entry["path"]
         klicensee = item.record["klicensee"]
@@ -1021,8 +1123,8 @@ def restore_refusal(backup, title_id):
                 f"start. Nothing has been sent to the console.\n\n"
                 f"Look for a backup folder whose name begins {wanted}.")
 
-    bad = [row for row in backups.verify(backup) if not row["ok"]]
-    if bad:
+    good, bad = checked_entries(backup)
+    if not good:
         detail = "\n".join(f"    {row['name']}: {row['reason']}"
                            for row in bad)
         return (f"This backup does not match the record written when it was "
@@ -1033,6 +1135,21 @@ def restore_refusal(backup, title_id):
                 f"guess. If you have another backup of this game, try that "
                 f"one.")
     return ""
+
+
+def checked_entries(backup):
+    """(the files that still match the record, the rows that do not).
+
+    A file that has changed since it was copied is not the original any more
+    and is never sent. The rest of the backup is still the rest of the
+    backup: these are separate binaries and putting two of the three back is
+    two fewer patched files on the console than doing nothing at all.
+    """
+    rows = {row["name"]: row for row in backups.verify(backup)}
+    good = [entry for entry in backup.entries
+            if rows.get(entry["name"], {}).get("ok")]
+    bad = [rows[name] for name in sorted(rows) if not rows[name]["ok"]]
+    return good, bad
 
 
 def restore(writer, backup, title_id, progress=None):
@@ -1049,8 +1166,18 @@ def restore(writer, backup, title_id, progress=None):
 
     wanted = titles.normalise(title_id)
     usrdir = titles.usrdir_for(wanted)
-    total = len(backup.entries)
-    for index, entry in enumerate(backup.entries):
+    entries, unusable = checked_entries(backup)
+    for row in unusable:
+        out.failed.append((row["name"], row["reason"]))
+    if unusable:
+        names = ", ".join(row["name"] for row in unusable)
+        out.notes.append(
+            f"{names} did not match the record written when the backup was "
+            f"taken, so it was left alone. A file that has changed since it "
+            f"was copied is not the original any more. Everything else in "
+            f"this backup is still put back.")
+    total = len(entries)
+    for index, entry in enumerate(entries):
         name = entry["name"]
         # Built from the title ID that was just matched rather than trusted
         # from the manifest, so the path written to is the one the console
@@ -1069,32 +1196,34 @@ def restore(writer, backup, title_id, progress=None):
                              f"putting the original {name} back",
                              bytes=sent, of=size))
         except Exception as exc:                            # noqa: BLE001
-            out.failed.append((name, f"{exc.__class__.__name__}: {exc}"))
-            out.error = _restore_stopped(
-                out,
-                f"{name} could not be written to the console "
-                f"({exc.__class__.__name__}: {exc}).")
-            return out
+            # On to the next file. These are separate binaries, and one that
+            # could not be written says nothing about whether the next one
+            # can be: a run that stopped here used to leave the files behind
+            # it patched when their originals were sitting on the Desktop.
+            out.failed.append(
+                (name, f"it could not be written to the console "
+                       f"({exc.__class__.__name__}: {exc})"))
+            continue
 
         step(f"checking {name} on the console")
         try:
             landed = writer.retrieve_bytes(remote)
         except Exception as exc:                            # noqa: BLE001
-            out.failed.append((name, f"{exc.__class__.__name__}: {exc}"))
-            out.error = _restore_stopped(
-                out,
-                f"{name} was written to the console but could not be read "
-                f"back to check it ({exc.__class__.__name__}: {exc}).")
-            return out
+            out.failed.append((name, f"it was written but could not be read "
+                                     f"back to check it "
+                                     f"({exc.__class__.__name__}: {exc})"))
+            continue
         if _sha1(landed) != entry["sha1"]:
-            out.failed.append((name, "what landed does not match the backup"))
-            out.error = _restore_stopped(
-                out,
-                f"{name} arrived on the console as something other than what "
-                f"was sent ({len(landed)} bytes arrived where "
-                f"{entry['size']} were sent), so the transfer did not finish.")
-            return out
+            out.failed.append(
+                (name, f"it arrived on the console as something other than "
+                       f"what was sent ({len(landed)} bytes arrived where "
+                       f"{entry['size']} were sent), so the transfer did not "
+                       f"finish"))
+            continue
         out.restored.append(name)
+
+    if out.failed:
+        out.error = _restore_stopped(out)
 
     if progress:
         progress({"stage": "done", "file": "", "done": total, "total": total,
@@ -1102,20 +1231,24 @@ def restore(writer, backup, title_id, progress=None):
     return out
 
 
-def _restore_stopped(out, reason):
-    """One sentence for what went wrong, and one for where that leaves them.
+def _restore_stopped(out):
+    """What did not go back, and where that leaves them.
 
-    The second half is the important one. A restore that stopped partway has
+    The second half is the important one. A restore that could not finish has
     left the console holding a mixture, and a user who is told only that
     something failed does not know whether to run it again.
+
+    Every file is attempted before this is written, so the list is the whole
+    of what is still patched rather than the first thing that went wrong.
     """
+    trouble = "\n".join(f"    {name}: {why}" for name, why in out.failed)
     done = (", ".join(out.restored) if out.restored else "none of them")
-    return (f"{reason}\n\n"
-            f"Files put back before this: {done}. Your backup has not been "
-            f"touched and is still complete, so nothing has been lost. Check "
-            f"the console is switched on, sitting on its main menu with "
-            f"webMAN running, and press this again: putting the same files "
-            f"back a second time is safe and is the thing to do.")
+    return (f"These were not put back:\n\n{trouble}\n\n"
+            f"Files put back: {done}. Your backup has not been touched and is "
+            f"still complete, so nothing has been lost. Check the console is "
+            f"switched on, sitting on its main menu with webMAN running, and "
+            f"press this again: putting the same files back a second time is "
+            f"safe and is the thing to do.")
 
 
 # --- which title update the fix was verified against -----------------------

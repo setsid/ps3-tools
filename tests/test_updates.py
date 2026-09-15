@@ -208,11 +208,15 @@ class RecordingWriter:
         self.stored = []
         self.made = []
         self.deleted = []
+        #: Every call in the order it came, so a test can say that the stale
+        #: copy was removed before the new one was written rather than after.
+        self.calls = []
         self.fault = fault
 
     def delete(self, path):
-        """DELE, as FtpWriter has it. The console tidies up after an install."""
+        """DELE, as FtpWriter has it."""
         self.deleted.append(path)
+        self.calls.append(("delete", path))
         return True
 
     def make_dir(self, path):
@@ -228,6 +232,7 @@ class RecordingWriter:
         if on_block:
             on_block(size, size)
         self.stored.append((path, body))
+        self.calls.append(("store", path))
         return size
 
     def close(self):
@@ -978,7 +983,8 @@ class Homebrew(unittest.TestCase):
         _found, notes, _unnamed = updates.scan_console(lister)
         said = " ".join(notes)
         self.assertIn("multiMAN", said)
-        self.assertIn("homebrew rather than a game Sony published", said)
+        self.assertIn("It is homebrew, so Sony publishes no updates for it",
+                      said)
 
     def test_the_list_is_named_ids_and_not_a_range(self):
         # A rule that is nearly right hides somebody's real game with no way
@@ -1603,6 +1609,353 @@ class Delivering(unittest.TestCase):
                             stream=stream_for(b""))
 
 
+class WhenTheWriteConnectionIsOpened(unittest.TestCase):
+    """Not before the download it would be sitting idle through.
+
+    Doing one update on its own there was a long pause after the download
+    before anything happened on the console. The connection had been open
+    since before the download started, webMANftpd had let go of it, and the
+    first upload command was talking to a socket that was already dead.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="ps3-open-test-")
+        self.addCleanup(lambda: _rmtree(self.folder))
+        self.body = signed_pkg(b"PKG" * 4096)
+
+    def a_row(self):
+        return a_row(package_for(self.body, version="01.19"))
+
+    def test_it_is_opened_when_the_upload_is_ready_to_start(self):
+        order = []
+
+        class Watched(RecordingWriter):
+            def __enter__(self):
+                order.append("opened")
+                return self
+
+            def __exit__(self, *exc):
+                order.append("closed")
+                return False
+
+            def store(self, source, path, on_block=None):
+                order.append("stored")
+                return super().store(source, path, on_block)
+
+        writer = Watched()
+
+        def downloading(url, timeout=None):
+            order.append("downloaded")
+            return stream_for(self.body)(url, timeout)
+
+        updates.deliver(self.a_row(), lambda: writer, self.folder,
+                        stream=downloading, free_bytes=8 * 1024 ** 3)
+        self.assertEqual(order,
+                         ["downloaded", "opened", "stored", "closed"])
+
+    def test_an_already_open_writer_is_still_accepted_and_left_open(self):
+        # The caller that opened it owns it. Closing somebody else's
+        # connection underneath them is how a queue loses its second item.
+        class Counting(RecordingWriter):
+            closes = 0
+
+            def __exit__(self, *exc):
+                Counting.closes += 1
+                return False
+
+        writer = Counting()
+        updates.deliver(self.a_row(), writer, self.folder,
+                        stream=stream_for(self.body), free_bytes=8 * 1024 ** 3)
+        self.assertEqual(len(writer.stored), 1)
+        self.assertEqual(Counting.closes, 0)
+
+
+class TheSummaryAgreesWithTheTable(unittest.TestCase):
+    """An image that could not be read is a gap only if the list needs it.
+
+    The summary reported images as unidentifiable or unread while every game
+    on the list above was sitting in its own folder on the console. Nothing
+    was missing and it read as a failure.
+    """
+
+    def note_for(self, **kwargs):
+        return updates._image_pass_note(**kwargs)
+
+    def test_it_says_the_list_does_not_depend_on_what_could_not_be_read(self):
+        said = self.note_for(opened=2, added=[], elsewhere=[],
+                             unreadable=["Ghosts.iso"], unread=["Minecraft.iso"],
+                             listed=7)
+        self.assertIn("7 games listed above was found in a game folder", said)
+        self.assertIn("none of them depends on the images", said)
+
+    def test_a_pass_that_added_something_makes_no_such_claim(self):
+        # The list does depend on the images here, so the reassurance would
+        # be false.
+        said = self.note_for(opened=2, added=["A.iso"], elsewhere=[],
+                             unreadable=["B.iso"], unread=[], listed=7)
+        self.assertNotIn("none of them depends", said)
+
+    def test_nothing_is_claimed_about_an_empty_list(self):
+        said = self.note_for(opened=1, added=[], elsewhere=[],
+                             unreadable=["B.iso"], unread=[], listed=0)
+        self.assertNotIn("none of them depends", said)
+
+    def test_two_homebrew_titles_are_one_line_naming_both(self):
+        # The table is data and this is about the sentence, so a second entry
+        # is put in it for the length of the test.
+        extra = dict(updates.HOMEBREW_TITLES, BLES80609="IRISMAN")
+        lister = FakeLister(listings={PS3ISO: files("BLES80608.iso",
+                                                    "BLES80609.iso")})
+        with mock.patch.object(updates, "HOMEBREW_TITLES", extra):
+            _found, notes, _unnamed = updates.scan_console(lister)
+        homebrew = [note for note in notes if "homebrew" in note]
+        self.assertEqual(len(homebrew), 1)
+        self.assertIn("They are homebrew", homebrew[0])
+        self.assertIn("IRISMAN", homebrew[0])
+        self.assertIn("multiMAN", homebrew[0])
+
+    def test_one_homebrew_title_still_reads_as_one(self):
+        lister = FakeLister(listings={PS3ISO: files("BLES80608.iso")})
+        _found, notes, _unnamed = updates.scan_console(lister)
+        homebrew = [note for note in notes if "homebrew" in note]
+        self.assertEqual(len(homebrew), 1)
+        self.assertIn("It is homebrew", homebrew[0])
+
+
+class MeasuringWhereTheScanSpendsItsTime(unittest.TestCase):
+    """Instrumented before anything is optimised.
+
+    A full scan takes two to three minutes and nobody has measured which part
+    of it does. Parallelism has not helped, most likely because the bottleneck
+    is one mechanical drive seeking between concurrent reads, and that is a
+    thing to measure rather than to act on.
+    """
+
+    def test_one_row_per_title_with_its_bytes_and_its_read_count(self):
+        clock = Clock()
+        meter = updates.ScanMeter(clock=clock.read)
+        blob = param_sfo("01.19", BO2)
+
+        def reader(path, max_bytes=None):
+            clock.sleep(0.5)
+            return blob
+
+        read = meter.measured_reader(reader)
+        read(f"{GAME}/{BO2}/PARAM.SFO")
+        self.assertEqual(len(meter.rows), 1)
+        row = meter.rows[0]
+        self.assertEqual(row["kind"], "title")
+        self.assertEqual(row["name"], BO2)
+        self.assertEqual(row["seconds"], 0.5)
+        self.assertEqual(row["bytes"], len(blob))
+        self.assertEqual(row["reads"], 1)
+
+    def test_a_read_that_failed_is_timed_as_well(self):
+        # A console that refuses quickly and one that takes ten seconds to
+        # refuse are different problems and the numbers have to show it.
+        clock = Clock()
+        meter = updates.ScanMeter(clock=clock.read)
+
+        def slow_refusal(path, max_bytes=None):
+            clock.sleep(9.0)
+            raise ftplib.error_perm("550 no such file")
+
+        read = meter.measured_reader(slow_refusal)
+        with self.assertRaises(ftplib.error_perm):
+            read(f"{GAME}/{BO2}/PARAM.SFO")
+        self.assertEqual(meter.rows[0]["seconds"], 9.0)
+
+    def test_the_scan_measures_the_reads_it_makes(self):
+        meter = updates.ScanMeter()
+        lister = FakeLister(
+            listings={GAME: folders(BO2, GT5)},
+            blobs={f"{GAME}/{BO2}/PARAM.SFO": param_sfo("01.05", BO2),
+                   f"{GAME}/{GT5}/PARAM.SFO": param_sfo("02.17", GT5)})
+        updates.scan_console(lister, meter=meter)
+        names = {row["name"] for row in meter.rows if row["kind"] == "title"}
+        self.assertEqual(names, {BO2, GT5})
+        self.assertIn("2 titles read in", meter.report())
+
+    def test_the_report_names_the_slowest_and_the_connections(self):
+        clock = Clock()
+        meter = updates.ScanMeter(clock=clock.read)
+        meter.record("image", "slow.iso", 40.0, 1024, 90)
+        meter.record("image", "quick.iso", 2.0, 1024, 3)
+        meter.record("open", "connection", 6.0)
+        said = meter.report()
+        self.assertIn("2 disc images read in 42.0s", said)
+        self.assertIn("Slowest: slow.iso 40.0s", said)
+        self.assertIn("1 connection opened, 6.0s", said)
+
+    def test_it_says_nothing_at_all_when_nothing_was_measured(self):
+        self.assertEqual(updates.ScanMeter().report(), "")
+
+    def test_every_row_is_available_one_line_each(self):
+        meter = updates.ScanMeter()
+        meter.record("image", "slow.iso", 40.0, 2048, 90)
+        self.assertEqual(meter.table(),
+                         ["image slow.iso: 40.0s, 2.0 KB, 90 read(s)"])
+
+
+class RememberingWhichGameAnImageIs(unittest.TestCase):
+    """A title ID is inside the file, so it is read once and never again.
+
+    Opening a disc image costs a connection, a seek and a handful of ranged
+    reads against a console that gives up when it is pushed, and it is most of
+    what makes a full scan take minutes.
+    """
+
+    def entry(self, name="Minecraft.iso", size=4 * 1024 ** 3):
+        return {"name": name, "size": size, "device": "dev_hdd0",
+                "folder": "/dev_hdd0/PS3ISO"}
+
+    def found(self, name="Minecraft.iso", title_id="BLES01976", opened=True):
+        return {"name": name, "opened": opened, "title_id": title_id,
+                "device": "dev_hdd0", "folder": "/dev_hdd0/PS3ISO"}
+
+    def test_an_image_already_identified_is_never_opened_again(self):
+        settings = {}
+        asked = []
+
+        def reader(entries):
+            asked.append([item["name"] for item in entries])
+            return [self.found()]
+
+        identify = updates.cached_image_identifier(reader, settings)
+        first = identify([self.entry()])
+        second = identify([self.entry()])
+        # The second scan does not open a connection at all, which is the
+        # whole point: the reader is never called.
+        self.assertEqual(asked, [["Minecraft.iso"]])
+        self.assertEqual(first[0]["title_id"], "BLES01976")
+        self.assertEqual(second[0]["title_id"], "BLES01976")
+        self.assertTrue(second[0]["opened"])
+
+    def test_a_read_that_failed_is_never_remembered(self):
+        # The bug this exists to prevent making permanent. An image that could
+        # not be read says nothing about the file, and keeping that answer
+        # would mean it never got another chance.
+        settings = {}
+        identify = updates.cached_image_identifier(
+            lambda entries: [self.found(title_id=None, opened=False)],
+            settings)
+        identify([self.entry()])
+        self.assertEqual(updates.remembered_images(settings), {})
+
+    def test_an_image_that_opened_and_said_nothing_is_not_remembered_either(
+            self):
+        settings = {}
+        identify = updates.cached_image_identifier(
+            lambda entries: [self.found(title_id=None)], settings)
+        identify([self.entry()])
+        self.assertEqual(updates.remembered_images(settings), {})
+
+    def test_an_earlier_answer_outranks_a_later_blank(self):
+        # Measured on hardware twice: the same ISO identifies on one read and
+        # not the next. The earlier positive is better evidence than the later
+        # nothing, and this is what makes that hold across scans.
+        settings = {}
+        identify = updates.cached_image_identifier(
+            lambda entries: [self.found()], settings)
+        identify([self.entry()])
+        nothing = updates.cached_image_identifier(
+            lambda entries: [self.found(title_id=None)], settings)
+        again = nothing([self.entry()])
+        self.assertEqual(again[0]["title_id"], "BLES01976")
+
+    def test_a_file_of_the_same_name_and_a_different_size_is_a_new_question(
+            self):
+        settings = {}
+        asked = []
+
+        def reader(entries):
+            asked.append([item["size"] for item in entries])
+            return [self.found()]
+
+        identify = updates.cached_image_identifier(reader, settings)
+        identify([self.entry()])
+        identify([self.entry(size=9 * 1024 ** 3)])
+        self.assertEqual(len(asked), 2)
+        self.assertEqual(asked[1], [9 * 1024 ** 3])
+
+    def test_an_image_with_no_size_is_asked_about_every_time(self):
+        # Nothing to key it on. A name on its own would match a file that had
+        # been replaced since, which is the one way this could be wrong.
+        settings = {}
+        asked = []
+
+        def reader(entries):
+            asked.append(len(entries))
+            return [self.found()]
+
+        identify = updates.cached_image_identifier(reader, settings)
+        identify([{"name": "Minecraft.iso"}])
+        identify([{"name": "Minecraft.iso"}])
+        self.assertEqual(asked, [1, 1])
+
+
+class AStaleCopyOfTheSameName(unittest.TestCase):
+    """An attempt that failed leaves its package in the console's folder.
+
+    The console has no interest in a file it is not installing, so it never
+    deletes that one, and the wait after the next attempt sits out its whole
+    timeout on a file nothing is working on. Measured on hardware.
+    """
+
+    def setUp(self):
+        self.folder = tempfile.mkdtemp(prefix="ps3-stale-test-")
+        self.addCleanup(lambda: _rmtree(self.folder))
+        self.path = os.path.join(self.folder, "patch.pkg")
+        with open(self.path, "wb") as handle:
+            handle.write(b"x" * 64)
+
+    def test_the_name_about_to_be_written_is_cleared_first(self):
+        writer = RecordingWriter()
+        remote, _sent = updates.upload_to_packages(self.path, writer)
+        self.assertEqual(writer.deleted, [remote])
+        self.assertEqual(writer.calls, [("delete", remote), ("store", remote)])
+
+    def test_nothing_else_in_that_folder_is_touched(self):
+        # Whatever else is in there belongs to the user. Only the one name
+        # this upload is about to write is removed.
+        writer = RecordingWriter()
+        updates.upload_to_packages(self.path, writer)
+        self.assertEqual(writer.deleted,
+                         ["/dev_hdd0/packages/patch.pkg"])
+
+    def test_a_part_copied_file_is_taken_off_the_console(self):
+        # A transfer that died leaves part of a package in the folder. Part of
+        # a package is something the install list offers and the console
+        # refuses, and the next attempt at that name waits out its whole
+        # timeout on it.
+        writer = RecordingWriter(fault=EOFError("the console went away"))
+        with self.assertRaises(updates.UploadFailed) as caught:
+            updates.upload_to_packages(self.path, writer)
+        self.assertIn("/dev_hdd0/packages/patch.pkg", writer.deleted)
+        self.assertIn("has been removed", str(caught.exception))
+
+    def test_a_console_that_will_not_delete_it_says_so_plainly(self):
+        class Stubborn(RecordingWriter):
+            def delete(self, path):
+                raise ftplib.error_temp("421 nothing is answering")
+
+        writer = Stubborn(fault=EOFError("the console went away"))
+        with self.assertRaises(updates.UploadFailed) as caught:
+            updates.upload_to_packages(self.path, writer)
+        self.assertIn("may be left in", str(caught.exception))
+
+    def test_a_writer_that_cannot_delete_still_uploads(self):
+        # The delete is a tidy-up before the write. A console that refuses it
+        # has a file of that name that is about to be overwritten anyway.
+        class Refuses(RecordingWriter):
+            def delete(self, path):
+                raise ftplib.error_perm("550 no")
+
+        writer = Refuses()
+        remote, _sent = updates.upload_to_packages(self.path, writer)
+        self.assertEqual([path for path, _body in writer.stored], [remote])
+
+
 class TheUploadedFilename(unittest.TestCase):
     """The name comes out of Sony's answer, so it is never trusted verbatim."""
 
@@ -1691,6 +2044,66 @@ class TheThreeWaysACheckCanEndWithoutAnUpdate(unittest.TestCase):
         self.assertEqual(row.state_text, "Not in Sony's list")
         self.assertEqual(row.latest_text, "none published")
 
+    def test_the_console_names_a_game_sony_has_never_heard_of(self):
+        # BLES01368 is The Sims 3 Pets. Sony publishes nothing for it, so the
+        # row was a bare title ID with a blank name and a blank version. All
+        # of it is in the PARAM.SFO the scan already opens.
+        def not_found(url, timeout=None):
+            raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
+
+        title = updates.InstalledTitle(title_id=self.TITLE,
+                                       console_name="The Sims 3 Pets",
+                                       console_version="01.00")
+        row = updates.check_titles([title], fetcher=not_found)[0]
+        self.assertEqual(row.name, "The Sims 3 Pets")
+        self.assertEqual(row.installed, "01.00")
+        self.assertEqual(row.blocked, updates.NOT_LISTED)
+
+    def test_a_version_sony_could_have_argued_with_is_never_invented(self):
+        # A manifest that could not be read is not a manifest that said
+        # nothing. VERSION is what the disc says it is and is not a title
+        # update version, so it does not go in a column that will be compared
+        # with one.
+        def broken(url, timeout=None):
+            raise urllib.error.URLError("the network went away")
+
+        title = updates.InstalledTitle(title_id=self.TITLE,
+                                       console_name="The Sims 3 Pets",
+                                       console_version="01.00")
+        row = updates.check_titles([title], fetcher=broken)[0]
+        self.assertEqual(row.name, "The Sims 3 Pets")
+        self.assertIsNone(row.installed)
+        self.assertEqual(row.blocked, updates.MANIFEST_FAILED)
+
+    def test_the_details_come_off_the_console_in_one_read(self):
+        # TITLE, APP_VER and VERSION out of the same PARAM.SFO. A title with
+        # no APP_VER is an ordinary thing and is not a read that failed.
+        blob = make_fixtures.param_sfo(
+            (("CATEGORY", "DLC and Updates"), ("TITLE", "The Sims 3 Pets"),
+             ("TITLE_ID", "BLES01368"), ("VERSION", "01.00")))
+        lister = FakeLister(
+            listings={GAME: folders("BLES01368")},
+            blobs={f"{GAME}/BLES01368/PARAM.SFO": blob})
+        found, _notes, _unnamed = updates.scan_console(lister)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0].console_name, "The Sims 3 Pets")
+        self.assertEqual(found[0].console_version, "1.00")
+        # APP_VER is the title update version and this file has none, so the
+        # one that gets compared with Sony's list stays empty.
+        self.assertIsNone(found[0].version)
+
+    def test_a_category_is_never_a_reason_to_reject_a_title(self):
+        # BLES01368 carries CATEGORY "DLC and Updates" despite being a full
+        # install with its own title ID and its own save folder.
+        blob = make_fixtures.param_sfo(
+            (("CATEGORY", "DLC and Updates"), ("TITLE", "The Sims 3 Pets"),
+             ("TITLE_ID", "BLES01368"), ("VERSION", "01.00")))
+        lister = FakeLister(
+            listings={GAME: folders("BLES01368")},
+            blobs={f"{GAME}/BLES01368/PARAM.SFO": blob})
+        found, _notes, _unnamed = updates.scan_console(lister)
+        self.assertEqual([item.title_id for item in found], ["BLES01368"])
+
     def test_an_empty_answer_still_means_no_update_was_released(self):
         row = self._row(lambda url, timeout=None: b"")
         self.assertEqual(row.blocked, updates.NO_UPDATE_EVER)
@@ -1776,6 +2189,29 @@ class Folder:
         due = self._due.setdefault(filename, self.clock.read() + self.takes)
         return self.clock.read() < due
 
+    def still_working_on(self, filename):
+        """Whether this console has yet to finish with one package."""
+        if filename in self.keeps:
+            return True
+        due = self._due.get(filename)
+        return due is None or self.clock.read() < due
+
+    def version_when_done(self, versions, packages):
+        """A version reader belonging to this same console.
+
+        The queue polls the packages folder and the installed version on the
+        same tick and stops on whichever answers first, so a reader that
+        reported the new version from the start would time every wait at zero
+        and prove nothing. This console writes the version when it has
+        finished the install, which is the order the hardware did it in.
+        """
+        def read(title_id):
+            filename = packages.get(title_id)
+            if filename is None or self.still_working_on(filename):
+                return None, "", False
+            return versions.get(title_id), "", False
+        return read
+
 
 def reads_title(readable=False, version="", absent=False, detail=""):
     """A title reader answering the one thing it is asked, every time."""
@@ -1810,6 +2246,15 @@ class TheInstallQueue(unittest.TestCase):
     ITEM = ("a.pkg", BO2, 39 * 1024 * 1024, "01.19")
     OTHER = ("b.pkg", GT5, 39 * 1024 * 1024, "02.17")
     LANDED = {BO2: "01.19", GT5: "02.17"}
+    #: Which package carries which title, for a fixture console that writes
+    #: the version when it has finished with that package.
+    PACKAGES = {BO2: "a.pkg", GT5: "b.pkg", "BLES00003": "c.pkg"}
+
+    def console(self, clock, **kwargs):
+        """A packages folder and a version reader that agree with each other."""
+        folder = Folder(clock, **kwargs)
+        return folder, updates.version_confirmation(
+            folder.version_when_done(self.LANDED, self.PACKAGES))
 
     def test_each_install_waits_for_the_package_to_go_from_the_folder(self):
         # The title directory used to be the signal and it appears when the
@@ -1817,11 +2262,9 @@ class TheInstallQueue(unittest.TestCase):
         # busy with the last one.
         clock = Clock()
         actions = FiringActions()
-        folder = Folder(clock, takes=21.0)
+        folder, confirm = self.console(clock, takes=21.0)
         results = updates.install_queue(
-            actions, [self.ITEM, self.OTHER], folder,
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            actions, [self.ITEM, self.OTHER], folder, confirm=confirm,
             sleep=clock.sleep, clock=clock.read)
         self.assertEqual(actions.fired, ["a.pkg", "b.pkg"])
         self.assertTrue(all(item.confirmed for item in results))
@@ -1847,10 +2290,9 @@ class TheInstallQueue(unittest.TestCase):
         # than a title update of the same size takes to patch, so it hands the
         # queue its own formula rather than sharing the one for updates.
         clock = Clock()
+        folder, confirm = self.console(clock, keeps={"a.pkg"})
         results = updates.install_queue(
-            FiringActions(), [self.ITEM], Folder(clock, keeps={"a.pkg"}),
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            FiringActions(), [self.ITEM], folder, confirm=confirm,
             timeout_for=updates.package_timeout_for,
             sleep=clock.sleep, clock=clock.read)
         allowed = updates.package_timeout_for(self.ITEM[2])
@@ -1867,16 +2309,118 @@ class TheInstallQueue(unittest.TestCase):
         self.assertAlmostEqual(
             updates.install_timeout_for(542 * 1024 * 1024), 1114.0)
 
-    def test_a_package_that_never_goes_is_reported_as_not_confirmed(self):
-        # The file sitting there after the whole wait says the console never
-        # finished with it. Carrying on as though it had installed is the one
-        # thing this must not do.
+    def test_a_console_that_keeps_the_package_still_confirms_the_install(self):
+        # Measured on hardware. BLES02166 Black Ops III, 204502000 bytes: the
+        # console installed 01.07 and left the package sitting in
+        # /dev_hdd0/packages. Waiting for a deletion that was never coming
+        # spent the whole timeout and then called a successful install
+        # unconfirmed, which for a 2.1 GB package is over an hour.
         clock = Clock()
         folder = Folder(clock, keeps={"a.pkg"})
         results = updates.install_queue(
             FiringActions(), [self.ITEM], folder,
             confirm=updates.version_confirmation(
                 reads_version(self.LANDED)),
+            sleep=clock.sleep, clock=clock.read)
+        self.assertTrue(results[0].confirmed)
+        self.assertEqual(results[0].state, updates.STATE_INSTALLED)
+        # And it did not sit there for the whole of the time it was allowed.
+        self.assertLess(clock.now, updates.install_timeout_for(self.ITEM[2]))
+
+    def test_the_version_signal_never_comes_from_a_read_that_failed(self):
+        # The rule that has held since the first version of this: a read
+        # which could not complete is not a result. It must not end a wait
+        # any more than it may confirm an install.
+        def explodes(title_id):
+            raise ftplib.error_temp("421 the console went away")
+
+        clock = Clock()
+        results = updates.install_queue(
+            FiringActions(), [self.ITEM], Folder(clock, keeps={"a.pkg"}),
+            confirm=updates.version_confirmation(explodes),
+            sleep=clock.sleep, clock=clock.read)
+        self.assertGreaterEqual(clock.now,
+                                updates.install_timeout_for(self.ITEM[2]))
+        self.assertFalse(results[0].confirmed)
+
+    def test_a_version_that_is_not_the_one_sent_does_not_end_the_wait(self):
+        # The game reporting the version it had before says the install has
+        # not happened yet. Ending on that would fire the next package into a
+        # console still busy with this one.
+        clock = Clock()
+        results = updates.install_queue(
+            FiringActions(), [self.ITEM], Folder(clock, keeps={"a.pkg"}),
+            confirm=updates.version_confirmation(
+                reads_version({BO2: "01.05"})),
+            sleep=clock.sleep, clock=clock.read)
+        self.assertGreaterEqual(clock.now,
+                                updates.install_timeout_for(self.ITEM[2]))
+        self.assertFalse(results[0].confirmed)
+
+    def test_a_package_of_somebody_elses_has_no_second_signal(self):
+        # directory_confirmation asks about something that appears when the
+        # console's installer starts. Polling it during the wait would end
+        # the wait the moment the install began.
+        confirm = updates.directory_confirmation(
+            reads_title(readable=True, version="01.00"))
+        self.assertIsNone(getattr(confirm, "landed", None))
+        clock = Clock()
+        folder = Folder(clock, keeps={"game.pkg"})
+        results = updates.install_queue(
+            FiringActions(), [("game.pkg", BO2, 1024)], folder,
+            confirm=confirm, sleep=clock.sleep, clock=clock.read)
+        self.assertFalse(results[0].confirmed)
+
+    def test_a_console_that_stops_answering_is_not_waited_out(self):
+        # Measured on hardware: a timed-out upload left webMANftpd accepting
+        # connections and replying to nothing. HTTP still answered. The wait
+        # sat out its whole timeout one failed listing at a time, which on a
+        # 2 GB package is over an hour of a program that looks hung.
+        clock = Clock()
+        big = ("a.pkg", BO2, 2 * 1024 ** 3, "01.19")
+        folder = Folder(clock, unreadable=10 ** 6)
+        results = updates.install_queue(
+            FiringActions(), [big], folder,
+            confirm=updates.version_confirmation(reads_version({})),
+            sleep=clock.sleep, clock=clock.read)
+        self.assertLess(clock.now, updates.install_timeout_for(big[2]))
+        self.assertGreaterEqual(clock.now, updates.CONSOLE_SILENT_SECONDS)
+        self.assertFalse(results[0].confirmed)
+        self.assertEqual(results[0].state, updates.STATE_UNCONFIRMED)
+        self.assertIn("stopped answering", results[0].reason)
+        # Still never a failure. The console may well be installing it.
+        self.assertIn("may still be installing", results[0].reason)
+
+    def test_a_listing_that_comes_back_resets_the_silence(self):
+        # A console that answers now and then is a console that is answering.
+        # Only a run of nothing at all is a server that has gone.
+        clock = Clock()
+        folder = Folder(clock, takes=300.0, unreadable=0)
+        real = folder.__call__
+        answers = {"count": 0}
+
+        def sometimes(filename):
+            answers["count"] += 1
+            # One good answer in every four, spaced further apart than the
+            # silence allowed.
+            if answers["count"] % 4:
+                return None
+            return real(filename)
+
+        results = updates.install_queue(
+            FiringActions(), [self.ITEM], sometimes,
+            confirm=updates.version_confirmation(reads_version(self.LANDED)),
+            poll_seconds=40.0, sleep=clock.sleep, clock=clock.read)
+        self.assertTrue(results[0].confirmed)
+
+    def test_a_package_that_never_goes_is_reported_as_not_confirmed(self):
+        # The file sitting there after the whole wait says the console never
+        # finished with it. Carrying on as though it had installed is the one
+        # thing this must not do.
+        clock = Clock()
+        folder, confirm = self.console(clock, keeps={"a.pkg"})
+        results = updates.install_queue(
+            FiringActions(), [self.ITEM], folder, confirm=confirm,
             sleep=clock.sleep, clock=clock.read)
         self.assertFalse(results[0].confirmed)
         self.assertEqual(results[0].state, updates.STATE_UNCONFIRMED)
@@ -1893,11 +2437,9 @@ class TheInstallQueue(unittest.TestCase):
         # than sent a second time.
         clock = Clock()
         actions = FiringActions()
+        folder, confirm = self.console(clock, keeps={"a.pkg"})
         results = updates.install_queue(
-            actions, [self.ITEM, self.OTHER],
-            Folder(clock, keeps={"a.pkg"}),
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            actions, [self.ITEM, self.OTHER], folder, confirm=confirm,
             sleep=clock.sleep, clock=clock.read)
         self.assertEqual(actions.fired, ["a.pkg", "b.pkg"])
         self.assertEqual([item.confirmed for item in results], [False, True])
@@ -1906,11 +2448,9 @@ class TheInstallQueue(unittest.TestCase):
         # It has to stay in front of the user. A run that quietly dropped the
         # one that did not install would leave somebody believing it did.
         clock = Clock()
+        folder, confirm = self.console(clock, keeps={"a.pkg"})
         results = updates.install_queue(
-            FiringActions(), [self.ITEM, self.OTHER],
-            Folder(clock, keeps={"a.pkg"}),
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            FiringActions(), [self.ITEM, self.OTHER], folder, confirm=confirm,
             sleep=clock.sleep, clock=clock.read)
         self.assertEqual([item.filename for item in results],
                          ["a.pkg", "b.pkg"])
@@ -1922,11 +2462,9 @@ class TheInstallQueue(unittest.TestCase):
         # "the file has gone" would confirm an install nobody has evidence
         # for, on the one failure the console is most likely to produce.
         clock = Clock()
-        folder = Folder(clock, takes=5.0, unreadable=3)
+        folder, confirm = self.console(clock, takes=5.0, unreadable=3)
         results = updates.install_queue(
-            FiringActions(), [self.ITEM], folder,
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            FiringActions(), [self.ITEM], folder, confirm=confirm,
             sleep=clock.sleep, clock=clock.read)
         self.assertTrue(results[0].confirmed)
         self.assertGreaterEqual(clock.now, 5.0)
@@ -2124,10 +2662,9 @@ class TheInstallQueue(unittest.TestCase):
         # says nothing between being asked and deleting the package.
         clock = Clock()
         seen = []
+        folder, confirm = self.console(clock, takes=3.0)
         updates.install_queue(
-            FiringActions(), [self.ITEM], Folder(clock, takes=3.0),
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            FiringActions(), [self.ITEM], folder, confirm=confirm,
             on_progress=seen.append, sleep=clock.sleep, clock=clock.read)
         waits = [item for item in seen if item[0] == "waiting"]
         self.assertTrue(waits)
@@ -2139,10 +2676,9 @@ class TheInstallQueue(unittest.TestCase):
     def test_an_unconfirmed_package_says_so_in_the_stage_it_reports(self):
         clock = Clock()
         seen = []
+        folder, confirm = self.console(clock, keeps={"a.pkg"})
         updates.install_queue(
-            FiringActions(), [self.ITEM], Folder(clock, keeps={"a.pkg"}),
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            FiringActions(), [self.ITEM], folder, confirm=confirm,
             on_progress=seen.append, sleep=clock.sleep, clock=clock.read)
         self.assertIn(("unconfirmed", "a.pkg", 1, 1, BO2), seen)
         self.assertNotIn(("installed", "a.pkg", 1, 1, BO2), seen)
@@ -2161,11 +2697,11 @@ class TheInstallQueue(unittest.TestCase):
             if clock.now >= 2.0:
                 stop.append(True)
 
+        folder, confirm = self.console(clock,
+                                       keeps={"a.pkg", "b.pkg", "c.pkg"})
         results = updates.install_queue(
             actions, [self.ITEM, self.OTHER, ("c.pkg", "BLES00003")],
-            Folder(clock, keeps={"a.pkg", "b.pkg", "c.pkg"}),
-            confirm=updates.version_confirmation(
-                reads_version(self.LANDED)),
+            folder, confirm=confirm,
             cancelled=lambda: bool(stop), sleep=sleeping, clock=clock.read)
         self.assertLess(clock.now, 10.0)
         self.assertEqual(actions.fired, ["a.pkg"])
@@ -3053,6 +3589,26 @@ class ScreenCase(unittest.TestCase):
                        GT5: manifest_bytes("BCES00569-ver.xml")})
 
 
+class TheSummaryHeader(unittest.TestCase):
+    """One line saying what is inside the block, so it can be left closed."""
+
+    def test_it_counts_the_pass_rather_than_naming_itself(self):
+        said = gameupdates._detail_summary(
+            {"opened": 25, "added": 4, "unreadable": 0, "unread": 2})
+        self.assertEqual(said,
+                         "25 disc images checked, 4 added, 2 unread")
+
+    def test_a_scan_that_opened_nothing_says_what_the_block_is(self):
+        self.assertEqual(gameupdates._detail_summary(None),
+                         gameupdates.DETAIL_SUMMARY)
+        self.assertEqual(gameupdates._detail_summary({"opened": 0}),
+                         gameupdates.DETAIL_SUMMARY)
+
+    def test_one_image_reads_as_one(self):
+        said = gameupdates._detail_summary({"opened": 1, "added": 1})
+        self.assertEqual(said, "1 disc image checked, 1 added")
+
+
 class TheScreenRegistration(unittest.TestCase):
     def test_it_registers_the_published_way(self):
         screen = gameupdates.GameUpdatesScreen
@@ -3355,6 +3911,25 @@ class NoImageIsOpenedByTheScreen(ScreenCase):
         self.assertFalse(hasattr(screen, "_look"))
 
 
+class TheSummaryBlockIsClosedToStartWith(ScreenCase):
+    """It ran to a paragraph a game and pushed the table off the screen."""
+
+    def test_it_starts_closed_with_a_line_saying_what_is_in_it(self):
+        screen = self.scan(**self.standard())
+        self.assertFalse(screen._detail.is_open())
+        self.assertTrue(screen._detail.summary())
+
+    def test_the_words_are_still_there_to_be_opened(self):
+        screen = self.scan(**self.standard())
+        screen._detail.set_open(True)
+        self.assertTrue(screen._detail.is_open())
+
+    def test_a_scan_with_nothing_to_say_shows_no_header_at_all(self):
+        screen = self.scan(**self.standard())
+        screen._detail.setText("")
+        self.assertTrue(screen._detail.isHidden())
+
+
 class TheScreenRun(ScreenCase):
     def tick(self, title_id):
         for item in self.rows():
@@ -3380,7 +3955,12 @@ class TheScreenRun(ScreenCase):
         self.assertIn("installed on the console", screen._panel_body.text())
         self.assertIn("stay in the console's packages folder",
                       screen._panel_body.text())
-        self.assertEqual(self.writer.deleted, [])
+        # The only delete is of the name about to be written, and it happens
+        # before the upload. Nothing is deleted after an install.
+        remote = self.writer.stored[0][0]
+        self.assertEqual(self.writer.deleted, [remote])
+        self.assertEqual(self.writer.calls,
+                         [("delete", remote), ("store", remote)])
 
     def test_the_install_is_confirmed_by_reading_the_version_back(self):
         # The package leaving the packages folder says the console has

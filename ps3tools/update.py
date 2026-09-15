@@ -279,10 +279,19 @@ def _cache_fresh(settings, now):
     stored = _cache(settings)
     if "checked" not in stored:
         return False
-    # A remembered release is believed for a day; a remembered "nothing there"
-    # only for an hour, because that one goes stale the moment a release is
-    # published and there is no way for this end to be told.
-    window = (CACHE_SECONDS if isinstance(stored.get("release"), dict)
+    # A remembered release worth telling the user about is believed for a day.
+    # Everything else is believed for an hour, because everything else goes
+    # stale the moment a release is published and there is no way for this end
+    # to be told.
+    #
+    # A remembered release the user has since installed belongs in the second
+    # group. It was in the first, and that is why a 1.2.0 build stayed quiet:
+    # the cache from the day it was offered still held 1.2.0, the check read
+    # it back at every launch, found it was not newer than the build asking,
+    # and said nothing without ever asking GitHub. A release already installed
+    # can never produce news, so keeping it for a day only stops the question
+    # being asked.
+    window = (CACHE_SECONDS if _cache_still_useful(stored)
               else EMPTY_CACHE_SECONDS)
     try:
         checked = float(stored["checked"])
@@ -292,6 +301,14 @@ def _cache_fresh(settings, now):
     # timezone, a machine with no RTC -- would otherwise pin the cache as
     # fresh for as long as the clock is wrong.
     return 0 <= (now - checked) < window
+
+
+def _cache_still_useful(stored):
+    """Whether what is remembered could still be news for this build."""
+    release = stored.get("release")
+    if not isinstance(release, dict):
+        return False
+    return is_newer(Release(release).tag)
 
 
 def _store(settings, payload, now):

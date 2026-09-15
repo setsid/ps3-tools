@@ -584,34 +584,49 @@ def _bo2_decrypted(module, data):
         return {"state": UNPATCHED, "confidence": HIGH, "offset": call,
                 "evidence": ("the snprintf call the fix removes is still at "
                              "file offset %08X" % call)}
-    site = _bo2_nop_site(module, data, sites[0])
-    if site is None:
+    found = _bo2_nop_sites(module, data, sites[0])
+    if not found:
         return {"state": UNKNOWN, "confidence": LOW,
                 "evidence": ("the call site could not be read, so this may "
                              "not be a Black Ops II binary")}
-    return {"state": PATCHED, "confidence": HIGH, "offset": site,
+    return {"state": PATCHED, "confidence": HIGH, "offset": found[0],
+            "offsets": tuple(found),
             "evidence": ("the call at file offset %08X has been replaced with "
-                         "a nop" % site)}
+                         "a nop" % found[0])}
 
 
-def _bo2_nop_site(module, data, start):
-    """Where find_call would have found a call, if a nop sits there instead.
+def _bo2_nop_sites(module, data, start):
+    """Every place in the window where a patched-out call could be sitting.
 
     The patcher has no already-patched case: it looks for a branch and stops if
     there is not one. The window and the two constants are its own.
+
+    Every candidate comes back rather than the first one. find_call looks for a
+    branch, which is never padding, so the first it meets is the call. This
+    looks for a nop, and a nop between the size argument and the call is
+    ordinary compiler output. Taking the first put Black Ops II's multiplayer
+    patch site several instructions early, and a file this program had patched
+    itself came back as unrecognised on the user's own console while the
+    campaign binary beside it read correctly.
+
+    Which candidate is the patch site is settled by the caller against the
+    offset recorded for the title. That is still two readings of the same
+    question: this one narrows the field by instruction pattern, and the table
+    says which of them this build puts it at.
     """
+    out = []
     seen_size = False
     for step in range(0, 16):
         position = start + 4 * step
         if position + 4 > len(data):
-            return None
+            break
         word = module.u32(data, position)
         if word == module.LI_R4_1B8:
             seen_size = True
             continue
         if seen_size and word == module.NOP:
-            return position
-    return None
+            out.append(position)
+    return out
 
 
 # --- the inventory ---------------------------------------------------------

@@ -243,6 +243,13 @@ class QueueItem:
     #: "different" for one that is longer and so is not this file at all.
     present: str = ""
     present_bytes: int = 0
+    #: True when this game is installed on the console under its own title ID
+    #: in /dev_hdd0/game. A different question from `present`, which is about
+    #: a file of this name in the folder this one is going to, and the two
+    #: want different things done about them. An installed game and an image
+    #: of it are not the same thing: somebody may well want both, so this
+    #: warns and leaves the decision alone.
+    installed: bool = False
     #: Whether to copy it. Untick a file the console already has; tick it to
     #: send it again over the top. Never decided silently: a tool that quietly
     #: declines to copy something is how somebody ends up with a missing game
@@ -333,6 +340,10 @@ class QueueItem:
         if self.present == "different":
             return (f"A different file of that name is already there; this "
                     f"one will be called {self.name}")
+        if self.installed:
+            return (f"{self.title_id} is already installed on this console. "
+                    f"This is the disc image of it, which is a separate "
+                    f"thing. It will be copied unless you untick it")
         return "It will be copied"
 
 
@@ -462,18 +473,36 @@ def console_games(lister, device=DEFAULT_DEVICE, folders=BROWSE_FOLDERS):
     return files, listings
 
 
-def match_console(items, listings):
+def match_console(items, listings, installed=()):
     """Mark each queued file against what the console already holds.
 
-    Matched on the name it will have after renaming, because that is the name
-    that will exist on the console; matching on the name on this computer
-    would miss every file that is about to be shortened, which is most of them.
-    Size is used as well wherever both are known, and it is what separates the
-    three cases: the same file, the remains of one, and a different one.
+    Two separate questions, and they were being asked as one.
+
+    The first is whether a file of this name is already in the folder this one
+    is going to. Matched on the name it will have after renaming, because that
+    is the name that will exist on the console; matching on the name on this
+    computer would miss every file that is about to be shortened, which is
+    most of them. Size is used as well wherever both are known, and it is what
+    separates the three cases: the same file, the remains of one, and a
+    different one.
+
+    The second is whether this game is already installed on the console under
+    its own title ID. `installed` is those title IDs. Fourteen images were
+    offered as 144.6 GB and ten and a half hours of copying with every one
+    ticked, and six of them were games sitting in /dev_hdd0/game already. The
+    file names matched nothing because an installed game is not a file.
+
+    The two answers do different things. A duplicate image is a duplicate and
+    is unticked. An installed game is a different thing from an image of it,
+    and somebody may well want both, so that one is said and left ticked for
+    the user to decide.
     """
+    known = {str(title_id).upper() for title_id in (installed or ())}
     for item in items:
         item.present = ""
         item.present_bytes = 0
+        item.installed = bool(item.title_id
+                              and item.title_id.upper() in known)
         if not item.identified:
             item.wanted = False
             item.overwrite = False
@@ -529,6 +558,11 @@ DIFFERENT_LEAD = ("The console already has a different file under each of "
 OVERWRITE_LEAD = ("These are already on the console and you have ticked them, "
                   "so they will be copied over the top:")
 
+INSTALLED_LEAD = ("These games are already installed on this console under "
+                  "their own title IDs. A disc image is a separate thing from "
+                  "an installed game and there are reasons to want both, so "
+                  "these are still ticked. Untick any you do not need:")
+
 
 def already_on_console(items):
     """The ones the console holds in full that are not going to be sent."""
@@ -556,6 +590,18 @@ def overwriting(items):
             and item.wanted and item.overwrite]
 
 
+def installed_on_console(items):
+    """The ones whose game is installed on the console already.
+
+    Kept apart from already_on_console, which is about a file of this name in
+    the folder this one is going to. These are about the game rather than the
+    file, so they are said in different words and nothing is unticked for
+    them.
+    """
+    return [item for item in items
+            if item.identified and item.installed and item.present != "same"]
+
+
 def console_notes(items):
     """Lines saying what the console already holds. Empty when it holds none.
 
@@ -568,14 +614,30 @@ def console_notes(items):
     for lead, group in ((ALREADY_LEAD, already_on_console(items)),
                         (PART_LEAD, part_on_console(items)),
                         (DIFFERENT_LEAD, clashing_on_console(items)),
-                        (OVERWRITE_LEAD, overwriting(items))):
+                        (OVERWRITE_LEAD, overwriting(items)),
+                        (INSTALLED_LEAD, installed_on_console(items))):
         if not group:
             continue
         if lines:
             lines.append("")
         lines.append(lead)
-        lines += [f"    {item.name}" for item in group]
+        lines += [_listed(item, lead) for item in group]
     return lines
+
+
+def _listed(item, lead):
+    """One line under a lead. The installed group names the game as well.
+
+    The other four groups are about a file of that name on the console, so the
+    name is the whole of what identifies it. This one is about the game, and a
+    row reading only Ghosts.iso does not say which title it clashes with.
+    """
+    if lead is not INSTALLED_LEAD:
+        return f"    {item.name}"
+    # Both where both are known. The name is what somebody recognises and the
+    # title ID is the folder on the console they would go and look in.
+    said = ", ".join(part for part in (item.title, item.title_id) if part)
+    return f"    {item.name} ({said})" if said else f"    {item.name}"
 
 
 def settle_after_run(items):

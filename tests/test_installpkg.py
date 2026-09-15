@@ -707,6 +707,21 @@ class WhatIsAlreadyOnTheConsole(ScreenCase):
         self.settle(screen._on_install_here())
         self.assertIn("/dev_hdd0/game/BLES01807/PARAM.SFO", asked)
 
+    def test_a_package_that_went_in_is_named_in_the_colour_for_done(self):
+        # Visual feedback while the queue runs. The list is the only thing on
+        # screen that says which of five packages is through.
+        screen = self.build_with(
+            ["EP0002-BLES01807_00-GTAV.pkg"],
+            heads={"EP0002-BLES01807_00-GTAV.pkg": pkg_head("BLES01807")})
+        self.actions.on_install = lambda name: self.lister.listings.update(
+            {"/dev_hdd0/packages": ""})
+        self.rows_on_console(screen)[0].setCheckState(0, Qt.Checked)
+        APP.processEvents()
+        self.settle(screen._on_install_here())
+        ok = screen._colour_name("ok")
+        self.assertIn(f'<span style="color: {ok}">{updates.STATE_INSTALLED}',
+                      screen._queue.text())
+
     def test_a_title_the_console_cannot_describe_is_not_called_installed(self):
         # The package has gone from the folder and the console says nothing
         # about the title. Plenty of packages add to a game that is already

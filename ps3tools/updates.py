@@ -35,6 +35,7 @@ An empty response from the manifest host is the normal answer for a game that
 never had a title update. It is not an error and must not be shown as one.
 """
 
+import contextlib
 import datetime
 import ftplib
 import hashlib
@@ -604,6 +605,12 @@ class InstalledTitle:
     #: The name ps3tools.detect knew, when it knew one. Usually None: the
     #: manifest is where names come from.
     known_name: str = None
+    #: What the console's own PARAM.SFO calls this game, and the VERSION in
+    #: the same file. Used only where Sony has no entry for the title: there
+    #: is nothing to compare against there, and a blank name with a blank
+    #: version is worse than what the console is willing to say.
+    console_name: str = ""
+    console_version: str = ""
     #: True when the game is on the console with no title update installed at
     #: all. Deliberately not the same thing as version being None, which means
     #: an update is installed and its version could not be read. Two different
@@ -619,7 +626,8 @@ class InstalledTitle:
 
 
 def scan_console(lister, param_sfo_reader=None, devices=None,
-                 image_identifier=None, on_stage=None, verdict=None):
+                 image_identifier=None, on_stage=None, verdict=None,
+                 meter=None):
     """Every game on the console, with the title update installed on it.
 
     `verdict`, when given, is filled in with what the scan is entitled to
@@ -656,6 +664,11 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
 
     if param_sfo_reader is None:
         param_sfo_reader = getattr(lister, "download_bytes", None)
+    if meter is not None:
+        # Measured rather than guessed at. Reading the titles' own details is
+        # the part of a scan that takes the time, and which part of that is
+        # connections, seeks or waiting has never been written down.
+        param_sfo_reader = meter.measured_reader(param_sfo_reader)
 
     found = {}
     notes = []
@@ -705,10 +718,16 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
                 homebrew[title_id] = HOMEBREW_TITLES[title_id]
                 continue
             path = f"{detect.GAME_ROOT}/{title_id}"
-            version, detail = read_installed_version(param_sfo_reader,
-                                                     title_id)
-            found[title_id] = InstalledTitle(title_id=title_id, path=path,
-                                             version=version, detail=detail)
+            # One read of PARAM.SFO for all of it. The title update version is
+            # what Sony's list is compared against; the name and VERSION are
+            # what the row falls back to when Sony has no entry at all.
+            details = read_title_details(param_sfo_reader, title_id)
+            found[title_id] = InstalledTitle(
+                title_id=title_id, path=path,
+                version=details.version or None,
+                detail="" if details.version else details.detail,
+                console_name=details.name,
+                console_version=details.content_version)
     except Exception as exc:                                # noqa: BLE001
         notes.append(f"The console stopped answering while its installed "
                      f"games were being listed, so this list may be "
@@ -757,13 +776,18 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
             else:
                 elsewhere.append((name, title_id, outcome))
         notes.append(_image_pass_note(opened, added, elsewhere, unreadable,
-                                      unread))
+                                      unread, listed=len(found)))
         # Only a pass where every image gave up a title ID is evidence about
         # which games are on this console. One that read an image and found
         # nothing cannot say whether that image used to be the title now
         # missing from the list, so it must not be allowed to remove it.
         if verdict is not None:
             verdict["images_conclusive"] = not unread and not unreadable
+            # The same pass in numbers, for a one line header over the words.
+            verdict["images"] = {"opened": opened, "added": len(added),
+                                 "elsewhere": len(elsewhere),
+                                 "unreadable": len(unreadable),
+                                 "unread": len(unread)}
         # Only images that were actually read leave the unidentified list. A
         # worker that died, a budget that ran out and an image that could not
         # be read all leave it exactly where it was: nothing was learned, so
@@ -773,13 +797,18 @@ def scan_console(lister, param_sfo_reader=None, devices=None,
     elif unidentified:
         notes.append(_unidentified_note(unidentified))
 
-    for name in sorted(set(homebrew.values())):
-        # One sentence each, which keeps it singular. There is normally
-        # exactly one of these and there has never been a console with many.
+    names = sorted(set(homebrew.values()))
+    if names:
+        # One line for all of them. Two sentences saying the same thing about
+        # two different titles is two lines of a summary that is already long.
         notes.append(
-            f"{name} was found on this console. It is homebrew rather than a "
-            f"game Sony published, so it is not in the list above: there are "
-            f"no title updates for it to be missing.")
+            f"{_names_sentence(names)} "
+            f"{'was' if len(names) == 1 else 'were'} found on this console. "
+            f"{'It is' if len(names) == 1 else 'They are'} homebrew, so Sony "
+            f"publishes no updates for "
+            f"{'it' if len(names) == 1 else 'them'} and "
+            f"{'it is' if len(names) == 1 else 'they are'} not listed "
+            f"above.")
 
     return [found[key] for key in sorted(found)], notes, unidentified
 
@@ -900,13 +929,21 @@ PLATFORM_WORDS = {
 }
 
 
-def _image_pass_note(opened, added, elsewhere, unreadable, unread=()):
+def _image_pass_note(opened, added, elsewhere, unreadable, unread=(),
+                     listed=0):
     """What the slow pass did, including what it deliberately left out.
 
     Thirteen images opened and one game added is the normal result on a
     console with a shelf of PS2 games, and without this it reads as the pass
     having barely worked. Sony publishes title updates for PS3 titles and
-    nothing else, so a PS2 image having no update is the answer, not a gap.
+    nothing else, so a PS2 image having no update is an answer. A gap is
+    something else.
+
+    `listed` is how many games the list above ended up with. An image that
+    could not be read is a gap only if the list depends on it, and where the
+    pass added nothing the list is entirely what was found in the console's
+    own game folders. Saying so is the difference between a summary that
+    reads as a failure and one that reads as a report.
     """
     read = opened - len(unread)
     parts = [f"Looked at {opened} disc image{'' if opened == 1 else 's'} on "
@@ -931,10 +968,8 @@ def _image_pass_note(opened, added, elsewhere, unreadable, unread=()):
         if key == "already in the list above":
             parts.append(f"{len(names)} {key}: {_names_sentence(names)}.")
         elif key == "homebrew":
-            parts.append(f"{len(names)} homebrew rather than a game Sony "
-                         f"published, so there are no title updates for "
-                         f"{'it' if len(names) == 1 else 'them'}: "
-                         f"{_names_sentence(names)}.")
+            parts.append(f"{len(names)} homebrew, which Sony publishes no "
+                         f"updates for: {_names_sentence(names)}.")
         else:
             parts.append(f"{len(names)} {key}, which Sony publishes no PS3 "
                          f"title updates for: {_names_sentence(names)}.")
@@ -953,6 +988,14 @@ def _image_pass_note(opened, added, elsewhere, unreadable, unread=()):
                      f"{'it' if len(unread) == 1 else 'them'} yet: "
                      f"{_names_sentence(unread)}. Checking again is worth a "
                      f"try.")
+    if (unreadable or unread) and not added and listed:
+        # Nothing on the list came out of these images, so nothing on it is
+        # missing because they could not be read. Worth trying again, and it
+        # is not a hole in what is above.
+        parts.append(f"Every one of the {listed} game"
+                     f"{'' if listed == 1 else 's'} listed above was found in "
+                     f"a game folder on the console, so none of them depends "
+                     f"on the images that could not be read.")
     if not added and not groups and not unreadable and not unread:
         parts.append("Nothing could be read out of them.")
     return " ".join(parts)
@@ -1016,8 +1059,207 @@ def _unread_row(entry, error):
 IMAGE_WORKERS = 4
 
 
+class ScanMeter:
+    """Where the time in a scan actually goes, measured rather than guessed.
+
+    A full scan takes two to three minutes on a console with a shelf of games
+    and nobody has measured which part of it does. This keeps one row per
+    thing read: how long it took, how many bytes came back, and how many
+    separate reads it took to get them.
+
+    Connection setup is a row of its own, which is what separates the three
+    candidates. Time in "open" is the cost of making connections. Time in an
+    image with a high read count and few bytes is seeking. Time in an image
+    with a low read count and a long elapsed is the console pausing, which is
+    where a reconnect sits.
+
+    Nothing here changes what is read or in what order. Parallelism has not
+    helped, most likely because the bottleneck is one mechanical drive seeking
+    between concurrent reads, and that is a thing to measure before anything
+    is changed on the strength of it.
+
+    One of these consoles had a wedged FTP server which made everything about
+    ten times slower, so a measurement is only worth having from a console
+    that has just been restarted.
+    """
+
+    def __init__(self, clock=time.monotonic):
+        self.rows = []
+        self._clock = clock
+        self._lock = threading.Lock()
+
+    def record(self, kind, name, seconds, size=0, reads=0):
+        with self._lock:
+            self.rows.append({"kind": kind, "name": name,
+                              "seconds": round(float(seconds), 3),
+                              "bytes": int(size or 0),
+                              "reads": int(reads or 0)})
+
+    @contextlib.contextmanager
+    def timing(self, kind, name):
+        """Time one thing. The caller fills in bytes and reads as it learns."""
+        started = self._clock()
+        counter = {"bytes": 0, "reads": 0}
+        try:
+            yield counter
+        finally:
+            self.record(kind, name, self._clock() - started,
+                        counter["bytes"], counter["reads"])
+
+    def measured_reader(self, reader, kind="title"):
+        """`reader` with one row recorded for every file it is asked for.
+
+        One call is one title's PARAM.SFO, so the rows come out per title
+        with nothing else to work out. A read that raised is recorded too: a
+        console that refuses quickly and one that takes ten seconds to refuse
+        are different problems.
+        """
+        if reader is None:
+            return None
+
+        def read(path, *args, **kwargs):
+            name = str(path).strip("/").split("/")
+            name = name[-2] if len(name) > 1 else str(path)
+            with self.timing(kind, name) as counter:
+                data = reader(path, *args, **kwargs)
+                counter["reads"] = 1
+                counter["bytes"] = len(data or b"")
+                return data
+        return read
+
+    def totals(self, kind):
+        rows = [row for row in self.rows if row["kind"] == kind]
+        return {"count": len(rows),
+                "seconds": round(sum(row["seconds"] for row in rows), 1),
+                "bytes": sum(row["bytes"] for row in rows),
+                "reads": sum(row["reads"] for row in rows)}
+
+    def slowest(self, kind, limit=3):
+        rows = [row for row in self.rows if row["kind"] == kind]
+        return sorted(rows, key=lambda row: -row["seconds"])[:limit]
+
+    def table(self):
+        """Every row, one line each, for somebody reading the numbers."""
+        return [f"{row['kind']} {row['name']}: {row['seconds']}s, "
+                f"{human_size(row['bytes'])}, {row['reads']} read(s)"
+                for row in self.rows]
+
+    def report(self):
+        """The measurements in a sentence or two, or "" if nothing was timed.
+
+        Written for the summary block, which is where somebody looking for
+        this would go. The slowest few are named because they are the part
+        worth looking at.
+        """
+        lines = []
+        for kind, word in (("title", "title"), ("image", "disc image")):
+            totals = self.totals(kind)
+            if not totals["count"]:
+                continue
+            lines.append(
+                f"{totals['count']} {word}"
+                f"{'' if totals['count'] == 1 else 's'} read in "
+                f"{totals['seconds']}s, {human_size(totals['bytes'])} over "
+                f"{totals['reads']} read"
+                f"{'' if totals['reads'] == 1 else 's'}.")
+            named = ", ".join(f"{row['name']} {row['seconds']}s"
+                              for row in self.slowest(kind))
+            if named:
+                lines.append(f"Slowest: {named}.")
+        opening = self.totals("open")
+        if opening["count"]:
+            lines.append(f"{opening['count']} connection"
+                         f"{'' if opening['count'] == 1 else 's'} opened, "
+                         f"{opening['seconds']}s in total.")
+        return " ".join(lines)
+
+
+#: Disc images this program has already identified, kept by name and size.
+IMAGE_CACHE_KEY = "disc_images"
+
+#: Enough for any shelf anybody has. Past it, nothing new is kept rather than
+#: something old being thrown away: what is already there was read off a real
+#: console and a fresh entry has no better claim on the space.
+IMAGE_CACHE_LIMIT = 4000
+
+
+def _image_key(entry):
+    """The name and the byte count, which together are the file.
+
+    A title ID read out of a disc image cannot change: it is inside the file.
+    Two images with the same name and the same size being different games is
+    not a thing that happens on somebody's games shelf.
+
+    An entry with no size is not keyed at all. A name on its own would match a
+    file that had been replaced.
+    """
+    name = str(entry.get("name") or "").strip()
+    size = int(entry.get("size") or 0)
+    return f"{size}:{name}" if name and size > 0 else ""
+
+
+def remembered_images(settings):
+    """{key: title ID} for every image already identified."""
+    store = (settings or {}).get(IMAGE_CACHE_KEY)
+    return store if isinstance(store, dict) else {}
+
+
+def remember_image(settings, entry, title_id):
+    """Keep one identification. Returns whether it was kept."""
+    if settings is None or not title_id:
+        return False
+    key = _image_key(entry)
+    if not key:
+        return False
+    store = settings.get(IMAGE_CACHE_KEY)
+    if not isinstance(store, dict):
+        store = {}
+        settings[IMAGE_CACHE_KEY] = store
+    if key not in store and len(store) >= IMAGE_CACHE_LIMIT:
+        return False
+    store[key] = str(title_id).upper()
+    return True
+
+
+def cached_image_identifier(identifier, settings):
+    """An image reader that never reads an image it has identified before.
+
+    Reading one costs a connection, a seek and a handful of ranged reads
+    against a console that gives up when it is pushed, and it is most of what
+    makes a full scan take minutes. The answer cannot change between scans, so
+    it is asked once.
+
+    Positives only. A read that failed, came back short or found nothing is
+    never kept: each of those is a statement about one attempt rather than
+    about the file, and keeping one would make a bad read permanent. For the
+    same reason a remembered answer is never replaced by a later blank.
+    """
+    def identify(entries):
+        entries = list(entries or [])
+        known = remembered_images(settings)
+        from_memory, wanted = [], []
+        for entry in entries:
+            title_id = known.get(_image_key(entry))
+            if title_id:
+                from_memory.append({
+                    "name": entry.get("name") or "", "opened": True,
+                    "title_id": title_id, "device": entry.get("device"),
+                    "folder": entry.get("folder"), "cached": True})
+            else:
+                wanted.append(entry)
+        found = list(identifier(wanted) or []) if wanted else []
+        by_name = {entry.get("name"): entry for entry in wanted}
+        for row in found:
+            if row.get("opened") and row.get("title_id"):
+                remember_image(settings,
+                               by_name.get(row.get("name")) or row,
+                               row.get("title_id"))
+        return from_memory + found
+    return identify
+
+
 def parallel_image_identifier(open_lister, workers=IMAGE_WORKERS, budget=None,
-                              on_progress=None):
+                              on_progress=None, meter=None):
     """Read the title ID out of each unnamed image, several at a time.
 
     One image at a time was minutes of waiting on a console with a shelf of
@@ -1043,14 +1285,14 @@ def parallel_image_identifier(open_lister, workers=IMAGE_WORKERS, budget=None,
                     on_progress(done[0], len(entries), name)
 
         def attempt(share):
-            with open_lister() as lister:
+            with _measured_open(meter, open_lister) as lister:
                 reader = isoreader.reader_for(lister)
                 try:
                     payload = isoreader.identify_isos(
                         share, reader,
                         total_budget=(budget if budget is not None
                                       else isoreader.DEFAULT_TOTAL_BUDGET),
-                        on_progress=lambda _done, _total, name: report(name))
+                        on_progress=_image_watch(meter, reader, report))
                 finally:
                     reader.release()
             return payload.get("isos") or []
@@ -1085,6 +1327,42 @@ def parallel_image_identifier(open_lister, workers=IMAGE_WORKERS, budget=None,
     if isoreader is None:                                   # pragma: no cover
         return lambda entries: []
     return identify
+
+
+@contextlib.contextmanager
+def _measured_open(meter, open_lister):
+    """The lister, with the cost of opening the connection recorded."""
+    if meter is None:
+        with open_lister() as lister:
+            yield lister
+        return
+    with meter.timing("open", "connection"):
+        opened = open_lister()
+    with opened as lister:
+        yield lister
+
+
+def _image_watch(meter, reader, report):
+    """The progress callback, recording what each image cost on the way past.
+
+    identify_isos reports an image as it finishes with it, so the reader's
+    own counters are read at that point and the difference from the last one
+    is what that image took. The reader counts bytes and ranged reads for
+    itself; nothing here changes what is read.
+    """
+    if meter is None:
+        return lambda _done, _total, name: report(name)
+    marks = {"at": time.monotonic(), "bytes": 0, "reads": 0}
+
+    def watch(_done, _total, name):
+        now = time.monotonic()
+        read_bytes = getattr(reader, "bytes_read", 0) or 0
+        reads = getattr(reader, "reads", 0) or 0
+        meter.record("image", name, now - marks["at"],
+                     read_bytes - marks["bytes"], reads - marks["reads"])
+        marks.update(at=now, bytes=read_bytes, reads=reads)
+        report(name)
+    return watch
 
 
 def image_identifier(lister, budget=None, on_progress=None):
@@ -1208,7 +1486,15 @@ class TitleOnConsole:
     readable: bool = False
     #: The console answered that there is no such path.
     absent: bool = False
+    #: APP_VER, which is the title update version and the one Sony's list can
+    #: be compared against.
     version: str = ""
+    #: VERSION, which every title carries. It is what the disc or the download
+    #: says it is, and it is not a title update version, so it is only ever
+    #: shown where there is no Sony entry to compare anything with.
+    content_version: str = ""
+    #: TITLE out of the same file. The console's own name for the game.
+    name: str = ""
     detail: str = ""
 
 
@@ -1237,9 +1523,14 @@ def read_title_details(param_sfo_reader, title_id):
         return TitleOnConsole(
             detail=(f"The details at {path} could not be read. "
                     f"({reason or 'PARAM.SFO would not parse'})"))
+    # The console writes 01.19 and a person writes 1.19. isoid owns that
+    # conversion; a second opinion on it is how one screen ends up disagreeing
+    # with another about which version is installed.
     return TitleOnConsole(
         readable=True,
-        version=isoid._normalise_version(fields.get("APP_VER")) or "")
+        version=isoid._normalise_version(fields.get("APP_VER")) or "",
+        content_version=isoid._normalise_version(fields.get("VERSION")) or "",
+        name=str(fields.get("TITLE") or "").strip())
 
 
 def title_reader(lister):
@@ -1554,9 +1845,32 @@ def merge_scan(previous, fresh, looked_in=(), looked_at=None, now=None):
     return [kept[key] for key in sorted(kept)]
 
 
+def console_name_for(installed):
+    """What to call a game Sony's list has no name for.
+
+    The console's own PARAM.SFO before the title ID. A row reading
+    "The Sims 3 Pets" is worth more to somebody looking at their own shelf
+    than a row reading BLES01368, and the console is the one holding the game.
+    """
+    return (installed.console_name or installed.known_name
+            or installed.title_id)
+
+
+def console_version_for(installed):
+    """What version to show where Sony has published nothing to compare.
+
+    APP_VER first, which is the title update version. VERSION after it, which
+    every title carries and which is what the disc or the download says it is.
+    Used only where there is no Sony entry: with nothing to compare against,
+    the choice is between what the console says and saying nothing at all.
+    """
+    return installed.version or installed.console_version or None
+
+
 def row_for(installed, manifest):
     """One InstalledTitle plus what the manifest said, as a screen row."""
-    name = manifest.name or installed.known_name or installed.title_id
+    name = (manifest.name or installed.known_name or installed.console_name
+            or installed.title_id)
     row = TitleUpdate(title_id=installed.title_id, name=name,
                       installed=installed.version,
                       nothing_installed=installed.no_update_installed,
@@ -1564,6 +1878,10 @@ def row_for(installed, manifest):
                                 if installed.source == "disc image"
                                 else FROM_GAME_FOLDER))
     if manifest.empty and not manifest.packages:
+        # Sony has nothing for this title, so nothing here will be compared
+        # with anything and the console's own answer is the best there is.
+        row.name = console_name_for(installed)
+        row.installed = console_version_for(installed)
         row.blocked = NO_UPDATE_EVER
         row.detail = ("Sony never released a title update for this game, so "
                       "there is nothing to install. The game is complete as "
@@ -1670,16 +1988,23 @@ def check_titles(installed_titles, fetcher=None, progress=None,
         except TitleNotListed as exc:
             # Sony answered, and the answer was that it has never heard of
             # this title. Expansion discs and homebrew come back this way.
+            # Sony has never heard of this title, so there is nothing its
+            # list can say about the version or the name. The console can say
+            # both, and it is the machine with the game on it.
             rows.append(TitleUpdate(
                 title_id=installed.title_id,
-                name=installed.known_name or installed.title_id,
-                installed=installed.version,
+                name=console_name_for(installed),
+                installed=console_version_for(installed),
                 nothing_installed=installed.no_update_installed,
                 blocked=NOT_LISTED, detail=str(exc)))
             continue
         except (ManifestUnreadable, ValueError) as exc:
+            # The name is the console's, because a name cannot be wrong in a
+            # way that matters. The version is not: Sony's list could not be
+            # read, so what it would have said is unknown, and VERSION is not
+            # a title update version to put in its place.
             row = TitleUpdate(title_id=installed.title_id,
-                              name=installed.known_name or installed.title_id,
+                              name=console_name_for(installed),
                               installed=installed.version,
                               nothing_installed=installed.no_update_installed,
                               blocked=MANIFEST_FAILED, detail=str(exc))
@@ -2128,6 +2453,13 @@ def deliver(row, writer, folder, stream=None, progress=None, cancelled=None,
             free_bytes=None, history=None, installed_reader=None):
     """Download, verify, and only then upload. Returns a Delivered.
 
+    `writer` may be an open writer or a callable that opens one. The screen
+    hands over a callable, so the connection to the console is made when the
+    upload is ready to start. One held open across a download of several
+    hundred megabytes is one webMANftpd has let go of by the time the first
+    upload command reaches it, which showed up as a long pause between the
+    download finishing and anything happening on the console.
+
     The order is the feature. Nothing touches the writer until verify_download
     has returned, and verify_download raises rather than returning False, so
     there is no way to reach the upload with a file that failed the check --
@@ -2178,15 +2510,31 @@ def deliver(row, writer, folder, stream=None, progress=None, cancelled=None,
         raise
 
     try:
-        remote, sent = upload_to_packages(local, writer, filename=filename,
-                                          progress=progress,
-                                          label=row.title_id)
+        with _open_writer(writer) as pipe:
+            remote, sent = upload_to_packages(local, pipe, filename=filename,
+                                              progress=progress,
+                                              label=row.title_id)
     finally:
         _remove(local)
 
     return Delivered(title_id=row.title_id, filename=filename,
                      remote_path=remote, bytes_sent=sent,
                      sha1=arrived.body_sha1, version=package.version)
+
+
+@contextlib.contextmanager
+def _open_writer(writer):
+    """The writer to upload down, opening one first where that is the job.
+
+    A writer already open is used and left open: the caller owns it. A
+    callable is asked for one here and it is closed again afterwards, which is
+    what keeps a connection from sitting idle through a download.
+    """
+    if callable(writer):
+        with writer() as opened:
+            yield opened
+        return
+    yield writer
 
 
 def upload_to_packages(local, writer, filename=None, progress=None, label=""):
@@ -2209,19 +2557,53 @@ def upload_to_packages(local, writer, filename=None, progress=None, label=""):
     remote = f"{PACKAGES_DIR}/{filename}"
     try:
         writer.make_dir(PACKAGES_DIR)
+        _clear_stale_package(writer, remote)
+
         def watch(done, total):
             if progress:
                 progress(("upload", label or filename, done, total))
 
         sent = writer.store(local, remote, on_block=watch)
     except Exception as exc:                                # noqa: BLE001
+        # What is on the console now is part of a file, and part of a package
+        # is not a package. Left there it is something the install list offers
+        # and the console refuses, and the next attempt at the same name waits
+        # out its whole timeout on it.
+        tidied = _clear_stale_package(writer, remote)
         raise UploadFailed(
             f"The console stopped answering while {filename} was being copied "
-            f"to it, so a part-copied file may be left in "
-            f"{PACKAGES_DIR}. Check the console is switched on, on the same "
-            f"network and sitting on its main menu, then try again. "
-            f"({exc.__class__.__name__})") from exc
+            f"to it. "
+            + (f"The part of it that arrived has been removed from "
+               f"{PACKAGES_DIR}. " if tidied else
+               f"A part-copied file may be left in {PACKAGES_DIR}. ")
+            + f"Check the console is switched on, on the same network and "
+              f"sitting on its main menu, then try again. "
+              f"({exc.__class__.__name__})") from exc
     return remote, sent or 0
+
+
+def _clear_stale_package(writer, remote):
+    """Remove a file of this name before writing one over the top of it.
+
+    An attempt that failed leaves its package in the folder. The console has
+    no interest in a file it is not installing, so it will never delete that
+    one, and the wait after the next attempt then sits out its whole timeout
+    on a file nothing is working on.
+
+    This is the only deletion this program performs on a console, it happens
+    before an upload of the same name, and the file it removes is the one
+    about to be replaced. Nothing deletes a package after an install: see the
+    note above install_queue for the 2.1 GB that cost.
+
+    A refusal means the file is not there, which is the ordinary case.
+    """
+    remove = getattr(writer, "delete", None)
+    if remove is None:
+        return False
+    try:
+        return bool(remove(remote))
+    except Exception:                                       # noqa: BLE001
+        return False
 
 
 def _remove(path):
@@ -2402,6 +2784,26 @@ STATE_INSTALLED = "installed"
 STATE_FAILED = "did not install"
 STATE_UNCONFIRMED = "install not confirmed"
 STATE_NOT_SENT = "not sent"
+
+
+#: What colour each of those is on the screen, as a theme token. The stages a
+#: package passes through on the way are deliberately absent: the colour is
+#: for where one ended up, and a row that is still moving says so in words.
+INSTALL_STATE_TOKENS = {
+    STATE_INSTALLED: "ok",
+    STATE_FAILED: "error",
+    STATE_UNCONFIRMED: "warn",
+    STATE_NOT_SENT: "text_dim",
+}
+
+
+def install_state_token(text):
+    """The theme token for one line of the install list, or "".
+
+    One mapping for both cards that install packages, so "installed" is the
+    same green on each of them.
+    """
+    return INSTALL_STATE_TOKENS.get((text or "").strip(), "")
 
 
 #: The stages the install queue reports, in the order they happen. Each one
@@ -2638,9 +3040,34 @@ def version_confirmation(reader):
 
     For title updates, where Sony published the version that was pushed and
     the console can be asked what the game says now.
+
+    The same read doubles as the second signal the wait ends on. See
+    _wait_for_install: a console that installs a package and keeps it is a
+    console that answers the version question long before it answers the
+    other one.
     """
     def confirm(outcome):
         return _confirm_version(outcome, reader)
+
+    def landed(outcome):
+        """Whether the console already reports the version that was sent.
+
+        True only for a version that was read and matches. A read that could
+        not complete is not a result, so it answers False and the wait carries
+        on: this is the signal that ends a wait early and it is never taken
+        from a question that went unanswered.
+        """
+        if not outcome.expected_version or not outcome.title_id:
+            return False
+        try:
+            version, _detail, _absent = _read_version(reader,
+                                                      outcome.title_id)
+        except Exception:                                   # noqa: BLE001
+            return False
+        return bool(version) and _same_version(version,
+                                               outcome.expected_version)
+
+    confirm.landed = landed
     return confirm
 
 
@@ -2660,6 +3087,11 @@ def directory_confirmation(reader):
     A title with nothing there is reported as unconfirmed rather than as
     failed. A package that adds to a game already on the console leaves no
     folder of its own, so an empty answer is not evidence either way.
+
+    Deliberately without the early signal version_confirmation carries. What
+    this asks about appears when the console's installer starts, so an
+    installing console would answer yes and the next package would be fired
+    into a console still busy with this one.
     """
     def confirm(outcome):
         said = f"{outcome.filename} was installed and the console has " \
@@ -2768,15 +3200,24 @@ def install_queue(actions, items, package_present, confirm=None,
             outcome.state = STATE_FAILED
             outcome.reason = str(exc)
         else:
-            finished = _wait_for_install(
+            probe = getattr(confirm, "landed", None)
+            ended = _wait_for_install(
                 package_present, filename, poll_seconds, allowed, sleep,
                 clock, cancelled,
-                on_tick=lambda spent: say("waiting", spent, allowed))
-            if not finished:
-                stopped = cancelled is not None and cancelled()
+                on_tick=lambda spent: say("waiting", spent, allowed),
+                landed=(lambda: probe(outcome)) if probe else None)
+            if ended == WAIT_STOPPED:
                 outcome.reason = (
-                    f"{filename} was still installing when this was stopped."
-                    if stopped else
+                    f"{filename} was still installing when this was stopped.")
+            elif ended == WAIT_SILENT:
+                outcome.reason = (
+                    f"The console stopped answering while {filename} was "
+                    f"installing, so this install could not be confirmed. It "
+                    f"may still be installing on the console. Switch the "
+                    f"console off and on to put its FTP server back, then "
+                    f"look at what is in the packages folder.")
+            elif ended == WAIT_TIMEOUT:
+                outcome.reason = (
                     f"{filename} was still in the console's packages folder "
                     f"after {_minutes(allowed)}, so this install could not be "
                     f"confirmed in the time allowed. It may still be "
@@ -2819,10 +3260,26 @@ def _not_sent(items, why):
                                                  for entry in items)]
 
 
+#: How a wait ended. The package went, the version arrived, the time ran out,
+#: the user stopped it, or the console stopped answering altogether.
+WAIT_GONE = "gone"
+WAIT_LANDED = "landed"
+WAIT_TIMEOUT = "timeout"
+WAIT_STOPPED = "stopped"
+WAIT_SILENT = "silent"
+
+#: A console that has answered nothing at all for this long has stopped
+#: answering. Measured against a real one: a timed-out upload left webMANftpd
+#: accepting connections and replying to nothing, HTTP still answered, and the
+#: wait sat out its whole timeout one failed listing at a time. On a 2 GB
+#: package that is over an hour of a program that looks hung.
+CONSOLE_SILENT_SECONDS = 120.0
+
+
 def _wait_for_install(package_present, filename, poll_seconds,
                       timeout_seconds, sleep, clock, cancelled=None,
-                      on_tick=None):
-    """Whether the package file goes from the console's folder in time.
+                      on_tick=None, landed=None):
+    """How the wait for one package ended. One of the WAIT_ values above.
 
     Measured twice on hardware (192.168.50.95, a 39 MB Minecraft update): the
     console deletes the package from /dev_hdd0/packages when the install
@@ -2838,14 +3295,34 @@ def _wait_for_install(package_present, filename, poll_seconds,
     no use either. One task directory, 00000001, sits there permanently and
     did not change during either install.
 
+    Deleting the package is not something every console does, which is why
+    there are two signals here and the wait ends on whichever answers first.
+    Measured on hardware: BLES02166 was sent 01.07, the console installed it
+    and reported 01.07 afterwards, and the 204 MB package stayed in
+    /dev_hdd0/packages the whole time. A 542 MB Ghosts package behaved the
+    same way in an earlier session. Waiting for a deletion that was never
+    coming spent the entire timeout and then reported an install that had
+    worked as unconfirmed, which for a 2.1 GB package is over an hour of
+    sitting in front of it.
+
+    The second signal is `landed`, and only the caller that has something to
+    check supplies one. It answers True for the version that was sent being
+    the version the console now reports, and False for everything else
+    including a read that went wrong: a read that could not complete is not a
+    result, and it must not end a wait.
+
     A folder that could not be listed answers None and the wait carries on. A
-    read that failed is not evidence that a package has gone.
+    read that failed is not evidence that a package has gone. A run of them is
+    something else: a console that has answered nothing for CONSOLE_SILENT_
+    SECONDS has stopped answering, and waiting out an hour of a timeout one
+    failed listing at a time is not a report of anything.
 
     Cancellation is checked on every pass, so stopping costs one poll interval
     rather than whatever is left of a timeout measured in minutes.
     """
     started = clock()
     deadline = started + timeout_seconds
+    spoke_last = started
     while True:
         try:
             present = package_present(filename)
@@ -2854,14 +3331,26 @@ def _wait_for_install(package_present, filename, poll_seconds,
             # asks again.
             present = None
         if present is False:
-            return True
+            return WAIT_GONE
+        if present is None:
+            if clock() - spoke_last >= CONSOLE_SILENT_SECONDS:
+                return WAIT_SILENT
+        else:
+            spoke_last = clock()
+        if landed is not None:
+            try:
+                if landed():
+                    return WAIT_LANDED
+            except Exception:                               # noqa: BLE001
+                # Nothing was learned, so nothing is concluded here either.
+                pass
         if cancelled is not None and cancelled():
-            return False
+            return WAIT_STOPPED
         spent = clock() - started
         if on_tick is not None:
             on_tick(spent)
         if clock() >= deadline:
-            return False
+            return WAIT_TIMEOUT
         sleep(poll_seconds)
 
 

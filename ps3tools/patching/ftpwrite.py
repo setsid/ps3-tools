@@ -121,6 +121,23 @@ class FtpWriter:
                 pass
             self._ftp = None
 
+    def drop(self):
+        """Close the connection without speaking to the server first.
+
+        close() says QUIT and waits for the reply, which is right for a
+        connection that is working and is a wait of the whole socket timeout
+        for one that is not. A transfer that has just failed is the second
+        case: a timed-out upload left webMANftpd accepting connections and
+        answering nothing, and asking it politely to hang up was more waiting
+        on a socket with nothing to say.
+        """
+        if self._ftp is not None:
+            try:
+                self._ftp.close()
+            except ftplib.all_errors:
+                pass
+            self._ftp = None
+
     def _command(self, run):
         """One command, with a single reconnect if the link has died.
 
@@ -139,7 +156,9 @@ class FtpWriter:
             if self.log:
                 self.log.event("ftp_write_reconnect",
                                reason=exc.__class__.__name__)
-            self.close()
+            # Dropped rather than closed: whatever just went wrong, the
+            # server is not in a state to be asked for a tidy goodbye.
+            self.drop()
             self._pause_if_hurried()
             answer = run(self.open())
         self._last_ok = time.monotonic()

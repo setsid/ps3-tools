@@ -104,6 +104,10 @@ class FtpRangeReader:
         self.timeout = timeout
         self.log = log
         self.bytes_read = 0
+        #: How many separate ranged reads were asked for. Every one of them is
+        #: a REST, a RETR and an abort, so the count is what says whether the
+        #: time went on the transfers or on the round trips around them.
+        self.reads = 0
         self.aborted = 0
         self.dropped = 0
         self._ftp = None
@@ -211,6 +215,7 @@ class FtpRangeReader:
                 f"not on the ranged-read allowlist: {path!r}")
         if length <= 0:
             return b""
+        self.reads += 1
         try:
             ftp = self._open()
             ftp.voidcmd("TYPE I")

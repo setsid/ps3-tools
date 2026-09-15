@@ -248,6 +248,22 @@ NORMALISERS = {
 
 def parse_header(text):
     """The signing parameters out of scetool -i output."""
+    return read_header(text)[0]
+
+
+def read_header(text):
+    """(what was understood, {field: the text that was not understood}).
+
+    Two different answers about one field, and they were being told as one. A
+    field whose label never appears is not in the file as far as this program
+    can see. A field that was printed, with a value that means nothing here,
+    is a file this program has not been taught about.
+
+    Saying the first when it is the second sends somebody to look for a header
+    block that was there all along. It did: a US copy of Black Ops II was
+    reported as having no App type in its header while scetool -i on the same
+    file printed a complete Application Info block.
+    """
     found = {}
     section = ""
     for line in (text or "").splitlines():
@@ -269,11 +285,36 @@ def parse_header(text):
                     found[name] = value
                 break
     info = {}
+    unreadable = {}
     for name, value in found.items():
         normalised = NORMALISERS[name](value)
         if normalised:
             info[name] = normalised
-    return info
+        else:
+            unreadable[name] = value.strip()
+    return info, unreadable
+
+
+def reached_app_info(text):
+    """Whether scetool's output got as far as the block the fields sit in.
+
+    A complete -i on a signed binary prints an Application Info block, and the
+    fields this program needs are in it and below it. An output that stops
+    before it never mentioned them, so they are missing from the text rather
+    than from the file.
+
+    Measured: a scan reported "has no App type in its header" for a file whose
+    header was complete. What came back was seven lines ending at the key
+    revision, and scetool had exited without complaint.
+    """
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line.startswith("[*]"):
+            continue
+        section = line[3:].strip().rstrip(":").lower()
+        if any(part in section for part in APP_SECTIONS):
+            return True
+    return False
 
 
 def title_id_from(content_id):
@@ -390,14 +431,41 @@ class Scetool:
         name = os.path.basename(path)
         output = self._runner(info_args(path, klicensee),
                               f"reading the header of {name}")
-        found = parse_header(output)
+        found, unreadable = read_header(output)
         missing = [field for field in REQUIRED_FIELDS if field not in found]
-        if missing:
-            words = ", ".join(FIELD_TITLES[field] for field in missing)
+        if missing and not reached_app_info(output):
+            # The output stopped before the part that carries these fields, so
+            # nothing here is a statement about the file. A file this program
+            # could not read is a different thing from one it has read and
+            # rejected, and saying the second sends somebody to look for a
+            # header block that is sitting there in full.
+            lines = [line for line in output.splitlines() if line.strip()]
+            ended = lines[-1].strip() if lines else "nothing at all"
             raise ScetoolError(
-                f"{name} has no {words} in its header, so it is not one of "
-                f"the signed binaries this tool knows how to rebuild. scetool "
-                f"said:\n{output}")
+                f"scetool stopped before it printed the details of {name}. "
+                f"What came back is {len(lines)} line(s), ending at "
+                f"{ended!r}, and it never reached the Application Info block. "
+                f"Nothing here says anything is wrong with the file: this is "
+                f"a read that did not finish. The usual cause is the copy "
+                f"taken off the console being short of the whole file. "
+                f"scetool said:\n{output}")
+        if missing:
+            absent = [field for field in missing if field not in unreadable]
+            strange = [field for field in missing if field in unreadable]
+            parts = []
+            if absent:
+                words = ", ".join(FIELD_TITLES[field] for field in absent)
+                parts.append(f"{name} has no {words} in its header")
+            for field in strange:
+                # Named with the value that was actually printed. This is the
+                # file this program has not been taught about, and the value
+                # is the whole of what anybody needs in order to teach it.
+                parts.append(f"{name} gives its {FIELD_TITLES[field]} as "
+                             f"{unreadable[field]!r}, which this tool does "
+                             f"not recognise")
+            raise ScetoolError(
+                "; ".join(parts) + f". It is not one of the signed binaries "
+                f"this tool knows how to rebuild. scetool said:\n{output}")
         found["raw"] = output
         return found
 

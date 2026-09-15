@@ -189,7 +189,7 @@ class FetchTests(NoNetworkCase):
         obstacle to it. It exists so a version change is always a decision
         somebody made rather than something noticed later on a screenshot.
         """
-        self.assertEqual(update.VERSION, "1.2.1")
+        self.assertEqual(update.VERSION, "1.2.2")
         # Plain dotted numbers, or the tag comparison silently stops working.
         self.assertIsNotNone(update.parse_version(update.VERSION))
 
@@ -375,6 +375,35 @@ class CheckTests(NoNetworkCase):
         self.assertEqual(len(self.seen), 1, "asked GitHub twice in one day")
         self.assertIsNotNone(second)
         self.assertEqual(second.tag, "v2.1")
+
+    def test_a_release_already_installed_is_not_believed_all_day(self):
+        # The report this exists for. A 1.2.0 build never announced 1.2.1.
+        # The cache from the day 1.2.0 was offered still held 1.2.0, every
+        # launch read it back, found it was not newer than the build asking,
+        # and said nothing without ever asking GitHub again.
+        installed = update.VERSION
+        self.settings[update.SETTING_CACHE] = {
+            "checked": 1000.0,
+            "release": release_payload(f"v{installed}")}
+        found = update.check(
+            self.settings,
+            fetcher=self.fetcher(release_payload("v99.0")),
+            now=1000.0 + update.EMPTY_CACHE_SECONDS + 1)
+        self.assertEqual(len(self.seen), 1, "never asked GitHub again")
+        self.assertIsNotNone(found)
+        self.assertEqual(found.tag, "v99.0")
+
+    def test_a_release_still_worth_showing_is_believed_all_day(self):
+        # The other half of it. News that has not been acted on yet survives
+        # a restart without a second request.
+        self.settings[update.SETTING_CACHE] = {
+            "checked": 1000.0, "release": release_payload("v99.0")}
+        found = update.check(
+            self.settings,
+            fetcher=self.fetcher(release_payload("v99.1")),
+            now=1000.0 + update.EMPTY_CACHE_SECONDS + 1)
+        self.assertEqual(len(self.seen), 0)
+        self.assertEqual(found.tag, "v99.0")
 
     def test_a_check_after_a_day_asks_again(self):
         update.check(self.settings,

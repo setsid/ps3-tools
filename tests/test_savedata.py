@@ -1186,6 +1186,23 @@ class TheScreenDoesNotInventSizes(ScreenCase):
             self.assertEqual(child.text(1), saves_screen.SIZE_UNKNOWN)
         self.assertEqual(parent.text(1), saves_screen.SIZE_UNKNOWN)
 
+    def test_a_console_that_sizes_its_directories_is_not_believed(self):
+        # Measured on hardware: this console reports 512 for every save
+        # directory, and every row on the screen said 512 bytes. That number
+        # is the directory entry rather than what is inside it.
+        sized = {path: value.replace("root            0 Sep",
+                                     "root          512 Sep")
+                 for path, value in LISTINGS.items()}
+        self.screen.lister_factory = lambda host: FakeLister(listings=sized)
+        self.scan()
+        parent = self.screen.tree.topLevelItem(0)
+        self.assertEqual(parent.text(1), saves_screen.SIZE_UNKNOWN)
+        for index in range(parent.childCount()):
+            child = parent.child(index)
+            if child.data(0, Qt.UserRole) is None:
+                continue
+            self.assertEqual(child.text(1), saves_screen.SIZE_UNKNOWN)
+
     def test_no_row_ever_claims_zero_bytes_before_the_copy(self):
         parent = self.screen.tree.topLevelItem(0)
         for index in range(parent.childCount()):

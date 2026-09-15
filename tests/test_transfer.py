@@ -470,6 +470,80 @@ class WhatIsAlreadyThere(ImageCase):
         self.assertEqual(transfer.chosen(items), [])
 
 
+class AGameAlreadyInstalledOnTheConsole(ImageCase):
+    """The file is not there and the game is. Two different answers.
+
+    Measured on a real console: fourteen images were offered as 144.6 GB and
+    ten and a half hours of copying with every one ticked, and six of them
+    were games already installed under their own title IDs in /dev_hdd0/game.
+    Matching on file name and size found nothing, because an installed game is
+    not a file in the folder an image is copied into.
+    """
+
+    INSTALLED = "BLES01428"
+
+    def queued(self, name="A Game.iso"):
+        return transfer.build_queue([self.ps3(name, pad_to=8192)])
+
+    def test_the_title_id_is_matched_against_what_is_installed(self):
+        items = self.queued()
+        self.assertEqual(items[0].title_id, self.INSTALLED)
+        transfer.match_console(items, {}, [self.INSTALLED])
+        self.assertTrue(items[0].installed)
+
+    def test_it_stays_ticked_because_an_image_is_a_separate_thing(self):
+        # An installed game and a disc image of it are different things and
+        # there are reasons to want both, so this is said and left alone.
+        items = self.queued()
+        transfer.match_console(items, {}, [self.INSTALLED])
+        self.assertTrue(items[0].wanted)
+        self.assertIn("already installed on this console", items[0].plan_text)
+        self.assertIn(self.INSTALLED, items[0].plan_text)
+
+    def test_the_same_image_already_in_the_folder_is_still_a_duplicate(self):
+        # The other of the two situations, and it behaves as it did: the same
+        # file in the folder it is going to is a duplicate and is unticked.
+        path = self.ps3("A Game.iso", pad_to=8192)
+        items = transfer.build_queue([path])
+        transfer.match_console(items,
+                               {PS3_DIR: {"a game.iso": self.size(path)}},
+                               [self.INSTALLED])
+        self.assertEqual(items[0].present, "same")
+        self.assertFalse(items[0].wanted)
+        self.assertIn("Already on the console", items[0].plan_text)
+
+    def test_a_duplicate_image_is_not_also_reported_as_installed(self):
+        # One row says one thing. The image being in the folder already is the
+        # more specific answer and it is the one shown.
+        path = self.ps3("A Game.iso", pad_to=8192)
+        items = transfer.build_queue([path])
+        transfer.match_console(items,
+                               {PS3_DIR: {"a game.iso": self.size(path)}},
+                               [self.INSTALLED])
+        self.assertEqual(transfer.installed_on_console(items), [])
+
+    def test_the_notes_say_which_games_are_installed_and_name_them(self):
+        items = self.queued()
+        transfer.match_console(items, {}, [self.INSTALLED])
+        said = "\n".join(transfer.console_notes(items))
+        self.assertIn("already installed on this console", said)
+        self.assertIn(self.INSTALLED, said)
+        # And it does not claim they will not be copied. They will.
+        self.assertIn("still ticked", said)
+
+    def test_a_game_that_is_not_installed_says_nothing(self):
+        items = self.queued()
+        transfer.match_console(items, {}, ["BLES99999"])
+        self.assertFalse(items[0].installed)
+        self.assertEqual(transfer.console_notes(items), [])
+        self.assertEqual(items[0].plan_text, "It will be copied")
+
+    def test_a_console_that_could_not_be_asked_claims_nothing(self):
+        items = self.queued()
+        transfer.match_console(items, {})
+        self.assertFalse(items[0].installed)
+
+
 # --- recognising a game that is already there --------------------------------
 
 class RecognisingWhatIsAlreadyThere(ImageCase):
@@ -1286,6 +1360,26 @@ class TheGameItAlreadyHas(ScreenCase):
         text = screen.confirm_text(transfer.chosen(screen._items))
         self.assertIn(transfer.ALREADY_LEAD, text)
         self.assertIn("A Game.iso", text)
+
+    def test_a_game_installed_on_the_console_is_named_before_the_button(self):
+        # 144.6 GB and ten and a half hours of copying, with six of the
+        # fourteen already installed. It has to be said before the button is
+        # pressed rather than after.
+        path = self.ps3("A Game.iso", 8192)
+        screen = self.build(listings={
+            PS3_DIR: [], PS2_DIR: [],
+            "/dev_hdd0/game/": [("BLES01428", 0, True)]})
+        screen.on_enter()
+        self.settle(screen)
+        screen.add_files([path])
+        row = self.rows()[0]
+        # Still ticked. An installed game and an image of it are separate
+        # things and the user is the one who decides.
+        self.assertEqual(row.checkState(0), Qt.Checked)
+        self.assertIn("already installed on this console", row.text(5))
+        text = screen.confirm_text(transfer.chosen(screen._items))
+        self.assertIn(transfer.INSTALLED_LEAD, text)
+        self.assertIn("BLES01428", text)
 
     def test_a_part_copied_file_is_still_offered_and_says_which_it_is(self):
         # Same name, different size. That is a run that stopped or another

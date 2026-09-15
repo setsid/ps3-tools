@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout)
 
 from ps3diag import parsers, transport
-from ps3tools import transfer
+from ps3tools import transfer, updates
 from ps3tools.patching.ftpwrite import FtpWriter
 from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
@@ -94,6 +94,10 @@ class TransferGamesScreen(Screen):
         self._items = []
         self._console_files = []
         self._listings = {}
+        #: Title IDs with a folder under /dev_hdd0/game. A game installed
+        #: there is not a file in any of the folders this screen copies into,
+        #: so nothing in _listings can answer whether it is already here.
+        self._installed = []
         self._task = None
         self._control = None
         self._working = False
@@ -359,7 +363,12 @@ class TransferGamesScreen(Screen):
             devices = read_storage(host)
             with open_lister(host) as lister:
                 files, listings = transfer.console_games(lister, device)
-            return devices, files, listings
+                # The same connection, because the question is about the same
+                # console. A game installed under its own title ID is not a
+                # file in any of the folders above, so nothing in `listings`
+                # can answer it.
+                installed = updates.installed_title_ids(lister)
+            return devices, files, listings, installed
 
         task = self.submit(work)
         task.finished.connect(self._on_scan)
@@ -368,10 +377,11 @@ class TransferGamesScreen(Screen):
         return task
 
     def _on_scan(self, result):
-        devices, files, listings = result
+        devices, files, listings, installed = result
         self._devices = list(devices or [])
         self._console_files = list(files or [])
         self._listings = dict(listings or {})
+        self._installed = list(installed or [])
         wanted = self._device.currentText() or transfer.DEFAULT_DEVICE
         names = transfer.storage_devices(self._devices)
         self._device.blockSignals(True)
@@ -382,7 +392,8 @@ class TransferGamesScreen(Screen):
         self._device.blockSignals(False)
         self._show_space()
         self._fill_console_table()
-        transfer.match_console(self._items, self._listings)
+        transfer.match_console(self._items, self._listings,
+                               self._installed)
         self._fill_table()
         self._hide_panel()
 
@@ -431,7 +442,8 @@ class TransferGamesScreen(Screen):
         # in hand drops them, so a row cannot go on claiming the console has a
         # file in a folder nobody has looked in yet; the scan below then fills
         # in what the new device really holds.
-        transfer.match_console(self._items, self._listings)
+        transfer.match_console(self._items, self._listings,
+                               self._installed)
         self._fill_table()
         self.scan_console()
 
@@ -455,7 +467,8 @@ class TransferGamesScreen(Screen):
         # is shown either of them. Only then is the console consulted, because
         # the name that matters is the one that will land on it.
         transfer.assign_names(self._items)
-        transfer.match_console(self._items, self._listings)
+        transfer.match_console(self._items, self._listings,
+                               self._installed)
         self._fill_table()
         return self._items
 
@@ -616,7 +629,9 @@ class TransferGamesScreen(Screen):
 
         def work(control):
             with open_lister(host) as lister:
-                return transfer.console_games(lister, device)
+                files, listings = transfer.console_games(lister, device)
+                installed = updates.installed_title_ids(lister)
+            return files, listings, installed
 
         self._check_note = ""
         self._go.setEnabled(False)
@@ -629,11 +644,13 @@ class TransferGamesScreen(Screen):
 
     def _on_recheck(self, result):
         """What the console says now, put on the screen before the question."""
-        files, listings = result
+        files, listings, installed = result
         self._console_files = list(files or [])
         self._listings = dict(listings or {})
+        self._installed = list(installed or [])
         self._fill_console_table()
-        transfer.match_console(self._items, self._listings)
+        transfer.match_console(self._items, self._listings,
+                               self._installed)
         self._stage.setText("")
         # Redrawn first so that the rows and the ticks behind the box already
         # say what the box is about to say. A dialog that contradicts the table

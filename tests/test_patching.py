@@ -160,6 +160,216 @@ def factory_for(server):
     return factory
 
 
+RETAIL_DUMP = """[*] SCE Header:
+ Magic                   SCE
+ Version                 0x2
+ Key Revision            0x0010
+ Header Type             [SELF]
+[*] Application Info:
+ Auth-ID                 [retail game/update]
+ Vendor-ID               [normal]
+ SELF-Type               [NPDRM Application]
+ Version                 01.00
+[*] Control Info:
+ NPDRM Info
+ License Type            [Free]
+ App Type                {app_type}
+ ContentID               UP0002-BLUS31011_00-CODBLOPS2PATCH09
+"""
+
+
+class WhatTheHeaderReadSaysWhenItCannotRead(unittest.TestCase):
+    """A field that was printed and a field that was never there.
+
+    A US copy of Black Ops II was reported as having no App type in its
+    header, while scetool -i on the same file printed a complete Application
+    Info block. The field was there. Its value was one this program has no
+    entry for, and it was dropped without a word, so the message named a
+    cause that was not the cause.
+    """
+
+    def scetool(self, output):
+        tool = scetool.Scetool.__new__(scetool.Scetool)
+        tool._runner = lambda args, what: output
+        return tool
+
+    def test_a_value_it_does_not_know_is_kept_apart_from_a_missing_one(self):
+        info, unreadable = scetool.read_header(
+            RETAIL_DUMP.format(app_type="[0x08]"))
+        self.assertNotIn("app_type", info)
+        self.assertEqual(unreadable["app_type"], "[0x08]")
+        # Everything else read, including the two fields that sit beside it
+        # in the same encrypted block.
+        self.assertEqual(info["licence_type"], "FREE")
+        self.assertEqual(info["key_revision"], "0010")
+        self.assertTrue(info["content_id"])
+
+    def test_a_known_value_reads_as_it_always_did(self):
+        info, unreadable = scetool.read_header(
+            RETAIL_DUMP.format(app_type="[Update SPRX]"))
+        self.assertEqual(info["app_type"], "USPRX")
+        self.assertEqual(unreadable, {})
+
+    def test_the_message_names_the_value_that_was_printed(self):
+        tool = self.scetool(RETAIL_DUMP.format(app_type="[0x08]"))
+        with self.assertRaises(scetool.ScetoolError) as caught:
+            tool.info("t6mp_ps3f.self")
+        said = str(caught.exception)
+        self.assertIn("gives its App type as '[0x08]'", said)
+        self.assertNotIn("has no App type", said)
+        # And the whole dump is still there to be read.
+        self.assertIn("Key Revision", said)
+
+    def test_a_field_that_really_is_absent_still_says_so(self):
+        without = "\n".join(line for line in
+                             RETAIL_DUMP.format(app_type="[Update SPRX]")
+                             .splitlines()
+                             if "App Type" not in line)
+        tool = self.scetool(without)
+        with self.assertRaises(scetool.ScetoolError) as caught:
+            tool.info("t6mp_ps3f.self")
+        self.assertIn("has no App type in its header", str(caught.exception))
+
+    def test_parse_header_still_answers_the_way_it_did(self):
+        parsed = scetool.parse_header(
+            RETAIL_DUMP.format(app_type="[Update SPRX]"))
+        self.assertEqual(parsed["app_type"], "USPRX")
+
+
+#: What came back on a real console, in full. Seven lines and it stops.
+TRUNCATED_DUMP = """scetool 0.2.9 <public build> (C) 2011-2012 by naehrwert
+NP local license handling (C) 2012 by flatz
+
+[*] SCE Header:
+ Magic           0x53434500 [OK]
+ Version         0x00000002
+ Key Revision    0x0010
+"""
+
+
+class OutputThatStopsPartWayThrough(unittest.TestCase):
+    """A file this program could not read is not one it has read and rejected.
+
+    Measured on a console: t6mp_ps3f.self was reported as having no App type
+    in its header. scetool -i on the same file from a shell printed the whole
+    thing, Application Info and all. What the program captured stopped after
+    the key revision, and every field below that point was called absent.
+    """
+
+    def scetool(self, output):
+        tool = scetool.Scetool.__new__(scetool.Scetool)
+        tool._runner = lambda args, what: output
+        return tool
+
+    def test_a_dump_that_stops_early_is_not_called_a_missing_field(self):
+        tool = self.scetool(TRUNCATED_DUMP)
+        with self.assertRaises(scetool.ScetoolError) as caught:
+            tool.info("t6mp_ps3f.self")
+        said = str(caught.exception)
+        self.assertNotIn("has no", said)
+        self.assertNotIn("App type", said)
+        self.assertIn("stopped before it printed the details", said)
+        self.assertIn("read that did not finish", said)
+
+    def test_it_says_how_much_came_back_and_where_it_stopped(self):
+        tool = self.scetool(TRUNCATED_DUMP)
+        with self.assertRaises(scetool.ScetoolError) as caught:
+            tool.info("t6mp_ps3f.self")
+        said = str(caught.exception)
+        self.assertIn("6 line(s)", said)
+        self.assertIn("Key Revision    0x0010", said)
+
+    def test_a_dump_that_reached_the_details_is_judged_on_them(self):
+        # The other side of it. Output that got as far as Application Info
+        # and is missing a field is a statement about the file.
+        tool = self.scetool(RETAIL_DUMP.format(app_type="[0x08]"))
+        with self.assertRaises(scetool.ScetoolError) as caught:
+            tool.info("t6mp_ps3f.self")
+        self.assertIn("gives its App type", str(caught.exception))
+
+    def test_reaching_the_block_is_what_separates_the_two(self):
+        self.assertFalse(scetool.reached_app_info(TRUNCATED_DUMP))
+        self.assertTrue(scetool.reached_app_info(
+            RETAIL_DUMP.format(app_type="[Update SPRX]")))
+        self.assertFalse(scetool.reached_app_info(""))
+
+
+class AShortCopyOffTheConsole(unittest.TestCase):
+    """The console said one size and sent another.
+
+    The transfer raises when the server answers SIZE and the count does not
+    match. A server that will not answer SIZE leaves that check with nothing
+    to compare, and the part of the file that arrived was then read as though
+    it were the file: scetool printed the first header and stopped, and the
+    scan called the fields below it absent.
+
+    The listing is the second opinion, and the scan already has it in hand.
+    """
+
+    LISTED = 14215768
+
+    class ShortWriter:
+        """A console that hands back part of a file and says nothing."""
+
+        def __init__(self, listed, sending):
+            self.listed = listed
+            self.sending = sending
+            self.asked = []
+
+        def list_dir(self, path):
+            return ("drwxrwxrwx 1 root root 0 Jan 1 00:00 .\n"
+                    "-rw-rw-rw- 1 root root %d Jan 1 00:00 t6mp_ps3f.self"
+                    % self.listed)
+
+        def retrieve(self, path, destination, on_block=None):
+            self.asked.append(path)
+            with open(destination, "wb") as handle:
+                handle.write(b"\x00" * self.sending)
+            return {"bytes": self.sending, "sha1": "0" * 40}
+
+    class ExplodingScetool:
+        """Reaching scetool at all is the failure this test is about."""
+
+        problem = ""
+
+        def info(self, path, klicensee=None):
+            raise AssertionError("part of a file was handed to scetool")
+
+        def decrypt(self, *args, **kwargs):
+            raise AssertionError("part of a file was handed to scetool")
+
+    def scan_with(self, sending):
+        writer = self.ShortWriter(self.LISTED, sending)
+        return flow.scan(writer, self.ExplodingScetool(), BO2_ID), writer
+
+    def test_part_of_a_file_is_never_read_as_though_it_were_the_file(self):
+        report, _writer = self.scan_with(4096)
+        item = report.file_for("t6mp_ps3f.self")
+        self.assertEqual(item.state, flow.NOT_EXAMINED)
+
+    def test_it_names_both_numbers_so_the_cause_is_visible(self):
+        report, _writer = self.scan_with(4096)
+        item = report.file_for("t6mp_ps3f.self")
+        self.assertIn("4096 bytes arrived", item.detail)
+        self.assertIn(str(self.LISTED), item.detail)
+
+    def test_nothing_is_concluded_about_the_file_itself(self):
+        # NOT_EXAMINED rather than UNRECOGNISED. The first says this program
+        # could not look, the second says it looked and did not know what it
+        # was seeing, and only the second is a claim about somebody's game.
+        report, _writer = self.scan_with(4096)
+        self.assertEqual(report.unrecognised, [])
+        self.assertEqual([item.name for item in report.not_examined],
+                         ["t6mp_ps3f.self"])
+        self.assertFalse(report.can_patch)
+
+    def test_a_whole_file_is_read_the_way_it_always_was(self):
+        # The guard only fires on a mismatch. A copy that arrived in full goes
+        # to scetool, which is what the exploding stub proves by raising.
+        with self.assertRaises(AssertionError):
+            self.scan_with(self.LISTED)
+
+
 class ConsoleCase(unittest.TestCase):
     """Starts a mock console and gives out writers pointed at it."""
 
@@ -454,18 +664,20 @@ class TheScan(ConsoleCase):
         self.assertIn("00330D20", item.detail)
         self.assertFalse(report.can_patch)
 
-    def test_black_ops_two_stops_as_a_whole_when_its_files_will_not_open(self):
+    def test_the_files_that_will_not_open_are_named_and_left_alone(self):
         # Two of the three files need the klicensee; EBOOT.BIN does not and
-        # opens regardless. Patching that one alone is exactly the half-fixed
-        # install the readme warns about, so the title has to stop together.
-        files = {"EBOOT.BIN": self_file("bo2", "EBOOT.BIN")}
+        # opens regardless. Patching that one alone is the half-fixed install
+        # the readme warns about, so it is said in full and the decision is
+        # left with the user rather than taken from them.
+        content = "EP0002-BLES01720_00-CODBLOPS2PATCH09"
+        files = {"EBOOT.BIN": self_file("bo2", "EBOOT.BIN",
+                                        content_id=content)}
         for name in ("t6_ps3f.self", "t6mp_ps3f.self"):
             record = next(item for item in titles.BO2_BINARIES
                           if item["name"] == name)
             site = titles.site_for(record)
             files[name] = images.wrap(
-                images.info_for("EP0002-BLES01720_00-CODBLOPS2PATCH09",
-                                "USPRX", name, key_revision="001C",
+                images.info_for(content, "USPRX", name, key_revision="001C",
                                 fw_version="0004002000000000"),
                 record["klicensee"][::-1],
                 images.bo2_image("stock", offset=site["file_offset"]))
@@ -475,11 +687,20 @@ class TheScan(ConsoleCase):
                          ["t6_ps3f.self", "t6mp_ps3f.self"])
         self.assertEqual([item.name for item in report.to_patch],
                          ["EBOOT.BIN"])
-        self.assertFalse(report.can_patch)
+        self.assertEqual(report.error, "")
+        self.assertTrue(report.can_patch)
+        # And the pair that would be left half done is named.
+        pairs = report.half_pairs()
+        self.assertEqual(len(pairs), 1)
+        _image, writing, leaving = pairs[0]
+        self.assertEqual(writing, ["EBOOT.BIN"])
+        self.assertEqual(leaving, ["t6_ps3f.self"])
         result = flow.patch(self.writer(), FakeScetool(), report,
                             root=self.workspace())
-        self.assertFalse(result.ok)
-        self.assertEqual(self.server.written, {})
+        self.assertEqual([path.rsplit("/", 1)[-1]
+                          for path in sorted(self.server.written)],
+                         ["EBOOT.BIN"])
+        self.assertEqual(result.changed, ["EBOOT.BIN"])
 
     def test_the_wrong_klicensee_on_a_verified_release_blames_nobody(self):
         # Same failure on a release the fix has worked on before, where the
@@ -526,23 +747,46 @@ class TheScan(ConsoleCase):
                          ["EBOOT.BIN", "t6_ps3f.self", "t6mp_ps3f.self"])
         self.assertTrue(report.can_patch)
 
-    def test_one_unrecognised_file_stops_the_whole_title(self):
-        # Patching two of Black Ops II's three files leaves campaign and
-        # zombies freezing, which is worse than doing nothing.
+    def test_one_unrecognised_file_does_not_stop_the_other_two(self):
+        # Measured on hardware: EBOOT.BIN already patched, t6_ps3f.self stock,
+        # t6mp_ps3f.self a build this program did not recognise. The screen
+        # refused to write anything at all, which left the console in the
+        # half-patched state it was opened to get out of.
+        #
+        # These are separate binaries patched separately. EBOOT.BIN and
+        # t6_ps3f.self carry campaign and zombies, t6mp_ps3f.self carries
+        # multiplayer, and one of them being a stranger says nothing about
+        # whether the others can be patched safely.
         files = {name: self_file("bo2", name)
                  for name in ("EBOOT.BIN", "t6_ps3f.self")}
         files["t6mp_ps3f.self"] = self_file("bo2", "t6mp_ps3f.self", "neither")
         self.start(BO2_ID, files)
         report = self.scan(BO2_ID)
         self.assertEqual(len(report.to_patch), 2)
-        self.assertFalse(report.can_patch)
+        self.assertTrue(report.can_patch)
+        self.assertEqual([item.name for item in report.blocked],
+                         ["t6mp_ps3f.self"])
 
-    def test_a_missing_file_stops_the_whole_title(self):
+    def test_the_unrecognised_file_is_still_never_written(self):
+        files = {name: self_file("bo2", name)
+                 for name in ("EBOOT.BIN", "t6_ps3f.self")}
+        files["t6mp_ps3f.self"] = self_file("bo2", "t6mp_ps3f.self", "neither")
+        self.start(BO2_ID, files)
+        report = self.scan(BO2_ID)
+        self.assertNotIn("t6mp_ps3f.self",
+                         [item.name for item in report.chosen])
+        out = flow.patch(self.writer(), FakeScetool(), report,
+                         root=self.workspace())
+        self.assertNotIn("t6mp_ps3f.self", out.uploaded)
+        self.assertNotIn("t6mp_ps3f.self", out.changed)
+
+    def test_a_missing_file_does_not_stop_the_ones_that_are_there(self):
         self.start(BO2_ID, {name: self_file("bo2", name)
                             for name in ("EBOOT.BIN", "t6_ps3f.self")})
         report = self.scan(BO2_ID)
         self.assertEqual(report.missing, ["t6mp_ps3f.self"])
-        self.assertFalse(report.can_patch)
+        self.assertTrue(report.can_patch)
+        self.assertEqual(len(report.chosen), 2)
 
     def test_files_from_two_different_installs_are_refused(self):
         files = {name: self_file("bo2", name)
@@ -822,6 +1066,7 @@ class ThePatch(ConsoleCase):
 # --- the screen ------------------------------------------------------------
 
 try:
+    from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QApplication
     from ps3tools.shell.screen import ConnectionState, Services, Theme
     from ps3tools.screens import patcher
@@ -909,6 +1154,34 @@ class TheScreen(ScreenCase):
         self.assertTrue(screen._patch.isEnabled())
         self.assertIn("default_mp.self", screen._detail.text())
         self.assertEqual(self.server.written, {})
+
+    def no_title_update(self):
+        """The screen after a scan of a console with the game but no update."""
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        found = flow.Location(flow.NO_UPDATE, title_ids=[BO2_ID])
+        screen._on_scanned((found, None, ""))
+        return screen
+
+    def test_the_no_update_state_offers_to_fetch_it_from_game_updates(self):
+        # The advice was to put the console online and launch the game, which
+        # is the slow way round something this program already does.
+        screen = self.no_title_update()
+        self.assertFalse(screen._panel_button.isHidden())
+        asked = []
+        screen.request_tool.connect(lambda key, title: asked.append((key,
+                                                                     title)))
+        screen._panel_button.click()
+        self.assertEqual(asked, [("updates", "bo2")])
+
+    def test_launching_the_game_is_still_offered_as_the_other_way(self):
+        screen = self.no_title_update()
+        words = screen._panel_body.text()
+        self.assertIn("Game updates can fetch it", words)
+        self.assertIn("let it download its own update", words)
+
+    def test_nothing_was_patched_so_there_is_nothing_to_put_back(self):
+        screen = self.no_title_update()
+        self.assertFalse(screen._restore.isEnabled())
 
     def test_it_refuses_to_navigate_away_while_writing(self):
         screen, _services = self.build(patcher.BlackOpsTwoPatcher)
@@ -1357,6 +1630,66 @@ class WhatTheScreenSaysAboutTheTwoStates(ScreenCase):
         self.settle(services)
         return screen
 
+    def the_mixed_install(self):
+        """BLES01717 TU 1.19 exactly as it came off the user's console.
+
+        EBOOT.BIN patched by this tool, t6_ps3f.self stock and wanting the
+        patch, t6mp_ps3f.self a build this program does not recognise. The
+        screen used to refuse to write anything at all.
+        """
+        files = {"EBOOT.BIN": self_file("bo2", "EBOOT.BIN", "patched"),
+                 "t6_ps3f.self": self_file("bo2", "t6_ps3f.self", "stock"),
+                 "t6mp_ps3f.self": self_file("bo2", "t6mp_ps3f.self",
+                                             "neither")}
+        self.start(BO2_ID, files)
+        return self._screen_after_scan()
+
+    def test_a_mixed_install_can_still_patch_the_file_that_needs_it(self):
+        screen = self.the_mixed_install()
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertEqual([item.name for item in screen._scan.chosen],
+                         ["t6_ps3f.self"])
+
+    def test_it_says_which_files_it_will_write_and_which_it_will_not(self):
+        screen = self.the_mixed_install()
+        words = screen._detail.text()
+        self.assertIn("t6_ps3f.self will be replaced", words)
+        self.assertIn("EBOOT.BIN is already fixed", words)
+        self.assertIn("t6mp_ps3f.self is not a build this fix was written "
+                      "for", words)
+
+    def test_the_two_that_should_match_are_not_a_veto_when_one_is_patched(self):
+        # They differ by exactly the four bytes of the fix, which is what a
+        # half-finished patch looks like. Refusing on that left the console in
+        # the state this screen exists to get it out of.
+        screen = self.the_mixed_install()
+        self.assertEqual(screen._scan.error, "")
+        self.assertTrue(screen._scan.ok)
+
+    def test_a_file_can_be_taken_out_of_the_write_by_hand(self):
+        screen = self.the_mixed_install()
+        row = self.row_named(screen, "t6_ps3f.self")
+        self.assertTrue(row.flags() & Qt.ItemIsUserCheckable)
+        row.setCheckState(0, Qt.Unchecked)
+        self.assertEqual(screen._scan.chosen, [])
+        self.assertFalse(screen._patch.isEnabled())
+        self.assertIn("t6_ps3f.self was unticked", screen._detail.text())
+        row.setCheckState(0, Qt.Checked)
+        self.assertTrue(screen._patch.isEnabled())
+
+    def test_a_file_that_cannot_be_written_has_no_tick_box(self):
+        screen = self.the_mixed_install()
+        for name in ("EBOOT.BIN", "t6mp_ps3f.self"):
+            row = self.row_named(screen, name)
+            self.assertFalse(row.flags() & Qt.ItemIsUserCheckable, name)
+
+    def row_named(self, screen, name):
+        for index in range(screen._files.topLevelItemCount()):
+            row = screen._files.topLevelItem(index)
+            if row.text(0) == name:
+                return row
+        raise AssertionError(f"no row for {name}")
+
     def test_a_tool_fault_does_not_warn_the_user_about_their_own_install(self):
         self.start(BO2_ID, {name: self_file("bo2", name)
                             for name in ("EBOOT.BIN", "t6_ps3f.self",
@@ -1380,7 +1713,9 @@ class WhatTheScreenSaysAboutTheTwoStates(ScreenCase):
         words = screen._detail.text()
         self.assertIn("this fix was written for", words)
         self.assertNotIn("fault in this program", words)
-        self.assertFalse(screen._patch.isEnabled())
+        # The other two are ordinary files in an ordinary state, so the
+        # button is live and the copy says which of the three it will write.
+        self.assertTrue(screen._patch.isEnabled())
 
     def test_the_two_verdicts_are_not_the_same_words(self):
         self.start(BO2_ID, {name: self_file("bo2", name)
@@ -2283,7 +2618,10 @@ class RestoringFromTheScreen(ScreenCase):
 
     # -- refusals
 
-    def test_a_backup_that_does_not_check_out_is_refused_on_screen(self):
+    def test_one_file_that_does_not_check_out_leaves_the_rest_restorable(self):
+        # The file that changed is never sent. The other two are still the
+        # other two, and putting them back is two fewer patched files on the
+        # console than refusing the lot.
         folder = backup_on_disk(self.root, BO2_ID, self.stock)
         with open(os.path.join(folder, "EBOOT.BIN"), "r+b") as handle:
             handle.seek(0x40)
@@ -2293,7 +2631,22 @@ class RestoringFromTheScreen(ScreenCase):
         self.settle(services)
         self.assertIn("EBOOT.BIN", screen._detail.text())
         self.assertIn("not the original", screen._detail.text())
-        self.assertEqual(self.server.written, {})
+        written = [path.rsplit("/", 1)[-1] for path in self.server.written]
+        self.assertNotIn("EBOOT.BIN", written)
+        self.assertEqual(sorted(written), ["t6_ps3f.self", "t6mp_ps3f.self"])
+
+    def test_the_button_is_dead_when_there_is_nothing_to_put_back(self):
+        # It was live on a console with no title update installed and nothing
+        # backed up, which is a button that can only produce a refusal.
+        screen, _services = self.scanned_screen()
+        self.assertFalse(screen._restore.isEnabled())
+        self.assertIn("no backup", screen._restore.toolTip())
+
+    def test_the_button_is_live_once_there_is_a_backup_of_this_game(self):
+        backup_on_disk(self.root, BO2_ID, self.stock)
+        screen, _services = self.scanned_screen()
+        self.assertTrue(screen._restore.isEnabled())
+        self.assertEqual(screen._restore.toolTip(), "")
 
     def test_a_backup_of_another_game_is_refused_on_screen(self):
         backup_on_disk(self.root, BO2_ID, self.stock,

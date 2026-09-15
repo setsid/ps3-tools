@@ -8,7 +8,8 @@ three QLabels cannot do that without a stylesheet per state.
 from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
                             QSize, Property, Qt, Signal)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
-from PySide6.QtWidgets import QAbstractButton, QLayout, QSizePolicy, QWidget
+from PySide6.QtWidgets import (QAbstractButton, QLabel, QLayout, QSizePolicy,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from . import icons
 
@@ -428,3 +429,73 @@ class IconLabel(QWidget):
             icons.pixmap(self._name, self._theme.colour(self._token),
                          self._size, self.devicePixelRatioF()))
         painter.end()
+
+
+class Disclosure(QWidget):
+    """A one-line header with an arrow, and a body that starts closed.
+
+    For a block of text that is worth having and is not worth the height it
+    takes by default. The summary on the header says what is inside it, so
+    somebody can tell whether opening it is worth doing without opening it.
+
+    setText and text are spelled as QLabel spells them. This replaced a bare
+    label in two screens and everything that already wrote to those keeps
+    working.
+    """
+
+    def __init__(self, summary="Details", parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        self._header = QToolButton()
+        self._header.setCheckable(True)
+        self._header.setChecked(False)
+        self._header.setAutoRaise(True)
+        self._header.setArrowType(Qt.RightArrow)
+        self._header.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._header.setText(summary)
+        self._header.setCursor(Qt.PointingHandCursor)
+        self._header.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self._header.toggled.connect(self._on_toggled)
+        layout.addWidget(self._header)
+        self._body = QLabel("")
+        self._body.setWordWrap(True)
+        self._body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self._body.hide()
+        layout.addWidget(self._body)
+        self._summary = summary
+        self.setVisible(False)
+
+    def _on_toggled(self, open_now):
+        self._header.setArrowType(Qt.DownArrow if open_now else Qt.RightArrow)
+        self._body.setVisible(bool(open_now) and bool(self._body.text()))
+
+    def setText(self, text):
+        """The body. An empty one hides the whole thing, header and all."""
+        text = text or ""
+        self._body.setText(text)
+        self.setVisible(bool(text))
+        self._body.setVisible(bool(text) and self._header.isChecked())
+
+    def text(self):
+        return self._body.text()
+
+    def set_summary(self, summary):
+        """The one line on the header. Say what is inside, in numbers."""
+        self._summary = summary or "Details"
+        self._header.setText(self._summary)
+
+    def summary(self):
+        return self._summary
+
+    def is_open(self):
+        return self._header.isChecked()
+
+    def set_open(self, open_now):
+        self._header.setChecked(bool(open_now))
+
+    @property
+    def header(self):
+        """The button, for a test that wants to click it."""
+        return self._header

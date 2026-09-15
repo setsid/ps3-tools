@@ -26,6 +26,8 @@ this screen, because a hash with nothing to compare it against is decoration
 that looks like a guarantee.
 """
 
+import html
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QMessageBox, QProgressBar,
@@ -829,8 +831,19 @@ class InstallPackagesScreen(Screen):
                               item.state or updates.STATE_UNCONFIRMED)
 
     def _paint_queue(self):
-        self._queue.setText("\n".join(f"{row[1]}: {row[2]}"
-                                      for row in self._queue_rows))
+        """The list, with where each package ended up in its own colour.
+
+        Rich text rather than a stylesheet: the colour is per line, and the
+        row it belongs to is the one that changed.
+        """
+        lines = []
+        for _key, name, state in self._queue_rows:
+            said = html.escape(str(state))
+            colour = self._colour_name(updates.install_state_token(state))
+            if colour:
+                said = f'<span style="color: {colour}">{said}</span>'
+            lines.append(f"{html.escape(str(name))}: {said}")
+        self._queue.setText("<br>".join(lines))
         self._queue.setVisible(bool(self._queue_rows))
 
     # -- panel, colours and chrome
@@ -929,6 +942,7 @@ class InstallPackagesScreen(Screen):
         self._paint_go()
         self._paint_count()
         self._paint_warning()
+        self._paint_queue()
         if not self._panel.isHidden():
             self._paint_panel()
 

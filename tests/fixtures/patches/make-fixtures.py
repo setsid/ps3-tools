@@ -114,6 +114,34 @@ def bo2_elf(patched):
     return bytes(data)
 
 
+def bo2_mp_elf(patched):
+    """The same call with a nop between the size argument and the call.
+
+    Black Ops II's multiplayer binary is compiled separately from its campaign
+    binary, and padding between the two is ordinary output. It is the shape
+    that made an already-patched t6mp_ps3f.self read as unrecognised: the
+    already-patched search took the first nop after the size argument, which
+    was the padding rather than the call.
+    """
+    data = bytearray(0x300)
+    data[0:0x40] = elf_header(0x10100)
+    target = FMT_OFFSET + LOAD_BASE
+    words = [
+        0x3C800000 | ((target >> 16) & 0xFFFF),      # lis   r4, hi
+        0x3BC40000 | (target & 0xFFFF),              # addi  r30, r4, lo
+        0x48000001,                                  # bl    <ms timer>
+        0x60670000,                                  # ori   r7, r3, 0
+        0x388001B8,                                  # li    r4, 0x1b8
+        0x60000000,                                  # nop   (padding)
+        0x60C50000,                                  # ori   r5, r30, 0
+        0x60000000 if patched else 0x48000001,       # bl    <snprintf>
+    ]
+    for index, word in enumerate(words):
+        struct.pack_into(">I", data, 0x100 + 4 * index, word)
+    data[FMT_OFFSET:FMT_OFFSET + len(FMT)] = FMT
+    return bytes(data)
+
+
 FILES = {
     # Black Ops II, BLES01717 title update 1.19. Values from the scetool dumps
     # in the fix repository.
@@ -150,6 +178,8 @@ FILES = {
     "mw3/default_mp-patched.elf": mw3_elf(True),
     "bo2/spzm-stock.elf": bo2_elf(False),
     "bo2/spzm-patched.elf": bo2_elf(True),
+    "bo2/mp-stock.elf": bo2_mp_elf(False),
+    "bo2/mp-patched.elf": bo2_mp_elf(True),
     "bad/not-a-game.elf": elf_header() + bytes(0x1C0),
 }
 

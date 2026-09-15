@@ -166,13 +166,18 @@ def _state_message(location, name):
 
     if state == flow.NO_UPDATE:
         return ("info", "The title update has not been downloaded yet", (
-            f"Nothing is wrong. This is the usual thing to see the first time.\n\n"
+            f"Nothing is wrong. This is the usual thing to see the first "
+            f"time.\n\n"
             f"{name} is on the console{_as_id(title_id)}, but the fix changes "
             f"files that only arrive with the game's title update, and that "
             f"update has not been installed yet.\n\n"
-            f"What to do: connect the console to the internet, start "
-            f"{name} once, and let it download its update. That usually takes "
-            f"a few minutes. Then come back here and press Scan again."))
+            f"Game updates can fetch it and put it on the console for you. "
+            f"The button below goes straight there with {name} picked "
+            f"out.\n\n"
+            f"The other way round is to connect the console to the internet, "
+            f"start {name} once and let it download its own update, which "
+            f"usually takes a few minutes. Either way, come back here and "
+            f"press Scan again afterwards."))
 
     if state == flow.UNKNOWN_VARIANT:
         return ("warn", "This version of the game is not one this tool knows", (
@@ -184,10 +189,29 @@ def _state_message(location, name):
             f"settings needed to rebuild a file it knows nothing about are a "
             f"guess that produces a game that will not start at all. So "
             f"nothing will be read and nothing will be changed.\n\n"
-            f"This is a refusal, not a failure: the copy on your console is "
-            f"exactly as it was."))
+            f"This is a refusal. The copy on your console is exactly as it "
+            f"was."))
 
     return ("text_dim", "Nothing to report", "")
+
+
+def _and_list(parts):
+    """"a", "a and b", "a, b and c". Used in sentences shown to the user."""
+    parts = [str(part) for part in parts if part]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+#: Why one file is being left as it is, in the words the plan uses.
+LEFT_ALONE = {
+    flow.PATCHED: "{name} is already fixed",
+    flow.UNRECOGNISED: "{name} is not a build this fix was written for",
+    flow.CANNOT_DECRYPT: "{name} could not be opened",
+    flow.NOT_EXAMINED: "{name} could not be checked by this program",
+}
 
 
 def _all_fixed(report):
@@ -428,6 +452,17 @@ class PatcherScreen(Screen):
         self._panel_reason.setWordWrap(True)
         self._panel_reason.setTextInteractionFlags(Qt.TextSelectableByMouse)
         panel.addWidget(self._panel_reason)
+        # Shown for the one state where this program can do the next step
+        # itself. Sending somebody off to put the console online and launch
+        # the game is the slow way round something this app already does.
+        panel_row = QHBoxLayout()
+        panel_row.setContentsMargins(0, 4, 0, 0)
+        self._panel_button = QPushButton("Get the title update")
+        self._panel_button.clicked.connect(self._on_open_updates)
+        self._panel_button.hide()
+        panel_row.addWidget(self._panel_button)
+        panel_row.addStretch(1)
+        panel.addLayout(panel_row)
         self._panel.hide()
         layout.addWidget(self._panel)
 
@@ -439,6 +474,7 @@ class PatcherScreen(Screen):
         self._files.setSelectionMode(QAbstractItemView.NoSelection)
         self._files.setFocusPolicy(Qt.NoFocus)
         self._files.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._files.itemChanged.connect(self._on_file_ticked)
         layout.addWidget(self._files, 1)
 
         # Takes the space the file table would have had while the table is
@@ -622,9 +658,11 @@ class PatcherScreen(Screen):
         self._location = location
         self._task = None
         self._rescan.setEnabled(True)
-        self._restore.setEnabled(True)
         self._where.setText(where)
         self._files.clear()
+        self._refresh_restore(
+            (report.title_id if report is not None else "")
+            or (location.title_id if location is not None else ""))
         if report is None:
             self._patch.setEnabled(False)
             self._hide_update()
@@ -640,6 +678,8 @@ class PatcherScreen(Screen):
             return
         self._clear_state()
 
+        actionable = {item.name for item in report.to_patch}
+        self._files.blockSignals(True)
         for item in report.files:
             row = QTreeWidgetItem([
                 item.name,
@@ -652,7 +692,17 @@ class PatcherScreen(Screen):
             if colour:
                 row.setForeground(3, colour)
             row.setToolTip(3, item.detail)
+            row.setData(0, Qt.UserRole, item.name)
+            # A tick box only on the files this run could write. Anything
+            # else is shown and is not something there is a choice about.
+            if item.name in actionable:
+                row.setFlags(row.flags() | Qt.ItemIsUserCheckable)
+                row.setCheckState(0, Qt.Checked if item.selected
+                                  else Qt.Unchecked)
+            else:
+                row.setFlags(row.flags() & ~Qt.ItemIsUserCheckable)
             self._files.addTopLevelItem(row)
+        self._files.blockSignals(False)
         for column in range(4):
             self._files.resizeColumnToContents(column)
 
@@ -684,6 +734,28 @@ class PatcherScreen(Screen):
             (f"{len(report.to_patch)} file(s) to fix" if report.to_patch
              else "nothing to do"))
 
+    def _on_file_ticked(self, row, column):
+        """One file taken out of the write, or put back into it.
+
+        Only the wording and the button are touched. Rebuilding the table from
+        inside its own itemChanged is how this program once destroyed the item
+        whose tick was still on the stack, which the console reported as a bus
+        error.
+        """
+        if column != 0 or self._scan is None:
+            return
+        name = row.data(0, Qt.UserRole)
+        item = self._scan.file_for(name) if name else None
+        if item is None:
+            return
+        item.selected = row.checkState(0) == Qt.Checked
+        self._scan_text = self._verdict(self._scan)
+        self._detail.setText(self._compose(self._scan_text))
+        self._patch.setEnabled(
+            self._scan.can_patch
+            and not (self._update_state is not None
+                     and self._update_state.blocks))
+
     # -- the state of the console, in words the user can act on
 
     def _report_state(self, location):
@@ -699,17 +771,20 @@ class PatcherScreen(Screen):
         notes = [note for note in location.notes if note]
         if notes and location.state in (flow.LIST_FAILED, flow.UNREACHABLE):
             reason = "\n\n".join([reason] + notes) if reason else "\n\n".join(notes)
-        self._show_state(token, heading, body, reason)
+        self._show_state(token, heading, body, reason,
+                         offer_updates=location.state == flow.NO_UPDATE)
         self._detail.setText(self._compose(""))
         self.status_message.emit(heading)
 
-    def _show_state(self, token, heading, body, reason=""):
+    def _show_state(self, token, heading, body, reason="",
+                    offer_updates=False):
         self._panel_token = token
         self._panel_heading.setText(heading)
         self._panel_body.setText(body)
         self._panel_body.setVisible(bool(body))
         self._panel_reason.setText(reason)
         self._panel_reason.setVisible(bool(reason))
+        self._panel_button.setVisible(bool(offer_updates))
         self._paint_state()
         self._panel.show()
         # Nothing was read, so there are no rows. An empty table beside the
@@ -720,6 +795,7 @@ class PatcherScreen(Screen):
 
     def _clear_state(self):
         self._panel_token = ""
+        self._panel_button.hide()
         self._panel.hide()
         self._files.setVisible(True)
         self._filler.setVisible(False)
@@ -784,25 +860,65 @@ class PatcherScreen(Screen):
         if dim:
             self._count.setStyleSheet(f"color: {dim};")
 
+    def _plan(self, report):
+        """Which files this run will write, and which it will leave alone.
+
+        Said in one place because it is the thing the user is deciding on.
+        Each file is judged on its own, so a set where one is already fixed,
+        one is stock and one is a stranger is three separate answers and all
+        three belong on the screen.
+        """
+        writing = [item.name for item in report.chosen]
+        leaving = []
+        for item in report.files:
+            if not item.present or item.name in writing:
+                continue
+            if item.state == flow.NO_SITE:
+                # MW3's default.self. The fix does not touch it at all, so it
+                # is not something being left out of anything.
+                continue
+            if item.state == flow.NOT_PATCHED:
+                leaving.append(f"{item.name} was unticked")
+                continue
+            words = LEFT_ALONE.get(item.state)
+            if words:
+                leaving.append(words.format(name=item.name))
+        lines = []
+        if writing:
+            lines.append(
+                f"{_and_list(writing)} will be replaced. Your originals are "
+                f"copied to the Desktop first, and put back automatically if "
+                f"anything goes wrong.")
+        if leaving:
+            said = "it is" if len(leaving) == 1 else "they are"
+            lines.append(f"{_and_list(leaving)}, so {said} left exactly as "
+                         f"{said}.")
+        return lines
+
     def _verdict(self, report):
         if report.error:
             return report.error
-        lines = []
+        lines = self._plan(report)
+        if not report.chosen:
+            if report.already_patched and not report.blocked:
+                lines = ["Everything here is already fixed. Nothing to do."]
+            elif report.to_patch:
+                lines.append("Tick at least one file to apply the fix to.")
+            else:
+                lines.append("There is nothing here this program can write.")
         if report.cannot_decrypt:
-            # Said before anything else and in the plainest words available.
-            # This is the release nobody has confirmed, found out at the only
-            # point it can be found out, and the user has done nothing wrong.
+            # The release nobody has confirmed, found out at the only point it
+            # can be found out. The user has done nothing wrong.
+            names = _and_list([item.name for item in report.cannot_decrypt])
             lines.append(
-                f"This copy of the game cannot be opened by this tool, so "
-                f"nothing will be changed. {report.title_id} is one of the "
-                f"releases of this game that locks its files differently from "
-                f"the ones the fix has been proved on, and without opening "
-                f"them there is no way to fix them.\n\n"
-                f"Nothing is wrong with your console, your game or your "
-                f"connection, and the game is installed: it is this tool that "
-                f"cannot do anything with this release. If you want to report "
-                f"it, the thing to quote is {report.title_id}.")
-        elif report.not_examined:
+                f"{names} could not be opened by this tool. {report.title_id} "
+                f"is one of the releases of this game that locks its files "
+                f"differently from the ones the fix has been proved on, and "
+                f"without opening them there is no way to fix them. Nothing "
+                f"is wrong with your console, your game or your connection. "
+                f"If you want to report it, the thing to quote is "
+                f"{report.title_id}.")
+        if report.not_examined:
             # Says plainly whose fault it is. The sentence that used to appear
             # here described a file mismatch, which had the user checking a
             # console that was fine while the missing piece was in this build
@@ -810,28 +926,34 @@ class PatcherScreen(Screen):
             missing = ", ".join(sorted(
                 {item.missing_tool for item in report.not_examined
                  if item.missing_tool}))
+            names = _and_list([item.name for item in report.not_examined])
             lines.append(
-                "This program could not check "
-                + ("these files" if len(report.not_examined) > 1
-                   else report.not_examined[0].name)
-                + ", so nothing will be changed. "
-                + (f"{missing} is missing from this build of the program. "
-                   if missing else "")
-                + "That is a fault in this program and not in your console "
-                  "or your game. Nothing here says anything is wrong with "
-                  "your files.")
-        elif report.unrecognised:
+                f"This program could not check {names}. "
+                + (f"{missing} is missing from this build of the program, "
+                   f"which is a fault in this program and not in your "
+                   f"console or your game. " if missing else "")
+                + "Nothing here says anything is wrong with your files: it "
+                  "is a check that did not run.")
+        if report.unrecognised:
+            names = _and_list([item.name for item in report.unrecognised])
             lines.append(
-                "One of these files is not one this fix was written for, so "
-                "nothing will be changed. Sending a patch to the wrong build "
-                "of a binary is how an install stops starting.")
-        elif not report.to_patch:
-            lines.append("Everything here is already fixed. Nothing to do.")
-        else:
-            names = ", ".join(item.name for item in report.to_patch)
-            lines.append(f"{names} will be replaced. Your originals are "
-                         f"copied to the Desktop first, and put back "
-                         f"automatically if anything goes wrong.")
+                f"{names} is not a build this fix was written for, so it is "
+                f"left alone. Sending a patch to the wrong build of a binary "
+                f"is how an install stops starting."
+                if len(report.unrecognised) == 1 else
+                f"{names} are not builds this fix was written for, so they "
+                f"are left alone. Sending a patch to the wrong build of a "
+                f"binary is how an install stops starting.")
+        for image, writing, leaving in report.half_pairs():
+            lines.append(
+                f"{_and_list(writing)} and {_and_list(leaving)} are the same "
+                f"binary signed twice, and only "
+                f"{_and_list(writing)} can be written here. A copy of that "
+                f"binary that has the fix and one that does not is the "
+                f"half-finished state the fix's own notes say can freeze the "
+                f"game. Going ahead is still yours to decide, and everything "
+                f"written is backed up first.")
+        if report.chosen:
             lines.append(self.config.get("advice", ""))
         if not report.verified and not report.cannot_decrypt:
             if report.unrecognised:
@@ -874,7 +996,7 @@ class PatcherScreen(Screen):
         # between a user and a patch built for another version of the game.
         if self._update_state is not None and self._update_state.blocks:
             return
-        names = ", ".join(item.name for item in self._scan.to_patch)
+        names = _and_list([item.name for item in self._scan.chosen])
         answer = QMessageBox.question(
             self, "Apply the fix",
             f"{names} on the console will be replaced.\n\n"
@@ -1125,6 +1247,22 @@ class PatcherScreen(Screen):
         self.request_home.emit()
 
     # -- putting the originals back
+
+    def _refresh_restore(self, title_id):
+        """The button is live only when there is something to put back.
+
+        It was live on a console with no title update installed and nothing on
+        the Desktop, where the only thing it could produce was a refusal. The
+        reason moves to the tooltip rather than being lost.
+        """
+        found = bool(title_id) and bool(self._backups(title_id))
+        self._restore.setEnabled(found)
+        self._restore.setToolTip(
+            "" if found else
+            f"There is no backup of {title_id or 'this game'} on this "
+            f"computer. Every time this program applies the fix it copies "
+            f"your original files to a folder called "
+            f"\u201c{backups.FOLDER_NAME}\u201d on the Desktop first.")
 
     def _backups(self, title_id):
         """Every backup of this title on the Desktop, newest first."""

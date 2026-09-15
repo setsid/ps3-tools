@@ -29,6 +29,47 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.2.2",
+        date="2026-09-15",
+        summary="What the console actually does, on the evidence of two of "
+                "them.",
+        changes=(
+            "An install is confirmed when the game reports the version that "
+            "was sent, as well as when the console deletes the package. One "
+            "console installs an update and keeps the package, and that used "
+            "to wait out the whole timeout and then report a success as "
+            "unconfirmed.",
+            "A package of the same name left over from an earlier attempt is "
+            "removed before the new one is sent.",
+            "A console that stops answering during an install is said "
+            "plainly rather than waited on, and a part-copied package is "
+            "taken off the console.",
+            "The write connection is opened when the upload starts rather "
+            "than held open through the download in front of it.",
+            "A game Sony publishes nothing for takes its name and version "
+            "from the console instead of showing a bare title ID.",
+            "A disc image already identified is never opened again.",
+            "The summary under the table is behind an arrow with a line "
+            "saying what is in it.",
+            "Black Ops II and Modern Warfare 3 judge each file on its own, "
+            "so a console with one file already fixed and one the program "
+            "does not recognise can still have the rest patched.",
+            "An already-patched multiplayer binary reads as already fixed.",
+            "Putting the originals back works file by file.",
+            "A console with no title update installed is offered Game "
+            "updates rather than being told to launch the game.",
+            "Save data rows no longer report every folder as 512 bytes.",
+            "An update that has been installed is asked about again rather "
+            "than being remembered as the newest for the rest of the day.",
+            "Transfer games says which of the images you have chosen are "
+            "games already installed on the console, and leaves the decision "
+            "with you.",
+            "A file the patchers could not read off the console in full is "
+            "said to be a copy that did not finish, rather than a file with "
+            "something missing from it.",
+        ),
+    ),
+    Release(
         version="1.2.1",
         date="2026-09-15",
         summary="Fixes and a tidier Game updates screen.",

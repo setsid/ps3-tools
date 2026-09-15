@@ -151,6 +151,38 @@ class DecryptedTests(unittest.TestCase):
         self.assertEqual(patched["state"], patchstate.PATCHED)
         self.assertIn("nop", patched["evidence"])
 
+    def test_a_patched_binary_with_padding_before_the_call(self):
+        # Black Ops II's multiplayer binary, as it came back off the user's
+        # own console: patched by this tool and read as unrecognised, while
+        # the campaign binary beside it read correctly. The two are compiled
+        # separately, and a nop between the size argument and the call is
+        # ordinary output. Taking the first nop found the padding.
+        self.patcher("bo2")
+        stock = patchstate.decrypted_state(fixture("bo2/mp-stock.elf"), "bo2")
+        patched = patchstate.decrypted_state(fixture("bo2/mp-patched.elf"),
+                                             "bo2")
+        self.assertEqual(stock["state"], patchstate.UNPATCHED)
+        self.assertEqual(patched["state"], patchstate.PATCHED)
+        # The call is the last of the instructions laid down, and the padding
+        # sits two before it. Both are offered; which one this build uses is
+        # settled against the offset recorded for the title.
+        self.assertEqual(patched["offsets"], (0x114, 0x11C))
+        self.assertEqual(stock["offset"], 0x11C)
+
+    def test_the_stock_call_is_found_at_the_same_place_either_way(self):
+        # The patched read has to land on the offset the stock read gives, or
+        # the two disagree about where the site is and the file is reported as
+        # a build the fix was not written for.
+        self.patcher("bo2")
+        for stock_name, patched_name in (
+                ("bo2/spzm-stock.elf", "bo2/spzm-patched.elf"),
+                ("bo2/mp-stock.elf", "bo2/mp-patched.elf")):
+            with self.subTest(stock_name):
+                stock = patchstate.decrypted_state(fixture(stock_name), "bo2")
+                patched = patchstate.decrypted_state(fixture(patched_name),
+                                                     "bo2")
+                self.assertIn(stock["offset"], patched["offsets"])
+
     def test_the_wrong_binary_is_unknown_and_not_an_exception(self):
         self.patcher("bo2")
         for name, kind in (("bad/not-a-game.elf", "bo2"),

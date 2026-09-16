@@ -1,0 +1,5 @@
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 exdata
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 savedata
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 trophy
+-rw-------   1 root     root         2320 Sep 14 14:22 np_cache.dat
+-rw-rw-rw-   1 root     root           10 Sep 14 14:22 localusername

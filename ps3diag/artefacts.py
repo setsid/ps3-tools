@@ -27,8 +27,8 @@ SCHEMA_VERSION = 1
 # Categories, in the order they are presented. Analysis must cope with any of
 # them being absent: a run where the user unticked a box produces a set with no
 # such category, which is not the same as a category that failed.
-CATEGORY_KEYS = ("system", "storage", "plugins", "crash_reports", "network",
-                 "webman_config", "games")
+CATEGORY_KEYS = ("system", "storage", "plugins", "crash_reports", "accounts",
+                 "network", "webman_config", "games")
 
 ABSENT = "absent"
 

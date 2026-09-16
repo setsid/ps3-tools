@@ -377,7 +377,8 @@ class DiagnosticsScreen(Screen):
         self.category_boxes = {}
         for column in range(COLUMNS):
             grid.setColumnStretch(column, 1)
-        for index, (key, title, _collect) in enumerate(CATEGORIES):
+
+        def add(key, title, row, column):
             tick = QCheckBox(title)
             tick.setChecked(True)
             # Room for the descenders in the label and for the tick indicator
@@ -386,7 +387,20 @@ class DiagnosticsScreen(Screen):
             tick.setMinimumWidth(tick.sizeHint().width())
             tick.toggled.connect(self._remember)
             self.category_boxes[key] = tick
-            grid.addWidget(tick, index // COLUMNS, index % COLUMNS)
+            grid.addWidget(tick, row, column)
+
+        # The game inventory is placed by hand at the start of a row of its
+        # own, and everything else fills the grid in collection order. The one
+        # sub-option below is indented under the left edge of the grid, so a
+        # game inventory that happened to land in the middle column would
+        # leave that sub-option sitting under whichever category shared its
+        # row. Adding an eighth category is what made that happen.
+        others = [item for item in CATEGORIES if item[0] != "games"]
+        last = [item for item in CATEGORIES if item[0] == "games"]
+        for index, (key, title, _collect) in enumerate(others):
+            add(key, title, index // COLUMNS, index % COLUMNS)
+        for key, title, _collect in last:
+            add(key, title, (len(others) + COLUMNS - 1) // COLUMNS, 0)
         layout.addLayout(grid)
 
         layout.addLayout(self._build_identify_option())
@@ -413,9 +427,10 @@ class DiagnosticsScreen(Screen):
         """The one sub-option: reading inside the disc images.
 
         Indented under the category grid rather than given a box of its own,
-        because it is not an eighth category. The runner is handed the ticked
-        categories; this is a thing the game inventory can additionally be
-        asked to do, and it costs minutes, so it is off until it is asked for.
+        because it is not a category in its own right. The runner is handed
+        the ticked categories; this is a thing the game inventory can
+        additionally be asked to do, and it costs minutes, so it is off until
+        it is asked for.
         """
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)

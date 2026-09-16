@@ -90,11 +90,26 @@ class User:
     """One numbered folder under /dev_hdd0/home."""
 
     def __init__(self, folder, name="", has_cache=False, online_id="",
-                 written=None):
+                 written=None, account_id=None, unreadable="",
+                 no_account=""):
         self.folder = folder
         self.name = name
+        #: Whether np_cache.dat is in this folder at all. The one thing that
+        #: decides whether "sign in to PSN once" is the right thing to say.
         self.has_cache = has_cache
-        #: The PSN name out of this account's own np_cache.dat.
+        #: The account ID out of it, which is the whole of what the fix needs,
+        #: or None where it could not be read.
+        self.account_id = account_id
+        #: Why the file would not come off the console, where that is what
+        #: happened. A read that fails is its own answer and is never
+        #: reported as the file being absent.
+        self.unreadable = unreadable
+        #: Why the file that did come off has no account ID in it. Kept apart
+        #: from unreadable because the two want opposite advice: a file that
+        #: will not transfer is nothing to do with signing in, and an account
+        #: ID of zero is exactly a sign-in that has not finished.
+        self.no_account = no_account
+        #: The PSN name out of the same file. For the label and nothing else.
         self.online_id = online_id
         #: When that file was last written, as a sort key. See _written.
         self.written = written or ()
@@ -103,12 +118,18 @@ class User:
     def usable(self):
         """Whether the fix can be run for this account.
 
-        Both halves have to be there. A folder with an np_cache.dat this
-        program cannot read an online ID out of is a folder it cannot name on
-        screen either, and picking an account by a number nobody recognises is
-        the thing this is meant to stop.
+        The account ID and nothing else. That is the whole of what the fix
+        reads: eight bytes at the front of np_cache.dat. The online ID is for
+        the label on the picker and has no part in this.
+
+        Requiring the online ID as well is what this used to do, and it took a
+        console with the file plainly at /dev_hdd0/home/00000001/np_cache.dat
+        and told its owner that no account on the console had one. A field
+        that failed to parse, or a read that failed and was swallowed, removed
+        a perfectly good account and produced a message about a file that was
+        sitting right there.
         """
-        return bool(self.has_cache and self.online_id)
+        return self.account_id is not None
 
     @property
     def label(self):
@@ -124,7 +145,7 @@ class User:
 
     def __repr__(self):
         return (f"User({self.folder!r}, {self.online_id!r}, "
-                f"{self.has_cache})")
+                f"cache={self.has_cache}, account={self.account_id})")
 
 
 def _written(entry):
@@ -161,7 +182,7 @@ def _written(entry):
 
 def _read_text(lister, path):
     try:
-        raw = lister.retrieve_bytes(path)
+        raw = lister.download_account_file(path)
     except Exception:                                       # noqa: BLE001
         return ""
     return raw.split(b"\x00")[0].decode("utf-8", "replace").strip()
@@ -193,17 +214,31 @@ def users(lister):
             inner = {}
         entry = inner.get(NAME)
         # The file is a few hundred bytes and is read here rather than later,
-        # because the name inside it is what this account is called on screen
-        # and a list of numbers is a list nobody can choose from.
+        # because the account ID in it is what decides whether this account
+        # can be used at all, and the name in it is what it is called on
+        # screen. A list of bare numbers is a list nobody can choose from.
         raw = b""
+        unreadable = ""
         if entry is not None:
             try:
-                raw = lister.retrieve_bytes(f"{path}/{NAME}")
-            except Exception:                               # noqa: BLE001
-                raw = b""
+                raw = lister.download_account_file(f"{path}/{NAME}")
+            except Exception as exc:                        # noqa: BLE001
+                # Kept rather than swallowed. A file that is there and will
+                # not come off the console is a different thing from a file
+                # that is not there, and reporting the first as the second
+                # sends somebody off to sign in to PSN again for no reason.
+                unreadable = (f"{path}/{NAME} could not be read "
+                              f"({exc.__class__.__name__}: {exc})")
+        account = None
+        no_account = ""
+        if raw:
+            try:
+                account = account_id(raw)
+            except NoAccount as exc:
+                no_account = f"{path}/{NAME}: {exc}"
         found.append(User(name, _read_text(lister, f"{path}/{USERNAME}"),
                           entry is not None, online_id(raw),
-                          _written(entry)))
+                          _written(entry), account, unreadable, no_account))
     # Newest first, so the account signed in now is the one at the top. The
     # console writes np_cache.dat when an account signs in to PSN, so the most
     # recently written one is the one being used.
@@ -214,11 +249,32 @@ def users(lister):
 def with_cache(people):
     """The users the fix can actually be run for, newest first.
 
-    Both an np_cache.dat and a readable name out of it. An account that has
-    never signed in to PSN has no such file, because it is written the first
-    time, so its absence is ordinary and is not a fault.
+    An np_cache.dat with an account ID readable out of it. The name inside is
+    not part of this; where it will not parse the account is still offered and
+    is labelled by its folder number.
     """
     return [person for person in people if person.usable]
+
+
+def none_have_the_file(people):
+    """True when not one user folder holds an np_cache.dat.
+
+    The one condition under which "sign in to PSN once and come back" is the
+    right thing to say. A console where the file is there and something went
+    wrong reading it has a different answer, and saying this one would send
+    its owner to do something they have already done.
+    """
+    return not any(person.has_cache for person in people)
+
+
+def why_unreadable(people):
+    """Accounts whose np_cache.dat would not come off the console."""
+    return [person.unreadable for person in people if person.unreadable]
+
+
+def why_no_account_id(people):
+    """Accounts whose np_cache.dat arrived with no account ID in it."""
+    return [person.no_account for person in people if person.no_account]
 
 
 def path_for(folder):
@@ -230,7 +286,7 @@ def read_for(lister, folder):
     readable, which over FTP it is, whatever its mode says on the console."""
     path = path_for(folder)
     try:
-        raw = lister.retrieve_bytes(path)
+        raw = lister.download_account_file(path)
     except Exception as exc:                                # noqa: BLE001
         raise NoAccount(
             f"{path} could not be read ({exc.__class__.__name__}: {exc}).")

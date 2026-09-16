@@ -27,6 +27,10 @@ from ps3tools.patching.unfself import Unfself, WithFakeSigned
 bo1 = patchstate.patcher_module("bo1")
 
 
+#: The account ID in the np_cache.dat this repository was developed against.
+ACCOUNT_ID = 3034630675101139701
+
+
 def content_id_for(title_id):
     """A content ID carrying a given title, the way a real SELF spells one.
 
@@ -545,7 +549,7 @@ class Lister:
                 return "\n".join(lines)
         return ""
 
-    def retrieve_bytes(self, path):
+    def download_account_file(self, path):
         self.read.append(path)
         folder = path.split("/")[-2]
         if path.endswith(npcache.USERNAME):
@@ -732,7 +736,8 @@ class WhichAccountTheScreenAsksAbout(unittest.TestCase):
         """Asking somebody to confirm the only answer teaches them to click
         through questions, and the next question is the one that matters."""
         self.refuse_to_ask()
-        only = npcache.User("00000013", "Chris", True, "shtum_pill34")
+        only = npcache.User("00000013", "Chris", True, "shtum_pill34",
+                           account_id=ACCOUNT_ID)
         screen = self.screen([only])
         ready, why = screen.patch_ready()
         self.assertTrue(ready, why)
@@ -741,7 +746,8 @@ class WhichAccountTheScreenAsksAbout(unittest.TestCase):
     def test_the_account_it_used_is_said_on_the_screen(self):
         self.refuse_to_ask()
         screen = self.screen(
-            [npcache.User("00000013", "Chris", True, "shtum_pill34")])
+            [npcache.User("00000013", "Chris", True, "shtum_pill34",
+                           account_id=ACCOUNT_ID)])
         screen.patch_ready()
 
         class Chosen:
@@ -774,8 +780,10 @@ class WhichAccountTheScreenAsksAbout(unittest.TestCase):
         QInputDialog.getItem = staticmethod(remember)
         self.addCleanup(lambda: setattr(QInputDialog, "getItem", saved))
 
-        people = [npcache.User("00000013", "A", True, "shtum_pill34"),
-                  npcache.User("00000001", "B", True, "someone_else")]
+        people = [npcache.User("00000013", "A", True, "shtum_pill34",
+                              account_id=ACCOUNT_ID),
+                  npcache.User("00000001", "B", True, "someone_else",
+                               account_id=ACCOUNT_ID + 1)]
         screen = self.screen(people)
         ready, _why = screen.patch_ready()
         self.assertTrue(ready)
@@ -785,6 +793,125 @@ class WhichAccountTheScreenAsksAbout(unittest.TestCase):
         # The newest is first and starts selected.
         self.assertEqual(current, 0)
         self.assertIs(screen._user, people[0])
+
+
+class AnAccountTheFixCanUse(unittest.TestCase):
+    """What makes an account usable, and what only makes it presentable.
+
+    Reported from a real console: the screen said no account had an
+    np_cache.dat while the file was at /dev_hdd0/home/00000001/np_cache.dat.
+    The account was being dropped because the online ID inside it would not
+    parse, and the online ID is only ever used for the label on the picker.
+    The fix reads eight bytes at the front of that file and nothing else.
+    """
+
+    def test_an_account_id_is_all_it_takes(self):
+        person = npcache.User("00000001", "Chris", True, "",
+                              account_id=ACCOUNT_ID)
+        self.assertTrue(person.usable)
+
+    def test_a_name_that_will_not_parse_does_not_drop_the_account(self):
+        # The label falls back to the folder number. The account stays.
+        lister = Lister([("00000001", "Chris",
+                          struct.pack(">Q", ACCOUNT_ID) + b"\xff\xfe\x01")])
+        people = npcache.users(lister)
+        self.assertEqual(people[0].online_id, "")
+        self.assertTrue(people[0].usable)
+        self.assertEqual(people[0].label, "00000001")
+        self.assertEqual([item.folder for item in npcache.with_cache(people)],
+                         ["00000001"])
+
+    def test_no_account_id_means_it_cannot_be_used(self):
+        person = npcache.User("00000001", "Chris", True, "shtum_pill34")
+        self.assertFalse(person.usable)
+
+    def test_a_read_that_fails_is_not_a_file_that_is_absent(self):
+        """The two must never be told as each other.
+
+        Saying a file is not there when it is there sends somebody to sign in
+        to PSN again, which they have already done, and leaves the real fault
+        unreported.
+        """
+        class Refuses(Lister):
+            def download_account_file(self, path):
+                if path.endswith(npcache.NAME):
+                    raise OSError("connection reset")
+                return super().download_account_file(path)
+
+        lister = Refuses([("00000001", "Chris", np_cache())])
+        people = npcache.users(lister)
+        self.assertTrue(people[0].has_cache)
+        self.assertFalse(people[0].usable)
+        self.assertIn("could not be read", people[0].unreadable)
+        self.assertIn("connection reset", people[0].unreadable)
+        self.assertIn("/dev_hdd0/home/00000001/np_cache.dat",
+                      people[0].unreadable)
+        # And the console is not one where nobody has the file.
+        self.assertFalse(npcache.none_have_the_file(people))
+        self.assertEqual(npcache.why_unreadable(people),
+                         [people[0].unreadable])
+
+    def test_a_console_with_no_such_file_anywhere_says_so(self):
+        lister = Lister([("00000001", "Chris", None)])
+        people = npcache.users(lister)
+        self.assertTrue(npcache.none_have_the_file(people))
+        self.assertEqual(npcache.why_unreadable(people), [])
+
+    def test_a_file_too_short_to_hold_an_account_id_is_reported(self):
+        lister = Lister([("00000001", "Chris", b"\x01\x02")])
+        people = npcache.users(lister)
+        self.assertTrue(people[0].has_cache)
+        self.assertFalse(people[0].usable)
+        self.assertTrue(people[0].no_account)
+        self.assertFalse(people[0].unreadable)
+        self.assertFalse(npcache.none_have_the_file(people))
+
+
+class WhatTheScreenSaysWhenNoAccountWorks(unittest.TestCase):
+    """Three different faults, and only one of them is answered by signing in."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        cls.application = QApplication.instance() or QApplication([])
+
+    def screen(self, people):
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        from ps3tools.screens.patcher import BlackOpsOnePatcher
+        made = BlackOpsOnePatcher(
+            Services(ConnectionState(""), AppTheme("dark"), {}))
+        self.addCleanup(made.deleteLater)
+        made.on_scan_extras({"users": people})
+        return made
+
+    def test_no_file_anywhere_says_to_sign_in(self):
+        from ps3tools.screens.patcher import ACCOUNT_MISSING
+        screen = self.screen([npcache.User("00000001", "Chris", False)])
+        ready, why = screen.patch_ready()
+        self.assertFalse(ready)
+        self.assertEqual(why, ACCOUNT_MISSING)
+
+    def test_a_file_that_would_not_read_never_says_to_sign_in(self):
+        screen = self.screen([
+            npcache.User("00000001", "Chris", True,
+                         unreadable="/dev_hdd0/home/00000001/np_cache.dat "
+                                    "could not be read (OSError: reset)")])
+        ready, why = screen.patch_ready()
+        self.assertFalse(ready)
+        self.assertNotIn("Sign in to PSN once", why)
+        self.assertIn("could not be read", why)
+        self.assertIn("/dev_hdd0/home/00000001/np_cache.dat", why)
+
+    def test_a_usable_account_with_no_name_is_still_offered(self):
+        # The reported console. The file is there, the name will not parse,
+        # and the fix works perfectly well on it.
+        screen = self.screen([npcache.User("00000001", "Chris", True, "",
+                                           account_id=ACCOUNT_ID)])
+        ready, why = screen.patch_ready()
+        self.assertTrue(ready, why)
+        self.assertEqual(screen._user.label, "00000001")
 
 
 # --- the fake-signed digital release ---------------------------------------
@@ -1170,3 +1297,99 @@ class TheWholeRun(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AccountsOverARealLister(unittest.TestCase):
+    """npcache.users() against ps3diag.transport.FtpLister itself.
+
+    Every other test in this file hands users() a fake. A fake grows whatever
+    method the code under test asks for, so npcache spent a release calling
+    lister.retrieve_bytes, which FtpWriter has and FtpLister does not, and the
+    screen failed on every console with an AttributeError while the suite
+    stayed green. These tests drive the real class over a real socket to a
+    mock console, so the two cannot drift apart again.
+    """
+
+    def setUp(self):
+        import ftplib
+        import mock_webman
+        from ps3diag import transport
+
+        self.server = mock_webman.MockWebmanFtp().start()
+        self.addCleanup(self.server.stop)
+
+        def connect():
+            ftp = ftplib.FTP()
+            ftp.connect("127.0.0.1", self.server.port, timeout=5)
+            ftp.login("anonymous", "ps3-diag@localhost")
+            return ftp
+
+        self.lister = transport.FtpLister("127.0.0.1", factory=connect)
+        self.addCleanup(self.lister.close)
+
+    def test_users_reads_the_accounts_off_a_real_lister(self):
+        found = npcache.users(self.lister)
+        self.assertTrue(found)
+        with_cache = [user for user in found if user.has_cache]
+        self.assertTrue(with_cache, "the mock console has an np_cache.dat")
+        for user in with_cache:
+            self.assertEqual(user.unreadable, "")
+            self.assertIsNotNone(user.account_id)
+
+    def test_read_for_returns_bytes_off_a_real_lister(self):
+        folder = next(user.folder for user in npcache.users(self.lister)
+                      if user.has_cache)
+        raw = npcache.read_for(self.lister, folder)
+        self.assertIsInstance(raw, bytes)
+        self.assertGreaterEqual(len(raw), npcache.ACCOUNT_ID_BYTES)
+
+    def test_every_method_the_patchers_ask_for_exists_on_the_real_classes(
+            self):
+        """The general form of the same bug, read out of the source.
+
+        Anything the patching code calls on a lister or a writer has to be a
+        real method on the real class. A fake grows whatever it is asked for,
+        so this is read from the source rather than from a test double, and it
+        catches the next mismatch without anybody remembering to write a test
+        for it.
+        """
+        import ast
+        import glob
+        from ps3diag import transport
+        from ps3tools.patching import ftpwrite
+
+        classes = {"lister": transport.FtpLister, "writer": ftpwrite.FtpWriter}
+        # npcache is handed whichever connection is open, so its argument name
+        # says "lister" while the whole run passes the writer. Both classes
+        # have to answer everything it asks for.
+        both = (transport.FtpLister, ftpwrite.FtpWriter)
+        tree = ast.parse(open(npcache.__file__).read())
+        asked = {node.func.attr for node in ast.walk(tree)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute)
+                 and isinstance(node.func.value, ast.Name)
+                 and node.func.value.id == "lister"}
+        self.assertTrue(asked, "npcache calls something on its connection")
+        for owner in both:
+            absent = sorted(name for name in asked if not hasattr(owner, name))
+            self.assertEqual(absent, [], f"{owner.__name__} lacks {absent}")
+
+        seen = 0
+        missing = []
+        for path in sorted(glob.glob("ps3tools/patching/*.py")
+                           + glob.glob("ps3tools/screens/patcher.py")):
+            tree = ast.parse(open(path).read())
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call)
+                        and isinstance(node.func, ast.Attribute)
+                        and isinstance(node.func.value, ast.Name)):
+                    continue
+                owner = classes.get(node.func.value.id)
+                if owner is None:
+                    continue
+                seen += 1
+                if not hasattr(owner, node.func.attr):
+                    missing.append(f"{path}: {owner.__name__} has no "
+                                   f"{node.func.attr}")
+        self.assertGreater(seen, 0, "the patchers call something")
+        self.assertEqual(missing, [], "\n".join(missing))

@@ -241,7 +241,15 @@ MW3 = Title(
     binaries=(
         Binary("default_mp.self", True, "multiplayer", 0x19, 0x20, 7578328,
                (Reference(UNPATCHED, "BLES01428", "1.24", 7581072,
-                          "1b02160e9daa943789ba5eda7258d1ce47d2df10"),)),
+                          "1b02160e9daa943789ba5eda7258d1ce47d2df10"),
+                # The American release. Two consoles show this size, which is
+                # what makes it a stock build rather than one this program has
+                # never seen. Without it every American copy came back as
+                # "cannot tell", which is the honest answer to a size nobody
+                # has reported and the wrong one for a size two people have.
+                # No sha1: neither report carried one, and a hash guessed at
+                # would be worse than none.
+                Reference(UNPATCHED, "BLUS30838", "1.24", 7541328, None))),
         Binary("default.self", False, "campaign and Spec Ops", None, None,
                None, ()),
     ))

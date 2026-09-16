@@ -1,0 +1,3 @@
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 00000001
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 vsh
+-rw-rw-rw-   1 root     root          512 Sep 14 14:22 notes.txt

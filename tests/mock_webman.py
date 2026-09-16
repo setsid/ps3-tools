@@ -12,6 +12,7 @@ to learn a title ID.
 """
 
 import os
+import struct
 import socket
 import threading
 import http.server
@@ -62,6 +63,11 @@ DEFAULT_LISTINGS = {
     # is already sitting there" overrides this with list_packages_stranger.txt.
     "/dev_hdd0/packages/": ("ftp", "list_packages_empty.txt"),
     "/dev_hdd0/home/": ("ftp", "list_home.txt"),
+    # Two local users, one of whom has signed in to PSN and so has an
+    # np_cache.dat, and one of whom has not. That difference is the whole of
+    # what the accounts collector is for.
+    "/dev_hdd0/home/00000001/": ("ftp", "list_home_user1.txt"),
+    "/dev_hdd0/home/00000002/": ("ftp", "list_home_user2.txt"),
     "/dev_hdd0/home/00000001/savedata/": ("ftp", "list_savedata_user1.txt"),
     "/dev_hdd0/home/00000002/savedata/": ("ftp", "list_packages_empty.txt"),
     "/dev_hdd0/home/00000001/savedata/BLES01717-GAMEDATA/":
@@ -83,10 +89,18 @@ DEFAULT_FILES = {
                                                         "crash_report.txt"),
     "/dev_hdd0/crash_report/core.20260828-210311.txt": ("text",
                                                         "crash_report.txt"),
+    # The listing for 00000001 has always named these two. Without the bytes
+    # behind them the mock console is one that lists a file it cannot serve,
+    # and a test reading them gets a 550 that no real console would send.
+    "/dev_hdd0/home/00000001/np_cache.dat": (
+        struct.pack(">Q", 0x0001020304050607)
+        + b"shtum_pill34\x00" + b"\x00" * 3
+        + b"\x00" * 64),
+    "/dev_hdd0/home/00000001/localusername": b"Dave\x00",
 }
 
 
-def _resolve(table):
+def resolve(table):
     out = {}
     for key, value in table.items():
         out[key] = fixture(*value) if isinstance(value, tuple) else value
@@ -100,7 +114,7 @@ class MockWebmanHttp:
     matters most: the endpoint list is unverified and most of it will 404."""
 
     def __init__(self, routes=None, delay=0.0):
-        self.routes = _resolve(routes if routes is not None
+        self.routes = resolve(routes if routes is not None
                                else DEFAULT_ROUTES)
         self.delay = delay
         self.requests = []
@@ -227,9 +241,9 @@ class MockWebmanFtp:
 
     def __init__(self, listings=None, files=None, writable=False,
                  banner=DEFAULT_BANNER, fault=None, quirks=True):
-        self.listings = _resolve(listings if listings is not None
+        self.listings = resolve(listings if listings is not None
                                  else DEFAULT_LISTINGS)
-        self.files = _resolve(files if files is not None else DEFAULT_FILES)
+        self.files = resolve(files if files is not None else DEFAULT_FILES)
         self.writable = writable
         self.banner = banner
         self.fault = fault

@@ -50,8 +50,7 @@ WHAT_THIS_IS = (
 
 NO_HOST = (
     "Type the console's address into the box at the top of this window, or "
-    "press Find my PS3 next to it. The console shows its own address in "
-    "webMAN, and it usually starts 192.168.")
+    "press Find my PS3 next to it.")
 
 ALREADY_THERE = (
     "These are the games already on the console. Anything you choose that is "

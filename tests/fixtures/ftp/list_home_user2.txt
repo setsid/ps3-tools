@@ -1,0 +1,4 @@
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 exdata
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 savedata
+drwxrwxrwx   1 root     root            0 Sep 14 14:22 trophy
+-rw-rw-rw-   1 root     root           10 Sep 14 14:22 localusername

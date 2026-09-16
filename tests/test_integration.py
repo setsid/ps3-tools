@@ -11,7 +11,8 @@ import threading
 import time
 import zipfile
 
-from mock_webman import DEFAULT_FILES, MockConsole, MockWebmanHttp, fixture
+from mock_webman import (DEFAULT_FILES, MockConsole,      # noqa: F401
+                         MockWebmanHttp, fixture, resolve)
 from support import FixtureCase
 from ps3diag import report, runner
 from ps3diag.analysis import analyse
@@ -117,6 +118,24 @@ class FullRun(Harness):
         self.assertEqual(facts["downloaded"], 2)
         self.assertTrue(self.artefacts.names("crash_reports/core*"))
 
+    def test_both_user_folders_under_home_were_walked(self):
+        # Two local users, and only the one who has signed in to PSN has an
+        # np_cache.dat. Telling those two apart is what a report needs to
+        # settle an argument about the Black Ops 1 fix.
+        facts = self.artefacts.facts("accounts")
+        self.assertEqual(facts["user_count"], 2)
+        self.assertEqual(facts["with_np_cache"], 1)
+        folders = {user["folder"]: user for user in facts["users"]}
+        self.assertEqual(sorted(folders), ["00000001", "00000002"])
+        self.assertTrue(folders["00000001"]["has_np_cache"])
+        self.assertEqual(folders["00000001"]["np_cache_size"], 2320)
+        self.assertFalse(folders["00000002"]["has_np_cache"])
+
+    def test_the_raw_home_listings_are_in_the_set(self):
+        self.assertTrue(self.artefacts.text("accounts/listing.txt"))
+        self.assertIn("np_cache.dat",
+                      self.artefacts.text("accounts/listing-00000001.txt"))
+
     def test_webman_settings_were_read_without_submitting_anything(self):
         self.assertEqual(
             self.artefacts.facts("webman_config")["settings"]["fanl"], "41")
@@ -167,7 +186,9 @@ class RangedIsoIdentification(Harness):
         # Padded out to something big enough that reading the lot would be
         # obvious in the byte count asserted below.
         self.image = build_ps3_bridge(pad_to=24 * 1024 * 1024)
-        served = {key: fixture(*value) for key, value in DEFAULT_FILES.items()}
+        # resolve() rather than fixture() over each value: the table holds
+        # literal bytes as well as fixture names.
+        served = resolve(DEFAULT_FILES)
         served[self.IMAGE] = self.image
         self.__class__.files = served
         super().setUp()
@@ -221,6 +242,163 @@ class IsoIdentificationDegrading(Harness):
             self.identify(["storage", "games"]))
         self.assertEqual(artefacts.status("games"), "ok")
         self.assertTrue(artefacts.game_entries())
+
+
+class OneAccountWithNpCache(Harness):
+    """The console the Black Ops 1 report was written about.
+
+    One local user, numbered 00000001, with np_cache.dat sitting in the folder
+    the fix looks in. A dump of this console has to say so in as many words,
+    because the screen told its owner that no account had that file.
+    """
+
+    listings = {
+        "/dev_hdd0/home/": ("ftp", "list_home_one_user.txt"),
+        "/dev_hdd0/home/00000001/": ("ftp", "list_home_user1.txt"),
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.artefacts = ArtefactSet.from_run(self.collect(["accounts"]))
+
+    def test_the_account_and_its_np_cache_are_both_recorded(self):
+        facts = self.artefacts.facts("accounts")
+        self.assertEqual(self.artefacts.status("accounts"), "ok")
+        self.assertEqual(facts["user_count"], 1)
+        self.assertEqual(facts["with_np_cache"], 1)
+        user = facts["users"][0]
+        self.assertEqual(user["path"], "/dev_hdd0/home/00000001")
+        self.assertTrue(user["listed"])
+        self.assertTrue(user["has_np_cache"])
+        names = [entry["name"] for entry in user["entries"]]
+        self.assertIn("np_cache.dat", names)
+        self.assertIn("savedata", names)
+
+    def test_the_summary_says_which_account_has_the_file(self):
+        summary = report.build_summary(self.artefacts)
+        self.assertIn("ACCOUNTS ON THIS CONSOLE", summary)
+        self.assertIn("00000001", summary)
+        self.assertIn("np_cache.dat", summary)
+
+    def test_the_summary_survives_redaction_with_its_words_intact(self):
+        """Redaction runs over the summary and must leave this section alone.
+
+        The online ID rule counts a bare "user" as a label and replaces the
+        word after it, so a heading of "USER ACCOUNTS" reached the zip as
+        "USER [ONLINE-ID-95cca5a0]" and "2 user folders" lost the word
+        "folders". Nothing in this section is an identifier, so nothing in it
+        should come out as a placeholder.
+        """
+        with tempfile.TemporaryDirectory() as folder:
+            path, _counts = report.write_zip(self.artefacts, folder)
+            with zipfile.ZipFile(path) as archive:
+                summary = archive.read("summary.txt").decode()
+                listing = archive.read(
+                    "accounts/listing-00000001.txt").decode()
+        start = summary.index("ACCOUNTS ON THIS CONSOLE")
+        section = summary[start:summary.index("\n\n", start)]
+        self.assertNotIn("[ONLINE-ID-", section)
+        self.assertNotIn("[CONSOLE-NAME-", section)
+        self.assertIn("account folder(s)", section)
+        # And the raw listing has to survive it too, or the file names a
+        # helper is reading the dump for are gone.
+        self.assertIn("np_cache.dat", listing)
+        self.assertIn("localusername", listing)
+
+    def test_nothing_in_a_user_folder_is_ever_opened(self):
+        # np_cache.dat holds the account ID and the online ID, and
+        # localusername holds the name the console shows. A dump gets posted
+        # in a Discord, so the walk reads names and never contents.
+        for command in self.console.ftp.commands:
+            verb, _, argument = command.partition(" ")
+            if verb.upper() in ("RETR", "SIZE"):
+                self.assertNotIn("/dev_hdd0/home", argument, command)
+
+    def test_the_transport_would_refuse_to_download_one_anyway(self):
+        # Belt and braces, and the braces are the allowlist: even a collector
+        # written later cannot pull these two down without widening it.
+        from ps3diag import transport
+        for path in ("/dev_hdd0/home/00000001/np_cache.dat",
+                     "/dev_hdd0/home/00000001/localusername"):
+            self.assertFalse(transport.may_download(path), path)
+            self.assertFalse(transport.may_read_bytes(path), path)
+
+
+class SomethingElseUnderHome(Harness):
+    """An entry that is not eight digits is not a user folder."""
+
+    listings = {
+        "/dev_hdd0/home/": ("ftp", "list_home_odd.txt"),
+        "/dev_hdd0/home/00000001/": ("ftp", "list_home_user1.txt"),
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.artefacts = ArtefactSet.from_run(self.collect(["accounts"]))
+
+    def test_it_is_recorded_but_not_counted_as_a_user(self):
+        facts = self.artefacts.facts("accounts")
+        self.assertEqual(facts["user_count"], 1)
+        self.assertEqual(sorted(entry["name"]
+                                for entry in facts["other_entries"]),
+                         ["notes.txt", "vsh"])
+
+    def test_it_is_never_listed(self):
+        # Each listing costs the console its own data connection, and whatever
+        # somebody has left under /dev_hdd0/home is none of this tool's
+        # business.
+        for command in self.console.ftp.commands:
+            self.assertNotIn("/dev_hdd0/home/vsh", command)
+
+
+class NoHomeFolderAtAll(Harness):
+    """A console with nothing at /dev_hdd0/home. The run carries on."""
+
+    listings = {"/dev_hdd0/": ("ftp", "list_dev_hdd0.txt")}
+
+    def test_the_category_fails_and_says_why_without_raising(self):
+        result = self.collect(["accounts", "webman_config"])
+        by_key = {outcome.key: outcome for outcome in result.results}
+        self.assertEqual(by_key["accounts"].status, "failed")
+        self.assertTrue(any("/dev_hdd0/home" in note
+                            for note in by_key["accounts"].notes))
+        # The point of the test: the category that follows is unharmed.
+        self.assertEqual(by_key["webman_config"].status, "ok")
+
+    def test_the_zip_is_still_written(self):
+        artefacts = ArtefactSet.from_run(self.collect(["accounts"]))
+        with tempfile.TemporaryDirectory() as folder:
+            path, _counts = report.write_zip(artefacts, folder)
+            self.assertTrue(os.path.exists(path))
+
+
+class AHomeListingThatFails(Harness):
+    """The folder is there and the console refuses to list it.
+
+    Not the same answer as an empty console, and reporting it as one is how
+    somebody gets told they have no accounts when they have two.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from mock_webman import MockWebmanFtp
+
+        def fault(verb, argument):
+            if verb == "LIST" and argument.startswith("/dev_hdd0/home"):
+                return "530 permission denied"
+            return None
+
+        self.console.ftp.stop()
+        self.console.ftp = MockWebmanFtp(fault=fault).start()
+
+    def test_the_refusal_is_recorded_as_a_fault_rather_than_as_emptiness(self):
+        result = self.collect(["accounts"])
+        outcome = result.results[0]
+        self.assertEqual(outcome.status, "failed")
+        self.assertTrue(outcome.faults)
+        self.assertTrue(any("permission denied" in note
+                            for note in outcome.notes))
+        self.assertEqual(ArtefactSet.from_run(result).facts("accounts"), {})
 
 
 class Output(Harness):
@@ -614,6 +792,6 @@ class Stopping(Harness):
             on_progress=lambda key, title, state, outcome:
                 seen.append(key) if state == "done" else None,
             should_stop=stop)
-        self.assertEqual(len(result.results), 7)
+        self.assertEqual(len(result.results), len(CATEGORY_KEYS))
         self.assertTrue(any(outcome.status == "ok"
                             for outcome in result.results))

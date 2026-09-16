@@ -117,6 +117,7 @@ Desktop.
 | Storage and devices | What is mounted, free and total space, how full, top level layout |
 | Plugins | `boot_plugins.txt`, what is actually in the plugins folder, and anything listed that is not there |
 | Crash reports | Everything under `/dev_hdd0/crash_report/`, contents included |
+| Accounts | The numbered user folders under `/dev_hdd0/home`, one level down each, and which of them has an `np_cache.dat`. Names, sizes and dates only: nothing in a user folder is opened |
 | Game inventory | Names, sizes, title IDs and region codes across every mounted device, and what is installed under `/dev_hdd0/game` |
 | Network | What the console reports, and the address it was actually reached on |
 | webMAN configuration | Version and the settings on its setup page |

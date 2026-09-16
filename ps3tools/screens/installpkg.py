@@ -70,8 +70,7 @@ WHAT_THIS_IS = (
 
 NO_HOST = (
     "Type the console's address into the box at the top of this window, or "
-    "press Find my PS3 next to it. The console shows its own address in "
-    "webMAN, and it usually starts 192.168.")
+    "press Find my PS3 next to it.")
 
 
 @register
@@ -358,9 +357,9 @@ class InstallPackagesScreen(Screen):
         self._fill_console_table()
         trouble = problem or (folder.reason if folder.unknown else "")
         if trouble:
-            self._listing_owns_panel = True
             self._show_panel("warn", "The console's packages folder could not "
                                      "be read", trouble)
+            self._listing_owns_panel = True
             return
         # This runs again straight after an install, so it may only clear a
         # notice it put up itself. Anything the run reported stays.
@@ -868,6 +867,11 @@ class InstallPackagesScreen(Screen):
     # -- panel, colours and chrome
 
     def _show_panel(self, token, heading, body):
+        # Whoever writes the panel last owns it. The listing runs again after
+        # every install, and it used to be able to clear a panel a failed run
+        # had put up moments earlier: the listing result was still in flight
+        # when the run finished, and the refusal vanished before it was read.
+        self._listing_owns_panel = False
         self._panel_token = token
         self._panel_heading.setText(heading)
         self._panel_body.setText(body)

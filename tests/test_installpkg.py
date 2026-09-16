@@ -23,6 +23,7 @@ import ftplib
 import os
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 import unittest.mock as mock
 
@@ -326,11 +327,19 @@ class TheRegistration(unittest.TestCase):
         self.assertTrue(screen.blurb.endswith("."))
 
     def test_the_two_cards_sit_next_to_each_other_before_about(self):
-        from ps3tools.shell.registry import screens
-        import ps3tools.screens.about                        # noqa: F401
-        import ps3tools.screens.gameupdates                  # noqa: F401
-        import ps3tools.screens.patcher                      # noqa: F401
-        order = {item.key: item.order for item in screens()}
+        """Card order, read off the screen classes themselves.
+
+        The registry is a global that several test modules clear and refill,
+        and importing a module that is already imported registers nothing a
+        second time, so a registry emptied by somebody else stays empty. This
+        used to read the registry and failed with a KeyError depending on
+        which modules had run before it.
+        """
+        from ps3tools.screens import about, gameupdates, installpkg as pkg
+        order = {screen.key: screen.order
+                 for screen in (about.AboutScreen,
+                                gameupdates.GameUpdatesScreen,
+                                pkg.InstallPackagesScreen)}
         self.assertGreater(order["packages"], order["updates"])
         self.assertLess(order["packages"], order["about"])
 
@@ -592,6 +601,26 @@ class TheRun(ScreenCase):
                                       "free_bytes": 1024}])
         screen.add_files([self.write("patch.pkg")])
         self.settle(screen.start_run(screen.selected_files()))
+        self.assertIn("not enough room", screen._panel_body.text())
+
+    def test_a_late_folder_listing_does_not_wipe_the_refusal(self):
+        """The listing runs again after every install.
+
+        Its result can land after a run has already failed, and clearing the
+        panel then takes the reason away before anybody has read it. On a busy
+        console that gap is wide enough to hit.
+        """
+        screen = self.build(writer=ExplodingWriter(),
+                            actions=ExplodingActions(),
+                            devices=[{"device": "dev_hdd0",
+                                      "free_bytes": 1024}])
+        screen.add_files([self.write("patch.pkg")])
+        self.settle(screen.start_run(screen.selected_files()))
+        self.assertIn("not enough room", screen._panel_body.text())
+
+        folder = SimpleNamespace(unknown=False, reason="")
+        screen._on_folder((folder, [], ""))
+        APP.processEvents()
         self.assertIn("not enough room", screen._panel_body.text())
 
     def test_a_console_that_disappears_mid_upload(self):

@@ -51,10 +51,29 @@ MAX_GAME_ENTRIES = 2000
 # storage one. Sixty covers any normal console and stops a machine with a
 # thousand folders in /dev_hdd0/game from turning one category into the run.
 MAX_INSTALLED_TITLES = 60
+# One listing per user folder, so this is a request budget for the same reason
+# as the one above: webMANftpd opens a fresh data connection per listing and
+# hangs up when it has had too many of them in quick succession. Sixteen is
+# well past the number of local users anybody sets up, so reaching it means
+# something other than the console has been writing under /dev_hdd0/home.
+MAX_USER_FOLDERS = 16
 
 # A directory under /dev_hdd0/game named like a title. Patches, homebrew and
 # webMAN's own folders live there too and are not worth a listing each.
 TITLE_DIR = re.compile(r"^[A-Z]{4}\d{5}$")
+
+# Where the console keeps one folder per local user.
+HOME_ROOT = "/dev_hdd0/home"
+
+# A user folder is eight digits and nothing else, which is how the console
+# names them from 00000001 up. Anything else under /dev_hdd0/home was put there
+# by something other than the console, so it is recorded and not descended
+# into.
+USER_DIR = re.compile(r"^\d{8}$")
+
+# The file the Black Ops 1 stats fix reads the account ID out of. Named here so
+# that the collector can say whether it is there without ever opening it.
+NP_CACHE = "np_cache.dat"
 
 
 class RunExpired(Exception):
@@ -481,6 +500,103 @@ def collect_crash_reports(ctx):
     return result.settle(True)
 
 
+# --- user accounts ---------------------------------------------------------
+
+def collect_accounts(ctx):
+    """The local user folders under /dev_hdd0/home, and what is in each one.
+
+    One level down and no further. That is enough to answer the question this
+    was added for: the Black Ops 1 stats fix reads np_cache.dat out of one of
+    these folders, and a user was told no account had that file while it was
+    sitting at /dev_hdd0/home/00000001/np_cache.dat. Nothing in the dump could
+    say which of the two was wrong, because nothing in the dump had looked.
+
+    No file here is ever opened, and that is a privacy decision rather than a
+    performance one. np_cache.dat carries the account ID and the online ID, and
+    localusername holds the name the console shows for a local user. Both are
+    exactly the sort of thing that must not turn up in a zip somebody posts in
+    a Discord, and neither is needed to answer the question. Names, sizes and
+    dates are collected rather than contents.
+
+    Everything this writes says "account" where the console would say "user".
+    That is redaction.py talking: its online ID rule treats a bare "user" as a
+    label and replaces the word after it, so a title of "User accounts" comes
+    out of the zip as "User [ONLINE-ID-95cca5a0]". The rule is loose on
+    purpose and catching a real online ID matters more than the wording here,
+    so the wording moved.
+    """
+    result = CollectorResult("accounts", "Accounts")
+    entries = _listing(ctx, result, f"{HOME_ROOT}/", "accounts/listing.txt")
+    if entries is None:
+        return result.settle(False)
+
+    users = []
+    others = []
+    for item in parsers.real_entries(entries):
+        if item["kind"] == "directory" and USER_DIR.match(item["name"]):
+            users.append(item)
+        else:
+            others.append({"name": item["name"], "kind": item["kind"]})
+    found = len(users)
+    if found > MAX_USER_FOLDERS:
+        result.note(f"{HOME_ROOT} holds {found} numbered folders, which is "
+                    f"more than a console sets up on its own. The first "
+                    f"{MAX_USER_FOLDERS} were looked inside.")
+        users = users[:MAX_USER_FOLDERS]
+
+    rows = []
+    try:
+        for index, item in enumerate(users, 1):
+            ctx.check_deadline()
+            ctx.check_stopped()
+            folder = item["name"]
+            ctx.progress(f"Account folder {index} of "
+                         f"{len(users)}: {folder}")
+            inside = _listing(ctx, result, f"{HOME_ROOT}/{folder}/",
+                              f"accounts/listing-{folder}.txt")
+            row = {"folder": folder, "path": f"{HOME_ROOT}/{folder}",
+                   "listed": inside is not None}
+            if inside is not None:
+                files = [{"name": entry["name"], "kind": entry["kind"],
+                          "size": entry["size"],
+                          "modified": entry["modified"]}
+                         for entry in parsers.real_entries(inside)]
+                cache = next((entry for entry in files
+                              if entry["name"].lower() == NP_CACHE), None)
+                row["entry_count"] = len(files)
+                row["has_np_cache"] = cache is not None
+                row["entries"] = files
+                if cache is not None:
+                    row["np_cache_size"] = cache["size"]
+                    row["np_cache_modified"] = cache["modified"]
+            # A folder that would not list carries no has_np_cache at all.
+            # Recording False there would be the very answer that started this:
+            # "no account has np_cache.dat" said about a folder nobody read.
+            rows.append(row)
+    except RunStopped:
+        _note_stopped(result)
+
+    # user_count is what the home listing showed, and users is the folders
+    # that were then looked inside. The two differ only when the budget above
+    # or a stop cut the walk short, and a reader who is counting accounts
+    # should be counting the first of them.
+    result.facts = {
+        "path": HOME_ROOT,
+        "user_count": found,
+        "with_np_cache": sum(1 for row in rows if row.get("has_np_cache")),
+        "users": rows,
+    }
+    if others:
+        result.facts["other_entries"] = others
+    if not found:
+        result.note(f"{HOME_ROOT} holds no numbered account folder, so no "
+                    "account has been set up on this console. The Black Ops 1 "
+                    "fix has nothing to read on a console in this state.")
+        result.status = OK
+        return result
+    return result.settle(True)
+
+
 # --- game inventory --------------------------------------------------------
 
 def collect_games(ctx):
@@ -808,6 +924,7 @@ CATEGORIES = (
     ("storage", "Storage and devices", collect_storage),
     ("plugins", "Plugins", collect_plugins),
     ("crash_reports", "Crash reports", collect_crash_reports),
+    ("accounts", "Accounts", collect_accounts),
     ("network", "Network", collect_network),
     ("webman_config", "webMAN configuration", collect_webman_config),
     ("games", "Game inventory", collect_games),

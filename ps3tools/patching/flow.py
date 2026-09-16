@@ -67,6 +67,15 @@ NO_SITE = "no patch site"
 # misread. This release simply signs its binaries differently, which is only
 # discoverable by trying, and the title ID is the thing worth reporting.
 CANNOT_DECRYPT = "cannot decrypt"
+# The file opened and is a binary of this game, and it is not the binary this
+# name is supposed to hold. A mod menu commonly replaces EBOOT.BIN with a
+# re-signed copy of the multiplayer binary set to load an SPRX at boot, and
+# the result is a file that boots and then fails once multiplayer starts.
+# Patching it would be patching the wrong binary at an address that means
+# something else in it. Kept apart from UNRECOGNISED because that one says
+# the bytes were strange, while this one says the file is somebody else's
+# work and names what it actually looks like.
+REPLACED = "replaced"
 
 # The re-sign argument shapes, one per title, taken from the two repositories'
 # readmes. The differences between them are not derivable from anything: each
@@ -203,6 +212,52 @@ def pattern_site_state(image, kind):
         return UNRECOGNISED, found["evidence"]
     return (PATCHED if found["state"] == patchstate.PATCHED else NOT_PATCHED,
             found["evidence"])
+
+
+def looks_like(config, site_name, image, kind):
+    """Which of this title's binaries the decrypted image actually is, or "".
+
+    Every patch site is found by the signature of the code around it, so the
+    signatures double as a way of telling one of a title's binaries from
+    another. If the site this file is supposed to carry is not in it and a
+    different one of the same title's sites is, the file holds that other
+    binary.
+
+    Only ever answers with a site of the same title, so the answer is either a
+    binary this table describes or nothing at all. A build nobody has seen and
+    a file somebody has meddled with both fail the first half of that test,
+    and only the second half can tell them apart.
+    """
+    for record in config.get("binaries", ()):
+        other = record.get("site")
+        if not other or other == site_name:
+            continue
+        found = titles.PATCH_SITES.get(other)
+        if not found:
+            continue
+        state, _detail = site_state(found, image, kind)
+        if state in (PATCHED, NOT_PATCHED):
+            return other
+    return ""
+
+
+def replaced_detail(name, config, looks_like_site):
+    """What to say about a file that holds one of this game's other binaries."""
+    purpose = ""
+    for record in config.get("binaries", ()):
+        if record.get("site") == looks_like_site:
+            purpose = record.get("purpose", "")
+            break
+    site = titles.PATCH_SITES.get(looks_like_site) or {}
+    other = site.get("image") or looks_like_site
+    return (f"{name} is not the binary it is supposed to be. What is in it is "
+            f"{other}"
+            + (f", the one that carries {purpose}" if purpose else "")
+            + f". A file with this name holding another of the game's "
+              f"binaries has been replaced, which a mod menu does when it "
+              f"puts a re-signed copy of one in place of another. It is left "
+              f"alone: the fix's site means something else inside it, and "
+              f"patching it would produce a file that starts and then fails.")
 
 
 def site_offset(site, image, kind):
@@ -356,6 +411,10 @@ class ScanReport:
         return [item for item in self.files if item.state == CANNOT_DECRYPT]
 
     @property
+    def replaced(self):
+        return [item for item in self.files if item.state == REPLACED]
+
+    @property
     def missing(self):
         return [item.name for item in self.files
                 if not item.present and item.site]
@@ -374,7 +433,7 @@ class ScanReport:
         """
         return [item for item in self.files
                 if item.site and item.state in (UNRECOGNISED, NOT_EXAMINED,
-                                                CANNOT_DECRYPT)]
+                                                CANNOT_DECRYPT, REPLACED)]
 
     @property
     def already_patched(self):
@@ -610,6 +669,14 @@ def _scan_one(writer, tool, config, item, workdir, states, index, total,
         states[key] = site_state(site, image, kind) + \
             (site_offset(site, image, kind),)
     item.state, item.detail, found_at = states[key]
+    if item.state == UNRECOGNISED:
+        # The site this file should carry is not in it. Before calling that a
+        # build nobody has seen, ask whether the file is one of this game's
+        # other binaries, because that is a different thing to tell somebody.
+        instead = looks_like(config, item.record.get("site"), image, kind)
+        if instead:
+            item.state = REPLACED
+            item.detail = replaced_detail(item.name, config, instead)
     if item.state == NOT_EXAMINED:
         item.missing_tool = patchstate.PATCHER_FILES.get(kind, "")
     item.offset = (found_at if item.state not in (UNRECOGNISED, NOT_EXAMINED)
@@ -645,6 +712,8 @@ def _cross_check(report):
     for item in report.unrecognised:
         report.notes.append(f"{item.name} was not recognised and will be left "
                             f"alone: {item.detail}")
+    for item in report.replaced:
+        report.notes.append(item.detail)
     for item in report.not_examined:
         report.notes.append(f"{item.name} could not be checked by this "
                             f"program and will be left alone: {item.detail}")

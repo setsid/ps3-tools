@@ -314,6 +314,34 @@ def may_read_save(path):
     return any(pattern.match(path) for pattern in SAVE_READABLE)
 
 
+# The two files that say who is signed in: np_cache.dat holds the account ID a
+# patcher needs, and localusername holds the name that account is called on the
+# console, which is what makes a chooser something other than a list of bare
+# folder numbers.
+#
+# Their own patterns and their own gate rather than a widening of BYTE_READABLE
+# or DOWNLOADABLE, because the diagnostics collectors must stay unable to reach
+# them. np_cache.dat holds the account ID and the PSN online ID, and neither
+# belongs in a report somebody is about to post on a forum. A patcher asks for
+# these by name and on purpose; a collector sweeping the console does not.
+#
+# Anchored at both ends and exactly one segment deep under an eight-digit user
+# folder, so they can name nothing but those two files in a user folder.
+ACCOUNT_READABLE = (
+    re.compile(r"^/dev_hdd0/home/\d{8}/np_cache\.dat$"),
+    re.compile(r"^/dev_hdd0/home/\d{8}/localusername$"),
+)
+
+# Both files are a few hundred bytes on every console seen. The cap is generous
+# against that and still small enough that a substituted file cannot turn this
+# into a download of something else.
+MAX_ACCOUNT_BYTES = 64 * 1024
+
+
+def may_read_account(path):
+    return any(pattern.match(path) for pattern in ACCOUNT_READABLE)
+
+
 class FtpLister:
     """LIST and a tightly limited RETR. Nothing that changes anything.
 
@@ -504,6 +532,28 @@ class FtpLister:
                                                  blocksize=32768))
         if self.log:
             self.log.event("ftp_read_save", path=path, bytes=total)
+        return b"".join(chunks)
+
+    def download_account_file(self, path, max_bytes=MAX_ACCOUNT_BYTES):
+        """One np_cache.dat or localusername, verbatim, if it is allowed."""
+        if not may_read_account(path):
+            raise UnsafeRequest(f"not on the account allowlist: {path!r}")
+        chunks = []
+        total = 0
+
+        def take(block):
+            nonlocal total
+            if total >= max_bytes:
+                return
+            chunks.append(block[:max_bytes - total])
+            total += len(block)
+
+        self._command(lambda ftp: ftp.retrbinary(f"RETR {path}", take,
+                                                 blocksize=8192))
+        if self.log:
+            # The path names a user folder and nothing else. The contents are
+            # never logged.
+            self.log.event("ftp_read_account", path=path, bytes=total)
         return b"".join(chunks)
 
     def close(self):

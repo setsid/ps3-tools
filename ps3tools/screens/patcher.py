@@ -115,6 +115,7 @@ STATE_TOKENS = {
     flow.UNRECOGNISED: "error",
     flow.NOT_EXAMINED: "warn",
     flow.CANNOT_DECRYPT: "warn",
+    flow.REPLACED: "error",
     flow.NO_SITE: "text_dim",
 }
 
@@ -129,6 +130,10 @@ STATE_WORDS = {
     # what it should be; this tool has not got what it takes to open this
     # release, which is this tool's limit and not a fault in the file.
     flow.CANNOT_DECRYPT: "cannot be opened",
+    # The file opened and holds one of this game's other binaries. Said as
+    # what it is rather than as "not recognised", because this one was
+    # recognised, as something else.
+    flow.REPLACED: "replaced",
     flow.NO_SITE: "not affected",
 }
 
@@ -258,6 +263,8 @@ ROW_PADDING = 8
 LEFT_ALONE = {
     flow.PATCHED: "{name} is already fixed",
     flow.UNRECOGNISED: "{name} is not a build this fix was written for",
+    flow.REPLACED: "{name} has been replaced with another of the game's "
+                   "binaries",
     flow.CANNOT_DECRYPT: "{name} could not be opened",
     flow.NOT_EXAMINED: "{name} could not be checked by this program",
 }
@@ -713,9 +720,8 @@ class PatcherScreen(Screen):
             self._detail.setText("")
             self._show_state(
                 "warn", "No console address has been entered yet",
-                "Type the console's address into the box at the top of this "
-                "window, or press Find my PS3 next to it. The console shows "
-                "its own address in webMAN, and it usually starts 192.168.")
+                "Type the console's address into the box at the top of "
+                "this window, or press Find my PS3 next to it.")
             self._files.clear()
             self._patch.setEnabled(False)
             self._restore.setEnabled(False)
@@ -1352,6 +1358,12 @@ class PatcherScreen(Screen):
             if item.state in (flow.UNRECOGNISED, flow.NOT_EXAMINED):
                 lines.append(f"{item.name}: {item.detail} "
                              f"(sha1 {item.sha1 or 'not read'})")
+            elif item.state == flow.REPLACED:
+                # What it is has already been said once, in the notes. This
+                # adds the hash, which is what somebody reporting the file
+                # needs and what tells two copies of it apart.
+                lines.append(f"{item.name}: sha1 "
+                             f"{item.sha1 or 'not read'}")
         return "\n\n".join(line for line in lines if line)
 
     # -- the patch
@@ -2056,6 +2068,23 @@ ACCOUNT_MISSING = (
     "the first time an account signs in to PSN, and the fix reads the account "
     "ID out of it. Sign in to PSN once on the console and run this again.")
 
+#: Said instead of the above when the file is there and could not be used.
+#: Telling somebody to sign in to PSN when they already have, and when the
+#: file is sitting in the folder they were told to look in, is the report this
+#: wording exists to stop.
+ACCOUNT_UNREADABLE = (
+    "np_cache.dat is on this console and would not come off it, so the fix "
+    "has no account ID to work from. Signing in to PSN again will not change "
+    "this. What went wrong:")
+
+#: And a third, for a file that arrived with nothing usable in it. Kept apart
+#: from the one above because the advice is opposite: an account ID of zero is
+#: a sign-in that has not finished, which is the one case where going back to
+#: PSN is the answer.
+ACCOUNT_NO_ID = (
+    "np_cache.dat came off this console and the fix could not read an account "
+    "ID out of it. What the file says:")
+
 
 @register
 class BlackOpsOnePatcher(PatcherScreen):
@@ -2119,8 +2148,10 @@ class BlackOpsOnePatcher(PatcherScreen):
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)
-        #: Local users with an np_cache.dat, which is the ones this can use.
+        #: Local users the fix can be run for.
         self._users = []
+        #: Every local user found, usable or not. See _no_account_words.
+        self._all_users = []
         #: The one the fix will be tied to, once there is an answer.
         self._user = None
         self._account_problem = ""
@@ -2147,7 +2178,11 @@ class BlackOpsOnePatcher(PatcherScreen):
             # lose it. A real scan always carries a users key, even when the
             # list under it is empty.
             return
-        self._users = npcache.with_cache(extras.get("users") or [])
+        #: Everyone found, including the accounts the fix cannot use. Kept so
+        #: that "there is no such file" and "the file is there and would not
+        #: read" can be told apart when there is nothing usable.
+        self._all_users = list(extras.get("users") or [])
+        self._users = npcache.with_cache(self._all_users)
         # One candidate is the answer. More than one is a question, and it is
         # put at the point where it matters rather than on the way in.
         self._user = self._users[0] if len(self._users) == 1 else None
@@ -2157,7 +2192,7 @@ class BlackOpsOnePatcher(PatcherScreen):
         if self._account_problem:
             return False, self._account_problem
         if not self._users:
-            return False, ACCOUNT_MISSING
+            return False, self._no_account_words()
         if len(self._users) == 1:
             # Nothing to choose between. Asking somebody to confirm the only
             # answer is a question that teaches them to click through
@@ -2241,6 +2276,24 @@ class BlackOpsOnePatcher(PatcherScreen):
                 "this fix on those, and then apply your own changes again on "
                 "top of the patched files.")
 
+    def _no_account_words(self):
+        """Why no account can be used, told apart from each other.
+
+        Three different things end up here and only one of them is answered
+        by signing in to PSN: a file that is not there, a file that would not
+        come off the console, and a file whose first eight bytes are not an
+        account ID.
+        """
+        if npcache.none_have_the_file(self._all_users):
+            return ACCOUNT_MISSING
+        stuck = npcache.why_unreadable(self._all_users)
+        if stuck:
+            return ACCOUNT_UNREADABLE + "\n\n" + "\n".join(stuck)
+        empty = npcache.why_no_account_id(self._all_users)
+        if empty:
+            return ACCOUNT_NO_ID + "\n\n" + "\n".join(empty)
+        return ACCOUNT_MISSING
+
     def _plan(self, report):
         lines = super()._plan(report)
         if not writing_anything(report):
@@ -2248,7 +2301,7 @@ class BlackOpsOnePatcher(PatcherScreen):
         if self._account_problem:
             lines.append(self._account_problem)
         elif not self._users:
-            lines.append(ACCOUNT_MISSING)
+            lines.append(self._no_account_words())
         elif self._user is not None:
             lines.append(ACCOUNT_LINE.format(label=self._user.label))
         else:

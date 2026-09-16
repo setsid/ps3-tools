@@ -20,16 +20,13 @@ SUPPORT_ADDRESS = "setsid.research@proton.me"
 
 ADDRESS_HINT = (
     "The console shows its own address under Settings, Network Settings, "
-    "Settings and Connection Status List. It is near the top of that page, "
-    "and it is four numbers with dots between them.")
+    "Settings and Connection Status List.")
 
-SUPPORT_HINT = (
-    "If something here did not do what it said it would, write to "
-    + SUPPORT_ADDRESS + " and say what you saw.")
+SUPPORT_HINT = "Something wrong? Write to " + SUPPORT_ADDRESS + "."
 
 DISCORD_URL = "https://discord.gg/PDrSPNgeNj"
 
-DISCORD_HINT = "Ask a question or say how you got on in the Discord."
+DISCORD_HINT = "Questions and reports in the Discord."
 
 
 def _wording(screen_class):
@@ -444,9 +441,8 @@ class Launcher(QWidget):
         self._empty.setVisible(count == 0)
         self._grid_host.setVisible(count > 0)
         self._subheading.setText(
-            "Each one works on the console at the address above, so that only "
-            "gets typed once. Nothing is changed on the console until a tool "
-            "says what it is about to do." if count else "")
+            "Each one works on the console at the address above."
+            if count else "")
         # With no tools there is no address to find and nothing to be stuck
         # on, so the footer would be two lines about a screen that is telling
         # the user the build is broken.

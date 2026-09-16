@@ -156,6 +156,7 @@ def build_summary(artefacts, findings=(), broken_rules=()):
     out.extend(_psn_section(artefacts))
     out.extend(_plugins_section(artefacts))
     out.extend(_crash_section(artefacts))
+    out.extend(_accounts_section(artefacts))
     out.extend(_network_section(artefacts))
     out.extend(_webman_section(artefacts))
     out.extend(_problems_section(artefacts))
@@ -490,6 +491,53 @@ def _crash_section(artefacts):
     for item in facts.get("files", []):
         out.append(f"    {item['name'].ljust(34)}"
                    f"{item['size_human'].rjust(10)}   {item['modified']}")
+    out.append("")
+    return out
+
+
+def _accounts_section(artefacts):
+    """Who has a folder under /dev_hdd0/home, and who has an np_cache.dat.
+
+    Printed rather than left in facts.json because it is the answer to a
+    question somebody is asking while they read this file: the Black Ops 1 fix
+    said no account had np_cache.dat, and this is the line that either agrees
+    with it or shows it was wrong.
+
+    Every line here says "account" where the console would say "user". The
+    online ID rule in redaction.py treats a bare "user" as a label and replaces
+    the word after it, so "2 user folders" reached the zip as "2 user
+    [ONLINE-ID-eaabbc2b]s". Summaries are redacted on the way in and this
+    section has to survive that, so it avoids the word.
+    """
+    status = _status(artefacts, "accounts")
+    facts = _facts(artefacts, "accounts")
+    out = _section("ACCOUNTS ON THIS CONSOLE")
+    if not facts and status in ("skipped", "absent"):
+        out += ["  Nothing was collected for this category.", ""]
+        return out
+    count = facts.get("user_count", 0)
+    if not count:
+        out += [f"  {facts.get('path', '/dev_hdd0/home')} holds no numbered "
+                "account folder, so no account", "  has been set up.",
+                ""]
+        return out
+    out.append(f"  {count} account folder(s), "
+               f"{facts.get('with_np_cache', 0)} with an np_cache.dat.")
+    users = facts.get("users") or []
+    for user in users:
+        if not user.get("listed"):
+            out.append(f"    {user['folder']}   could not be listed")
+            continue
+        if user.get("has_np_cache"):
+            state = (f"np_cache.dat, {user.get('np_cache_size', 0)} bytes, "
+                     f"{user.get('np_cache_modified', '')}".rstrip(", "))
+        else:
+            state = "no np_cache.dat"
+        out.append(f"    {user['folder']}   {user.get('entry_count', 0)} "
+                   f"entries, {state}")
+    for other in facts.get("other_entries") or []:
+        out.append(f"    {other['name']} is not an account folder and was "
+                   "not looked inside")
     out.append("")
     return out
 

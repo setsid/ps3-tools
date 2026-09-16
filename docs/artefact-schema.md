@@ -190,6 +190,45 @@ recognisable ID. That is common and does not mean anything is wrong.
 `count`, `downloaded`, `files` as `{name, size, size_human, modified}`.
 The reports themselves are at `crash_reports/<name>`.
 
+### `accounts/facts.json`
+
+```json
+{"path": "/dev_hdd0/home",
+ "user_count": 2, "with_np_cache": 1,
+ "users": [
+   {"folder": "00000001", "path": "/dev_hdd0/home/00000001",
+    "listed": true, "entry_count": 5, "has_np_cache": true,
+    "np_cache_size": 2320, "np_cache_modified": "Sep 14 14:22",
+    "entries": [{"name": "np_cache.dat", "kind": "file", "size": 2320,
+                 "modified": "Sep 14 14:22"}]}],
+ "other_entries": [{"name": "vsh", "kind": "directory"}]}
+```
+
+One level down from `/dev_hdd0/home` and no further. A user folder is eight
+digits, which is how the console names them; `other_entries` is everything else
+under that folder, recorded as seen and never listed. The raw listings are at
+`accounts/listing.txt` and `accounts/listing-<folder>.txt`.
+
+`user_count` is how many numbered folders the home listing showed and `users`
+is the ones that were then looked inside. The two differ only when the request
+budget or a stop cut the walk short, and anything counting accounts wants the
+first of them.
+
+`listed` is `false` for a folder that would not list, and such a folder carries
+no `has_np_cache` at all. **Absent there means "could not look", never "the
+file is not there"**: reporting the second as the first is what left a user
+being told no account had an `np_cache.dat` that was sitting in front of them.
+
+Everything this category writes into the zip says "account" where the console
+would say "user". The online ID rule in `redaction.py` treats a bare `user` as
+a label and replaces the word after it, so a heading of `USER ACCOUNTS` came
+out as `USER [ONLINE-ID-95cca5a0]`. Anything added here wants the same care.
+
+**No file under `/dev_hdd0/home` is ever opened.** `np_cache.dat` carries the
+account ID and the online ID and `localusername` carries the name the console
+shows for a local user, so this category holds names, sizes and dates and
+nothing else. The transport allowlist refuses both files as well.
+
 ### `network/facts.json`
 
 `ip_address`, `subnet_mask`, `gateway`, `dns_primary`, `dns_secondary`,

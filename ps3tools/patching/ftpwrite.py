@@ -24,7 +24,8 @@ import os
 import time
 
 from ps3diag.parsers import recode_ftp_line
-from ps3diag.transport import force_byte_safe
+from ps3diag.transport import (MAX_ACCOUNT_BYTES, UnsafeRequest,
+                               force_byte_safe, may_read_account)
 
 #: How long before a pause is pointless. A connection that last worked more
 #: than this ago was dropped by the server's idle timeout, and the console is
@@ -253,6 +254,33 @@ class FtpWriter:
         def run(ftp):
             chunks = []
             ftp.retrbinary(f"RETR {path}", chunks.append, blocksize=BLOCK)
+            return b"".join(chunks)
+
+        return self._command(run)
+
+    def download_account_file(self, path, max_bytes=MAX_ACCOUNT_BYTES):
+        """One np_cache.dat or localusername, verbatim, if it is allowed.
+
+        The same name and the same gate as FtpLister's. The patchers are handed
+        whichever of the two is open at the time, so a method one has and the
+        other does not is a screen that fails on every console while the tests
+        stay green. That is not hypothetical: it shipped.
+        """
+        if not may_read_account(path):
+            raise UnsafeRequest(f"not on the account allowlist: {path!r}")
+
+        def run(ftp):
+            chunks = []
+            total = 0
+
+            def take(block):
+                nonlocal total
+                if total >= max_bytes:
+                    return
+                chunks.append(block[:max_bytes - total])
+                total += len(block)
+
+            ftp.retrbinary(f"RETR {path}", take, blocksize=BLOCK)
             return b"".join(chunks)
 
         return self._command(run)

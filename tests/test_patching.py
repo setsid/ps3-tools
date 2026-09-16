@@ -1482,6 +1482,120 @@ class TheStateTheScreenReports(ScreenCase):
 
 
 
+class AFileThatIsNotTheBinaryItShouldBe(ConsoleCase):
+    """A mod menu puts one of the game's binaries under another's name.
+
+    The usual shape is EBOOT.BIN replaced with a re-signed copy of the
+    multiplayer binary, set to load an SPRX at boot. It decrypts, it is a
+    binary of this game, and it is not the one that name is supposed to hold.
+    Patched at the campaign site it would produce a file that starts and then
+    fails once multiplayer does, which is a fault nobody would trace back to
+    this program.
+
+    The patch sites are found by the signature of the code around them, so the
+    signatures answer this too: the file does not carry the site it should and
+    does carry a different one of the same title's.
+    """
+
+    def swapped_eboot(self, state="stock"):
+        """EBOOT.BIN holding the multiplayer image instead of the campaign."""
+        record = next(item for item in titles.TITLES["bo2"]["binaries"]
+                      if item["name"] == "EBOOT.BIN")
+        site = titles.PATCH_SITES["bo2-multiplayer"]
+        image = images.bo2_image(state, offset=site["file_offset"])
+        fields = images.info_for(BO2_CONTENT, "UEXEC", "EBOOT.BIN",
+                                 key_revision="001C",
+                                 fw_version="0004002000000000")
+        return images.wrap(fields, record["klicensee"] or "", image)
+
+    def scan_with_swapped_eboot(self, state="stock"):
+        files = {name: self_file("bo2", name)
+                 for name in ("t6_ps3f.self", "t6mp_ps3f.self")}
+        files["EBOOT.BIN"] = self.swapped_eboot(state)
+        self.start(BO2_ID, files)
+        return flow.scan(self.writer(), FakeScetool(), BO2_ID)
+
+    def test_it_is_reported_as_replaced_rather_than_unrecognised(self):
+        report = self.scan_with_swapped_eboot()
+        item = report.file_for("EBOOT.BIN")
+        self.assertEqual(item.state, flow.REPLACED)
+        self.assertNotIn(item, report.unrecognised)
+        self.assertIn(item, report.replaced)
+
+    def test_it_says_what_the_file_actually_is(self):
+        report = self.scan_with_swapped_eboot()
+        said = report.file_for("EBOOT.BIN").detail
+        self.assertIn("EBOOT.BIN", said)
+        self.assertIn("replaced", said)
+        self.assertIn("mp.elf", said)
+        self.assertIn("multiplayer", said)
+
+    def test_it_is_never_written_to(self):
+        report = self.scan_with_swapped_eboot()
+        self.assertNotIn("EBOOT.BIN",
+                         [item.name for item in report.to_patch])
+        self.assertNotIn("EBOOT.BIN", [item.name for item in report.chosen])
+        self.assertIn(report.file_for("EBOOT.BIN"), report.blocked)
+
+    def test_the_files_beside_it_are_still_judged_on_their_own(self):
+        # One meddled file does not stop the rest. The other two are ordinary
+        # and are still offered.
+        report = self.scan_with_swapped_eboot()
+        self.assertEqual(
+            sorted(item.name for item in report.to_patch),
+            ["t6_ps3f.self", "t6mp_ps3f.self"])
+        self.assertTrue(report.can_patch)
+
+    def test_it_is_not_reported_as_an_error_on_the_whole_title(self):
+        # Its own state on its own row. A scan that came back as an error
+        # would say nothing about the two files that are perfectly fine.
+        report = self.scan_with_swapped_eboot()
+        self.assertEqual(report.error, "")
+
+    def test_the_scan_says_so_in_its_notes(self):
+        report = self.scan_with_swapped_eboot()
+        self.assertTrue(any("EBOOT.BIN" in note and "replaced" in note
+                            for note in report.notes), report.notes)
+
+    def test_an_already_patched_impostor_is_still_an_impostor(self):
+        # The state of the site it does carry says nothing about whether the
+        # file belongs under this name.
+        report = self.scan_with_swapped_eboot(state="patched")
+        self.assertEqual(report.file_for("EBOOT.BIN").state, flow.REPLACED)
+
+    def test_an_ordinary_set_is_untouched_by_the_check(self):
+        files = {name: self_file("bo2", name)
+                 for name in ("EBOOT.BIN", "t6_ps3f.self", "t6mp_ps3f.self")}
+        self.start(BO2_ID, files)
+        report = flow.scan(self.writer(), FakeScetool(), BO2_ID)
+        self.assertEqual(report.replaced, [])
+        self.assertEqual(sorted(item.name for item in report.to_patch),
+                         ["EBOOT.BIN", "t6_ps3f.self", "t6mp_ps3f.self"])
+
+    def test_a_build_nobody_has_seen_is_not_called_replaced(self):
+        """The two are different things and must not be told as each other.
+
+        A file whose site is somewhere else is a build this fix was not
+        written for. It is only a replaced file when the binary it does hold
+        is another of this title's, which is a thing that can be named.
+        """
+        record = next(item for item in titles.TITLES["bo2"]["binaries"]
+                      if item["name"] == "EBOOT.BIN")
+        image = images.bo2_image("stock", offset=0x3000)
+        fields = images.info_for(BO2_CONTENT, "UEXEC", "EBOOT.BIN",
+                                 key_revision="001C",
+                                 fw_version="0004002000000000")
+        files = {name: self_file("bo2", name)
+                 for name in ("t6_ps3f.self", "t6mp_ps3f.self")}
+        files["EBOOT.BIN"] = images.wrap(fields, record["klicensee"] or "",
+                                         image)
+        self.start(BO2_ID, files)
+        report = flow.scan(self.writer(), FakeScetool(), BO2_ID)
+        self.assertEqual(report.file_for("EBOOT.BIN").state,
+                         flow.UNRECOGNISED)
+        self.assertEqual(report.replaced, [])
+
+
 class ChoosingWhichCopyToPatch(ScreenCase):
     """Two supported releases of the same game on one console.
 

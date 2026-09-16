@@ -29,6 +29,51 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.3.3",
+        date="2026-09-16",
+        summary="A file is checked for being the binary it claims to be "
+                "before anything is written to it.",
+        changes=(
+            "Every file a patcher is about to change is checked for actually "
+            "being that binary. A mod menu commonly puts a re-signed copy of "
+            "the multiplayer binary in place of EBOOT.BIN, set to load an "
+            "SPRX at boot. That file decrypts, and it is one of the game's "
+            "binaries, and it is not the one that name is supposed to hold. "
+            "Patched at the campaign site it would produce a file that "
+            "starts and then fails once multiplayer does.",
+            "A file like that is left alone and reported on its own row as "
+            "replaced, naming what is actually in it. It is kept apart from "
+            "not recognised, which says the bytes were strange rather than "
+            "that the file is somebody else's work.",
+            "Whether this accounts for the Modern Warfare 3 reports on HEN "
+            "is not settled. A console that was failing there will now say "
+            "plainly whether its files are what they should be, which is the "
+            "first thing to rule out.",
+            "A build nobody has seen is still reported as a build nobody has "
+            "seen. The stronger claim is only made when the file holds "
+            "another of that same game's binaries, which is a thing that can "
+            "be named.",
+            "The Black Ops 1 fix no longer refuses an account whose PSN name "
+            "cannot be read out of np_cache.dat. The name is for the picker; "
+            "the fix needs the account ID and nothing else. A console with "
+            "the file plainly present was being told that no account had "
+            "one.",
+            "A file that will not come off the console, a file with no "
+            "account ID in it, and no file at all are three separate "
+            "messages. Only the last one tells you to sign in to PSN.",
+            "The diagnostic collects /dev_hdd0/home and one level inside each "
+            "user folder, so a report about the Black Ops 1 fix can be "
+            "answered from the dump. Names, sizes and dates only; no file in "
+            "there is opened.",
+            "Modern Warfare 3 recognises the American build of "
+            "default_mp.self at 7541328 bytes, so an American copy is named "
+            "rather than reported as a size nobody has seen.",
+            "The home screen and the four screens that ask for an address say "
+            "less. The address hint no longer explains what an address looks "
+            "like.",
+        ),
+    ),
+    Release(
         version="1.3.2",
         date="2026-09-16",
         summary="Choosing which copy of a game to fix, and saying which one "

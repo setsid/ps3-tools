@@ -96,6 +96,18 @@ USRDIR_PATH = "/dev_hdd0/game/%s/USRDIR/np_cache.dat"
 #: The account ID is the first eight bytes of np_cache.dat, big endian.
 ACCOUNT_ID_BYTES = 8
 
+#: A title ID is four letters and five digits, upper case. Checked before it
+#: is formatted into a path, because a wrong one produces a path that does not
+#: exist, an open that fails, and a cave that quietly falls through to the
+#: stock behaviour. The patch then reports as applied and does nothing, which
+#: is the worst way for this to be wrong.
+TITLE_ID_LENGTH = 9
+
+#: Where the title ID is read from. The content ID is in the SELF header and
+#: travels with the file; the folder under /dev_hdd0/game can be renamed by
+#: anybody and often has been.
+CONTENT_ID = re.compile(r"-([A-Z]{4}\d{5})_")
+
 # --- FNIDs -----------------------------------------------------------------
 #
 # The numbers the loader itself matches on. They are the same on every PS3
@@ -516,6 +528,38 @@ def find_formatter(image, format_string, window=0x30):
 
 # --- finding the imports ---------------------------------------------------
 
+def title_id_from_content_id(content_id):
+    """The title ID out of a SELF's content ID, checked before it is used.
+
+    EP0002-BLES01031_00-CODBLOPSPATCH012 carries BLES01031. The folder the
+    game sits in carries whatever somebody called it, so the content ID is
+    the one that is worth reading.
+    """
+    found = CONTENT_ID.search((content_id or "").upper())
+    if not found:
+        raise NotThisBuild(
+            f"{content_id!r} is not a content ID with a title in it, so "
+            f"there is no folder to tell the fix to read from")
+    return found.group(1)
+
+
+def np_cache_path(title_id):
+    """Where the fix will look for np_cache.dat, from a title ID.
+
+    The one place this path is spelled. Whatever puts the file on the console
+    asks here too, so the path the cave opens and the path the file is written
+    to cannot be different strings.
+    """
+    title_id = (title_id or "").upper()
+    if len(title_id) != TITLE_ID_LENGTH or not title_id.isalnum() \
+            or not title_id.isascii():
+        raise NotThisBuild(
+            f"{title_id!r} is not a title ID. It has to be "
+            f"{TITLE_ID_LENGTH} upper case letters and digits, and the fix "
+            f"will not write a path built from anything else")
+    return USRDIR_PATH % title_id
+
+
 def prx_param(image):
     """The sys_process_prx_param segment, which lists the import tables."""
     for p_type, _flags, offset, vaddr, filesz in image.segments:
@@ -722,10 +766,13 @@ def load32(rt, value):
 #   0x80   the account ID, eight bytes, big endian as np_cache.dat stores it
 #   0xE8   saved r30
 #   0xF0   saved r31
-#   0xF8   saved r29
 #
 # r31 holds the original argument, the online ID pointer, the whole way
-# through, so the fallback still has it. r29 holds the path being tried.
+# through, so the fallback still has it. r30 holds the result of the read
+# across the close that follows it.
+#
+# The path is not on the stack. It is data at the end of the cave and the
+# code points at it directly.
 
 FRAME = 0x100
 FD = 0x70
@@ -733,7 +780,6 @@ NREAD = 0x78
 ACCOUNT = 0x80
 SAVE_R30 = 0xE8
 SAVE_R31 = 0xF0
-SAVE_R29 = 0xF8
 LR_SLOT = FRAME + 0x10
 
 
@@ -971,18 +1017,23 @@ def find_site(data):
     return offset, None
 
 
-def apply(data, title_id):
+def apply(data, content_id):
     """Patch a decrypted image. Returns (bytes, dict of what was done).
 
-    title_id names the folder the readable copy of np_cache.dat is placed in,
-    and is written into the cave as data, so it is the title on the console
-    rather than one assumed here.
+    content_id is the one out of this file's own SELF header. The title ID is
+    taken from it and formatted into the path the cave opens, so the folder
+    the fix reads from is the folder this copy of the game actually installed
+    to. Taking a title ID directly was the earlier shape and it let a caller
+    hand over a folder name, which on a renamed folder or another region is a
+    path that does not exist and a fix that reports as applied and does
+    nothing.
 
     Which account the copy came from is not this function's business. The tool
     reads the signed in user's np_cache.dat and puts a copy where this path
     points; from in here one copy looks like another, and the account it
     belongs to is settled before the file ever gets to the game's folder.
     """
+    title_id = title_id_from_content_id(content_id)
     _offset, state = find_site(data)
     if state is None:
         raise NotThisBuild(
@@ -995,7 +1046,7 @@ def apply(data, title_id):
         data = restore(data)
     image = Image(data)
     marks = find_landmarks(image)
-    paths = [USRDIR_PATH % title_id]
+    paths = [np_cache_path(title_id)]
     blob, entry = build_cave(marks, marks.cave, paths)
     if len(blob) > marks.cave_size:
         raise NotThisBuild(
@@ -1013,6 +1064,7 @@ def apply(data, title_id):
     return bytes(out), {"hook": marks.hook, "offset": hook_at,
                         "cave": marks.cave, "entry": entry,
                         "bytes": len(blob), "paths": paths,
+                        "title_id": title_id,
                         "landmarks": marks.as_dict()}
 
 
@@ -1056,8 +1108,11 @@ def main():
     parser.add_argument("binary", help="decrypted Black Ops 1 MP ELF")
     parser.add_argument("-o", "--output",
                         help="write here instead of in place")
-    parser.add_argument("--title-id", default="BLES01031",
-                        help="the folder the readable np_cache.dat is in")
+    parser.add_argument("--content-id",
+                        help="the content ID out of this file's own SELF "
+                             "header, which scetool -i prints. The title in "
+                             "it says which folder the fix reads "
+                             "np_cache.dat from")
     parser.add_argument("--check", action="store_true",
                         help="report what was found and the state, then stop")
     parser.add_argument("--restore", action="store_true",
@@ -1100,8 +1155,15 @@ def main():
         if state == PATCHED:
             print("nothing to do, already patched")
             return
-        out, what = apply(data, args.title_id)
+        if not args.content_id:
+            sys.exit("--content-id is needed to patch. Read it off the SELF "
+                     "with scetool -i; it looks like "
+                     "EP0002-BLES01031_00-CODBLOPSPATCH012. There is no "
+                     "default because a default would be one title's folder "
+                     "written into every other title's patch.")
+        out, what = apply(data, args.content_id)
         print()
+        print("title   %s" % what["title_id"])
         for path in what["paths"]:
             print("path    %s" % path)
         print("cave    %08X, %d bytes" % (what["cave"], what["bytes"]))

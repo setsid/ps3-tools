@@ -812,15 +812,45 @@ class TheLegalNotices(unittest.TestCase):
         self.assertLess(readme.index(self.TRADEMARK),
                         readme.index(self.DISCLAIMER))
 
-    def test_nothing_in_the_readme_points_at_box_art_or_a_screenshot(self):
-        # No logos, box art or in-game screenshots. The only image is the
-        # wordmark this project drew for itself.
+    def readme_images(self):
         import re
         readme = pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8")
         images = set(re.findall(r'<img[^>]*src="([^"]+)"', readme))
         images |= set(re.findall(r'!\[[^\]]*\]\(([^)]+)\)', readme))
-        local = {name for name in images if not name.startswith("http")}
-        self.assertEqual(local, {"logo.png"}, local)
+        return {name for name in images if not name.startswith("http")}
+
+    def test_nothing_in_the_readme_points_at_box_art_or_a_screenshot(self):
+        # No logos, box art or in-game screenshots. Everything shown is drawn
+        # by this project: the wordmark, and the status cards at the top,
+        # which docs/make-cards.py draws out of rectangles and letters. The
+        # titles themselves are trademarks and their artwork is not ours to
+        # ship, so an image arriving here that neither this project drew nor
+        # can account for is a failure whatever it turns out to be.
+        allowed = {"logo.png"}
+        allowed |= {"docs/cards/" + name for name, _letters, _title, _status
+                    in self.cards()}
+        self.assertEqual(self.readme_images(), allowed)
+
+    def test_every_picture_in_the_readme_is_one_this_project_drew(self):
+        # The cards are checked as files rather than as names: an SVG that
+        # embedded a photograph would pass a filename check and fail this.
+        for name in sorted(self.readme_images()):
+            if not name.endswith(".svg"):
+                continue
+            body = pathlib.Path(ROOT, name).read_text(encoding="utf-8")
+            self.assertNotIn("<image", body, name)
+            self.assertNotIn("data:", body, name)
+            self.assertIn("<text", body, name)
+
+    def cards(self):
+        """What docs/make-cards.py says it draws."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "make_cards_legal",
+            str(pathlib.Path(ROOT, "docs", "make-cards.py")))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.CARDS
 
 
 class TheLegalNoticesOnScreen(AboutCase):

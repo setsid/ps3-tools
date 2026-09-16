@@ -697,22 +697,25 @@ def apply_fix(image, kind, module, context=None):
     because patch-bo2.py's main stops on a file that is already patched rather
     than saying so.
 
-    context is what a fix needs that is not in the binary. Two of the three
-    need nothing. Black Ops 1 writes the path it will read the account ID from
-    into its own code cave, and that path has the title ID in it, which cannot
-    be read out of the image.
+    context is what a fix needs that is not in the decrypted image. Two of
+    the three need nothing. Black Ops 1 writes the path it will read the
+    account ID from into its own code cave, and the title in that path comes
+    from this file's own content ID, which is in the SELF header and so is
+    not in the image the fix is handed.
     """
     data = bytearray(image)
     context = context or {}
     try:
         if kind == "bo1":
-            title_id = context.get("title_id")
-            if not title_id:
+            content_id = context.get("content_id")
+            if not content_id:
                 raise PatchFailed(
-                    "the fix was not told which title folder to read the "
-                    "account ID from, so nothing has been changed")
+                    "this file's content ID could not be read, and the fix "
+                    "takes the folder it reads the account ID from out of "
+                    "that rather than out of the folder's name, so nothing "
+                    "has been changed")
             try:
-                patched, what = module.apply(bytes(data), title_id)
+                patched, what = module.apply(bytes(data), content_id)
             except module.NotThisBuild as exc:
                 raise PatchFailed(f"{exc}.")
             return patched, what["offset"]
@@ -882,7 +885,12 @@ def _build_all(tool, chosen, saved, kind, module, workdir, progress, out,
         image = tool.decrypt(source, image_path, klicensee)
 
         step(f"applying the fix to {item.name}")
-        patched, offset = apply_fix(image, kind, module, context)
+        # The file's own content ID goes with it. A fix that needs to know
+        # which title it is looking at should read that off the file it is
+        # about to change rather than off the folder it was found in.
+        patched, offset = apply_fix(
+            image, kind, module,
+            dict(context or {}, content_id=item.content_id))
         site = item.site
         # A site found by pattern has no recorded offset to be checked
         # against, on purpose: see the note on pattern_site_state above. The

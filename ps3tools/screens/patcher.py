@@ -53,7 +53,8 @@ import tempfile
 
 from PySide6.QtCore import QMetaMethod, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFrame,
+                               QHBoxLayout,
                                QInputDialog, QLabel, QMessageBox, QProgressBar,
                                QSizePolicy,
                                QPushButton, QSizePolicy, QTreeWidget,
@@ -320,17 +321,19 @@ def _human(count):
 class PatcherScreen(Screen):
     """Scan an installed title, and repair it once the user agrees."""
 
-    #: A framed note under the explanation, for something true about the game
-    #: that this fix is not the cause of and does not yet cure. Empty for a
-    #: screen with nothing to add.
-    NOTICE = ""
+    #: What a tick box beside Apply has to say before Apply will do anything,
+    #: for a fix that is wrong for some consoles and right for others. Empty
+    #: for a screen whose fix suits everybody its scan will offer it to, which
+    #: is most of them.
+    CONFIRM_WITH = ""
 
-    #: The part of that note which is about what is being done rather than
-    #: about what is true, drawn bold and in the accent colour. Separate from
-    #: NOTICE so that the work being done is the part that catches the eye,
-    #: which is the half somebody reading a list of things wrong with their
-    #: game most needs to see.
-    NOTICE_WORK = ""
+    #: Framed notes under the explanation, in the order they are shown. Each
+    #: is (body, emphasis, colour token). The emphasis is drawn bold and in
+    #: the token's colour, so the half that decides what somebody does is the
+    #: half that catches the eye; pass "" for a note with no such half.
+    #:
+    #: Empty for a screen with nothing to add, which is most of them.
+    NOTICES = ()
 
     #: which entry in ps3tools.titles this card is for
     title_key = ""
@@ -404,34 +407,37 @@ class PatcherScreen(Screen):
         # Under the explanation, because it is about the game rather than
         # about this program, and above everything else, because somebody who
         # needs it needs it before they start reading a table.
-        self._notice = QFrame()
-        self._notice.setObjectName("sidenotice")
-        notice = QVBoxLayout(self._notice)
-        notice.setContentsMargins(16, 12, 16, 12)
-        notice.setSpacing(6)
-        self._notice_text = _wrapping(QLabel(self.NOTICE))
-        notice.addWidget(self._notice_text)
-        self._notice_work = _wrapping(QLabel(self.NOTICE_WORK))
-        work_font = self._notice_work.font()
-        work_font.setBold(True)
-        self._notice_work.setFont(work_font)
-        self._notice_work.setVisible(bool(self.NOTICE_WORK))
-        notice.addWidget(self._notice_work)
-        # Otherwise the table below takes the stretch and squeezes this to one
-        # line, which cuts the second one through the middle of its letters.
-        # A word-wrapped QLabel reports the height of a single line until it
-        # has been laid out, and a layout that believes it never gives it the
-        # room to be more than that.
-        _wrapping(self._notice, QSizePolicy.Policy.Minimum)
-        self._notice.setVisible(bool(self.NOTICE or self.NOTICE_WORK))
-        layout.addWidget(self._notice)
-        if not self._notice.isHidden():
-            # Painted here as well as on a theme change. The other panels on
-            # this screen are hidden until something shows them and are
-            # painted at that moment; this one is on the screen from the start
-            # and would otherwise be an unstyled rectangle until the user
-            # changed theme.
-            self._paint_notice()
+        # One framed note per entry, under the explanation, because they are
+        # about the game rather than about this program and somebody who
+        # needs them needs them before they start reading a table.
+        self._notices = []
+        for body, emphasis, token in self.NOTICES:
+            frame = QFrame()
+            frame.setObjectName("sidenotice")
+            box = QVBoxLayout(frame)
+            box.setContentsMargins(16, 12, 16, 12)
+            box.setSpacing(6)
+            words = _wrapping(QLabel(body))
+            box.addWidget(words)
+            loud = _wrapping(QLabel(emphasis))
+            loud_font = loud.font()
+            loud_font.setBold(True)
+            loud.setFont(loud_font)
+            loud.setVisible(bool(emphasis))
+            box.addWidget(loud)
+            # Otherwise the table below takes the stretch and squeezes this to
+            # one line, which cuts the second one through the middle of its
+            # letters. A word-wrapped QLabel reports the height of a single
+            # line until it has been laid out, and a layout that believes it
+            # never gives it the room to be more than that.
+            _wrapping(frame, QSizePolicy.Policy.Minimum)
+            layout.addWidget(frame)
+            self._notices.append((frame, words, loud, token))
+        # Painted here as well as on a theme change. The other panels on this
+        # screen are hidden until something shows them and are painted at that
+        # moment; these are on the screen from the start and would otherwise
+        # be unstyled rectangles until the user changed theme.
+        self._paint_notice()
 
         self._where = QLabel("")
         self._where.setWordWrap(True)
@@ -622,7 +628,15 @@ class PatcherScreen(Screen):
         line.setFrameShape(QFrame.HLine)
         layout.addWidget(line)
 
+        # A tick box for a screen whose fix is only right for some accounts,
+        # on the row with Apply so it is read on the way to pressing it. Built
+        # for every screen and shown on the ones that ask for it, because a
+        # widget that only exists on one subclass is a widget every other
+        # method has to check for.
         buttons = QHBoxLayout()
+        self._confirm = QCheckBox(self.CONFIRM_WITH)
+        self._confirm.setVisible(bool(self.CONFIRM_WITH))
+        self._confirm.toggled.connect(self._on_confirmed)
         self._back = QPushButton("Back")
         self._back.clicked.connect(self._on_back)
         buttons.addWidget(self._back)
@@ -641,6 +655,7 @@ class PatcherScreen(Screen):
         widgets.set_role(self._restore, widgets.DANGER)
         self._restore.clicked.connect(self._on_restore)
         buttons.addWidget(self._restore)
+        buttons.addWidget(self._confirm)
         self._patch = QPushButton("Apply the fix")
         widgets.set_role(self._patch, widgets.PRIMARY)
         self._patch.setDefault(True)
@@ -771,6 +786,25 @@ class PatcherScreen(Screen):
         """(ready, why not). Asked before the confirmation box is shown."""
         return True, ""
 
+    def patch_allowed(self):
+        """Whether Apply may be enabled at all, whatever the scan found.
+
+        For a fix that is only right for some accounts. A scan cannot tell
+        which of those the person in front of it has, so the screen asks and
+        this is where the answer is read.
+        """
+        return not self.CONFIRM_WITH or self._confirm.isChecked()
+
+    def _on_confirmed(self, _checked):
+        """The tick box moved, so Apply may have just become available."""
+        if self._scan is None or self._writing:
+            return
+        self._patch.setEnabled(
+            self._scan.can_patch
+            and not (self._update_state is not None
+                     and self._update_state.blocks)
+            and self.patch_allowed())
+
     def patch_context(self):
         """What the fix needs that is not in the binary. See flow.apply_fix."""
         return None
@@ -885,7 +919,8 @@ class PatcherScreen(Screen):
                                                self._installed_version())
         self._show_update(self._update_state)
         self._patch.setEnabled(report.can_patch
-                               and not self._update_state.blocks)
+                               and not self._update_state.blocks
+                               and self.patch_allowed())
         # The one place the screen is allowed to call a patch a success: a
         # read-back of a patch this session applied, which came back with every
         # file on the console already fixed. Anything else -- a file still
@@ -961,7 +996,8 @@ class PatcherScreen(Screen):
         self._patch.setEnabled(
             self._scan.can_patch
             and not (self._update_state is not None
-                     and self._update_state.blocks))
+                     and self._update_state.blocks)
+            and self.patch_allowed())
 
     # -- the state of the console, in words the user can act on
 
@@ -1066,25 +1102,26 @@ class PatcherScreen(Screen):
     def _paint_notice(self):
         """Quieter than the restart notice, and in the same shape.
 
-        It is information rather than an instruction: nobody has to act on it
-        to make the fix work, and drawing it as loudly as the one sentence
+        These are information rather than an instruction: nobody has to act on
+        one to make a fix work, and drawing them as loudly as the sentence
         somebody must not miss would cost that sentence its meaning.
         """
-        accent = self._colour_name("info") or self._colour_name("text")
         surface = self._colour_name("surface_alt") \
             or self._colour_name("surface")
         text = self._colour_name("text")
-        if not (accent and surface and text):
+        if not (surface and text):
             return
-        self._notice.setStyleSheet(
-            f"QFrame#sidenotice {{ background-color: {surface};"
-            f" border: 1px solid {accent};"
-            f" border-left: 6px solid {accent};"
-            f" border-radius: 6px; }}"
-            f"QFrame#sidenotice QLabel {{ background: transparent;"
-            f" border: none; }}")
-        self._notice_text.setStyleSheet(f"color: {text}; border: none;")
-        self._notice_work.setStyleSheet(f"color: {accent}; border: none;")
+        for frame, words, loud, token in self._notices:
+            accent = self._colour_name(token) or text
+            frame.setStyleSheet(
+                f"QFrame#sidenotice {{ background-color: {surface};"
+                f" border: 1px solid {accent};"
+                f" border-left: 6px solid {accent};"
+                f" border-radius: 6px; }}"
+                f"QFrame#sidenotice QLabel {{ background: transparent;"
+                f" border: none; }}")
+            words.setStyleSheet(f"color: {text}; border: none;")
+            loud.setStyleSheet(f"color: {accent}; border: none;")
 
     def _paint_count(self):
         dim = self._colour_name("text_dim")
@@ -1824,7 +1861,7 @@ class PatcherScreen(Screen):
     def _repaint(self):
         self._paint_patch_button()
         self._paint_count()
-        if not self._notice.isHidden():
+        if self._notices:
             self._paint_notice()
         if not self._success.isHidden():
             self._paint_success()
@@ -1924,6 +1961,17 @@ ACCOUNT_CHOICE = ("There is more than one account on this console. You will "
                   "be asked which one is signed in before anything is "
                   "written.")
 
+#: The one thing somebody has to decide before this fix is any use to them,
+#: said on the screen and agreed to before Apply will do anything.
+CAUTION = (
+    "Only apply this if your rank actually resets. Accounts made before late "
+    "2018 already work, and this fix would give them an identity the server "
+    "does not hold.")
+CAUTION_ACTION = "If your progress saves, leave this alone."
+
+#: What the tick box beside Apply says.
+CONFIRM = "My rank resets to 1 every time I play"
+
 ACCOUNT_MISSING = (
     "No account on this console has an np_cache.dat yet. That file is written "
     "the first time an account signs in to PSN, and the fix reads the account "
@@ -1951,14 +1999,29 @@ class BlackOpsOnePatcher(PatcherScreen):
     # the screen rather than left for somebody to find out in a lobby. The
     # wording stops at what has been seen: two consoles, no date, and no claim
     # about why the map packs do it.
-    NOTICE = (
-        "If you cannot find a public match, the map packs are the cause "
-        "rather than this fix. Black Ops 1 will not place you in a public "
-        "game while its map packs are installed. Renaming or removing them "
-        "lets matchmaking work again. This has been confirmed on two "
-        "consoles.")
-    NOTICE_WORK = ("This is being looked into, and the aim is a fix that "
-                   "leaves the map packs alone.")
+    CONFIRM_WITH = CONFIRM
+
+    NOTICES = (
+        # First, because it decides whether to go any further. The fix makes
+        # the client hash the account ID. An account made before Sony's 2018
+        # change still authenticates on a hash of the online ID, so applying
+        # this to one hands it an identity the server has never held and
+        # breaks something that works today. Nothing on the console tells the
+        # two apart, so the person at the keyboard has to.
+        (CAUTION, CAUTION_ACTION, "warn"),
+        # Not this fix's doing and not something this fix cures, so it is said
+        # here rather than left for somebody to find out in a lobby. The
+        # wording stops at what has been seen: two consoles, no date, and no
+        # claim about why the map packs do it.
+        ("If you cannot find a public match, the map packs are the cause "
+         "rather than this fix. Black Ops 1 will not place you in a public "
+         "game while its map packs are installed. Renaming or removing them "
+         "lets matchmaking work again. This has been confirmed on two "
+         "consoles.",
+         "This is being looked into, and the aim is a fix that leaves the "
+         "map packs alone.",
+         "info"),
+    )
     # Between Diagnostics and the other two fixes, so the three game fixes sit
     # together and the card most people are here for is not behind them.
     order = 15
@@ -2029,10 +2092,24 @@ class BlackOpsOnePatcher(PatcherScreen):
         return True, ""
 
     def patch_context(self):
-        # The cave needs the title folder and nothing else. Which account the
-        # copy in it came from is settled here, before the copy is sent, and
-        # is not something the binary can be told apart from the copy itself.
-        return {"title_id": self._scan.title_id if self._scan else ""}
+        # Nothing. The one thing the fix needs that is not in the image is
+        # this file's own content ID, and the flow takes that off the file it
+        # is about to change rather than being told it from here.
+        return {}
+
+    def content_id(self):
+        """The content ID of the file the fix changes, or "".
+
+        Off the file rather than off the folder it sits in. The folder can be
+        renamed and often has been; the content ID is in the SELF header and
+        travels with the binary.
+        """
+        if self._scan is None:
+            return ""
+        for item in self._scan.files:
+            if item.site is not None and item.content_id:
+                return item.content_id
+        return ""
 
     def patch_extras(self, writer, workdir):
         """A fresh copy of np_cache.dat, every time.
@@ -2044,13 +2121,19 @@ class BlackOpsOnePatcher(PatcherScreen):
         """
         if self._user is None:
             raise npcache.NoAccount(ACCOUNT_MISSING)
+        content_id = self.content_id()
+        if not content_id:
+            raise npcache.NoAccount(
+                "the content ID could not be read off the multiplayer "
+                "binary, and the copy has to go in the folder that names, so "
+                "nothing has been written.")
         raw = npcache.read_for(writer, self._user.folder)
         # Reading the account ID here is not for the cave, which reads the
         # file itself. It is so that a file with nothing usable in it stops
         # the run before anything is written rather than producing a patch
         # that quietly falls back to the old behaviour.
         npcache.account_id(raw)
-        return (npcache.place(writer, self._scan.title_id, raw, workdir),)
+        return (npcache.place(writer, content_id, raw, workdir),)
 
     def next_step_words(self):
         """Put the stock files back, run this, then change them again.

@@ -31,8 +31,8 @@ import os
 import re
 import struct
 
+from ps3diag import patchstate
 from ps3diag.parsers import parse_ftp_list
-from ps3tools import titles
 
 
 def _by_name(text):
@@ -178,9 +178,22 @@ def online_id(raw):
     return text if text.isprintable() else ""
 
 
-def destination(title_id):
-    """Where the readable copy goes: the game's own folder."""
-    return f"{titles.usrdir_for(title_id)}/{NAME}"
+def destination(content_id):
+    """Where the readable copy goes, asked of the fix that will read it.
+
+    The path is not built here. It is built by the same function the code
+    cave's path is built by, so the file the tool writes and the file the game
+    opens are the same string by construction. Two templates that happen to
+    agree today are two templates that can stop agreeing, and the way that
+    shows is a patch that applies cleanly and does nothing.
+    """
+    module = patchstate.patcher_module("bo1")
+    if module is None:
+        raise NoAccount(
+            "the Black Ops 1 fix is not part of this build of the program, "
+            "so there is nowhere to put the copy. This is a fault in this "
+            "program and nothing is wrong with your console.")
+    return module.np_cache_path(module.title_id_from_content_id(content_id))
 
 
 def stage(raw, workdir, name=NAME):
@@ -191,11 +204,11 @@ def stage(raw, workdir, name=NAME):
     return path
 
 
-def place(writer, title_id, raw, workdir):
+def place(writer, content_id, raw, workdir):
     """(remote path, local path) for the copy, staged and ready to send.
 
     The writing itself is the flow's job: it uploads this the same way it
     uploads a patched binary, reads it back and compares, because a supporting
     file that did not arrive whole is a fix that silently does nothing.
     """
-    return destination(title_id), stage(raw, workdir)
+    return destination(content_id), stage(raw, workdir)

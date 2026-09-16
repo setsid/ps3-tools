@@ -27,6 +27,16 @@ from ps3tools.patching.unfself import Unfself, WithFakeSigned
 bo1 = patchstate.patcher_module("bo1")
 
 
+def content_id_for(title_id):
+    """A content ID carrying a given title, the way a real SELF spells one.
+
+    The fix takes the folder it reads from out of this rather than out of the
+    folder's own name, because a folder can be renamed and a content ID that
+    travels in the SELF header cannot.
+    """
+    return f"EP0002-{title_id}_00-CODBLOPSPATCH012"
+
+
 # --- an image with the landmarks in known places ---------------------------
 
 BASE = 0x10000
@@ -233,11 +243,11 @@ class PatchingAndPuttingItBack(unittest.TestCase):
         self.assertEqual(state, bo1.STOCK)
 
     def test_a_patched_image_reads_as_patched(self):
-        out, _what = bo1.apply(IMAGE, "BLES01031")
+        out, _what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         self.assertEqual(bo1.find_site(out)[1], bo1.PATCHED)
 
     def test_the_hook_is_the_only_instruction_changed_outside_the_cave(self):
-        out, what = bo1.apply(IMAGE, "BLES01031")
+        out, what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         changed = [index for index in range(len(IMAGE))
                    if IMAGE[index] != out[index]]
         outside = [index for index in changed
@@ -248,15 +258,15 @@ class PatchingAndPuttingItBack(unittest.TestCase):
         self.assertEqual(what["offset"], HOOK)
 
     def test_the_friends_list_is_left_exactly_as_it_was(self):
-        out, _what = bo1.apply(IMAGE, "BLES01031")
+        out, _what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         self.assertEqual(out[FRIEND:FRIEND + 4], IMAGE[FRIEND:FRIEND + 4])
 
     def test_putting_it_back_leaves_the_file_byte_for_byte_as_it_was(self):
-        out, _what = bo1.apply(IMAGE, "BLES01031")
+        out, _what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         self.assertEqual(bo1.restore(out), IMAGE)
 
     def test_the_path_carries_the_title_rather_than_a_guess(self):
-        out, what = bo1.apply(IMAGE, "NPEB00756")
+        out, what = bo1.apply(IMAGE, "EP0002-NPEB00756_00-CODBLOPSPATCH012")
         self.assertEqual(what["paths"],
                          ["/dev_hdd0/game/NPEB00756/USRDIR/np_cache.dat"])
         for path in what["paths"]:
@@ -270,14 +280,14 @@ class PatchingAndPuttingItBack(unittest.TestCase):
         one anyway so a failed open costs nothing. That was the one thing this
         tool did that the build confirmed on hardware did not, and it is out.
         """
-        _out, what = bo1.apply(IMAGE, "BLES01031")
+        _out, what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         self.assertEqual(len(what["paths"]), 1)
         self.assertNotIn("/dev_hdd0/home/", what["paths"][0])
         self.assertIn("/USRDIR/", what["paths"][0])
 
     def test_patching_again_refreshes_the_path_rather_than_stacking(self):
-        once, _ = bo1.apply(IMAGE, "BLES01031")
-        twice, what = bo1.apply(once, "NPEB00756")
+        once, _ = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
+        twice, what = bo1.apply(once, "EP0002-NPEB00756_00-CODBLOPSPATCH012")
         self.assertEqual(bo1.find_site(twice)[1], bo1.PATCHED)
         self.assertIn("NPEB00756", what["paths"][0])
         self.assertNotIn(b"/dev_hdd0/game/BLES01031/USRDIR/np_cache.dat",
@@ -297,13 +307,13 @@ class PatchingAndPuttingItBack(unittest.TestCase):
     def test_a_cave_whose_head_is_damaged_stops_being_ours(self):
         # The head is the whole of how a patch is recognised, so a cave
         # without it is not one of ours and is not reported as one.
-        out, _what = bo1.apply(IMAGE, "BLES01031")
+        out, _what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         broken = bytearray(out)
         broken[CAVE:CAVE + 4] = b"XXXX"
         self.assertEqual(bo1.find_marked_calls(bo1.Image(bytes(broken))), [])
 
     def test_the_cave_is_marked_so_it_can_be_recognised_again(self):
-        out, what = bo1.apply(IMAGE, "BLES01031")
+        out, what = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         head = out[CAVE:CAVE + len(bo1.MARK)]
         self.assertEqual(head, bo1.MARK)
         self.assertEqual(
@@ -318,7 +328,7 @@ class WhatTheProgramMakesOfIt(unittest.TestCase):
     def test_the_state_reads_the_same_through_patchstate(self):
         self.assertEqual(patchstate.decrypted_state(IMAGE, "bo1")["state"],
                          patchstate.UNPATCHED)
-        out, _ = bo1.apply(IMAGE, "BLES01031")
+        out, _ = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         self.assertEqual(patchstate.decrypted_state(out, "bo1")["state"],
                          patchstate.PATCHED)
 
@@ -332,7 +342,7 @@ class WhatTheProgramMakesOfIt(unittest.TestCase):
         self.assertIsNone(site.get("file_offset"))
         self.assertEqual(flow.site_state(site, IMAGE, "bo1")[0],
                          flow.NOT_PATCHED)
-        out, _ = bo1.apply(IMAGE, "BLES01031")
+        out, _ = bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")
         self.assertEqual(flow.site_state(site, out, "bo1")[0], flow.PATCHED)
 
     def test_an_image_it_will_not_answer_for_is_unrecognised(self):
@@ -341,17 +351,58 @@ class WhatTheProgramMakesOfIt(unittest.TestCase):
         self.assertEqual(state, flow.UNRECOGNISED)
         self.assertIn("free bytes", detail)
 
-    def test_the_flow_will_not_patch_without_being_told_which_title(self):
+    def test_the_flow_will_not_patch_without_a_content_id(self):
         with self.assertRaises(flow.PatchFailed):
             flow.apply_fix(IMAGE, "bo1", bo1, {})
         with self.assertRaises(flow.PatchFailed):
-            flow.apply_fix(IMAGE, "bo1", bo1, {"title_id": ""})
+            flow.apply_fix(IMAGE, "bo1", bo1, {"content_id": ""})
+
+    def test_the_flow_will_not_take_a_folder_name_for_a_content_id(self):
+        """The defect this guards is silent.
+
+        A folder name was what the flow used to hand over. It is right on the
+        European disc, where the folder happens to be called BLES01031, and
+        wrong on the American and digital releases, where the fix then opened
+        a path that did not exist, fell through to the stock behaviour and
+        still reported as applied.
+        """
+        with self.assertRaises(flow.PatchFailed):
+            flow.apply_fix(IMAGE, "bo1", bo1, {"content_id": "BLES01031"})
 
     def test_the_flow_applies_it_with_the_context_it_is_given(self):
-        out, offset = flow.apply_fix(IMAGE, "bo1", bo1,
-                                     {"title_id": "NPEB00756"})
+        out, offset = flow.apply_fix(
+            IMAGE, "bo1", bo1, {"content_id": content_id_for("NPEB00756")})
         self.assertEqual(offset, HOOK)
         self.assertIn(b"/dev_hdd0/game/NPEB00756/USRDIR/np_cache.dat", out)
+
+    def test_the_title_comes_off_the_file_and_not_off_the_folder(self):
+        # Every release gets its own folder in the path, from its own content
+        # ID. This is the whole of the first defect.
+        for title_id in ("BLES01031", "BLUS30591", "NPEB00756"):
+            _out, what = bo1.apply(IMAGE, content_id_for(title_id))
+            self.assertEqual(what["title_id"], title_id)
+            self.assertEqual(
+                what["paths"],
+                [f"/dev_hdd0/game/{title_id}/USRDIR/np_cache.dat"])
+
+    def test_a_title_that_is_not_one_is_refused_rather_than_formatted(self):
+        for bad in ("", "BLES0103", "BLES010311", "BLES 1031", "../../etc"):
+            with self.assertRaises(bo1.NotThisBuild):
+                bo1.np_cache_path(bad)
+
+    def test_the_copy_lands_where_the_fix_will_look_for_it(self):
+        """One value, so the two cannot drift apart.
+
+        The path the cave opens and the path the tool writes to are built by
+        the same function. Two templates that agree today are two templates
+        that can stop agreeing, and the way that shows is a patch that applies
+        cleanly and does nothing.
+        """
+        for title_id in ("BLES01031", "BLUS30591", "NPEB00756"):
+            content_id = content_id_for(title_id)
+            _out, what = bo1.apply(IMAGE, content_id)
+            self.assertEqual(npcache.destination(content_id),
+                             what["paths"][0])
 
     def test_only_the_multiplayer_binary_has_a_site(self):
         sites = {item["name"]: item["site"]
@@ -376,45 +427,75 @@ class WhatTheProgramMakesOfIt(unittest.TestCase):
 # --- what the screen says --------------------------------------------------
 
 class TheScreenSaysWhatIsKnown(unittest.TestCase):
-    """The map packs: not this fix's doing, and not cured by it either."""
+    """What the screen has to say before somebody presses anything."""
 
     def screen_class(self):
         from ps3tools.screens.patcher import BlackOpsOnePatcher
         return BlackOpsOnePatcher
 
+    def notices(self):
+        return self.screen_class().NOTICES
+
+    def joined(self):
+        return " ".join(body + " " + emphasis
+                        for body, emphasis, _token in self.notices())
+
+    # -- the one that decides whether to go any further
+    def test_the_first_thing_said_is_who_should_not_apply_it(self):
+        """It comes first because it decides whether to read on.
+
+        The fix makes the client hash the account ID. An account made before
+        Sony's 2018 change authenticates on a hash of the online ID, so this
+        would hand it an identity the server has never held and break what
+        works today. Nothing on the console tells the two apart.
+        """
+        body, emphasis, _token = self.notices()[0]
+        self.assertIn("Only apply this if your rank actually resets", body)
+        self.assertIn("before late 2018", body)
+        self.assertIn("identity the server does not hold", body)
+        self.assertIn("leave this alone", emphasis)
+
+    def test_that_warning_is_drawn_as_a_caution(self):
+        self.assertEqual(self.notices()[0][2], "warn")
+
+    def test_apply_waits_on_the_person_saying_they_see_resets(self):
+        # Nothing client side can tell which scheme an account uses, so the
+        # decision is the user's and the button waits for it.
+        self.assertTrue(self.screen_class().CONFIRM_WITH)
+        self.assertIn("resets", self.screen_class().CONFIRM_WITH.lower())
+
+    # -- the map packs
     def test_it_says_the_map_packs_are_the_cause(self):
-        notice = self.screen_class().NOTICE
-        self.assertIn("map packs", notice)
-        self.assertIn("public", notice)
-        self.assertIn("rather than this fix", notice)
+        said = self.joined()
+        self.assertIn("map packs", said)
+        self.assertIn("public", said)
+        self.assertIn("rather than this fix", said)
 
     def test_it_says_what_to_do_about_it(self):
-        self.assertIn("Renaming or removing", self.screen_class().NOTICE)
+        self.assertIn("Renaming or removing", self.joined())
 
     def test_it_says_what_the_evidence_is_and_claims_no_more(self):
-        self.assertIn("two consoles", self.screen_class().NOTICE)
+        self.assertIn("two consoles", self.joined())
 
     def test_the_work_being_done_is_said_apart_from_the_facts(self):
-        # Drawn bold and in the accent colour, so it is the half that catches
-        # the eye rather than a clause at the end of a paragraph.
-        work = self.screen_class().NOTICE_WORK
-        self.assertIn("being looked into", work)
-        self.assertIn("leaves the map packs alone", work)
-        self.assertNotIn(work, self.screen_class().NOTICE)
+        # Drawn bold and in the accent colour, so the half that decides what
+        # somebody does is the half that catches the eye.
+        for body, emphasis, _token in self.notices():
+            self.assertTrue(emphasis)
+            self.assertNotIn(emphasis, body)
 
     def test_it_promises_no_date(self):
-        words = (self.screen_class().NOTICE + " "
-                 + self.screen_class().NOTICE_WORK).lower()
+        words = self.joined().lower()
         for forbidden in ("soon", "next release", "shortly", "will be fixed",
-                          "coming", "shortly", "version 1."):
+                          "coming", "version 1."):
             self.assertNotIn(forbidden, words)
 
     def test_the_other_two_fixes_have_nothing_to_add(self):
         from ps3tools.screens.patcher import (BlackOpsTwoPatcher,
                                               ModernWarfareThreePatcher)
         for screen in (BlackOpsTwoPatcher, ModernWarfareThreePatcher):
-            self.assertEqual(screen.NOTICE, "", screen.key)
-            self.assertEqual(screen.NOTICE_WORK, "", screen.key)
+            self.assertEqual(screen.NOTICES, (), screen.key)
+            self.assertEqual(screen.CONFIRM_WITH, "", screen.key)
 
 
 # --- np_cache.dat ----------------------------------------------------------
@@ -503,7 +584,7 @@ class TheAccountTheFixIsTiedTo(unittest.TestCase):
                          ["00000001"])
 
     def test_the_copy_goes_into_the_game_s_own_folder(self):
-        self.assertEqual(npcache.destination("bles01031"),
+        self.assertEqual(npcache.destination(content_id_for("BLES01031")),
                          "/dev_hdd0/game/BLES01031/USRDIR/np_cache.dat")
 
     def test_a_short_file_is_refused_rather_than_read_past(self):
@@ -516,8 +597,9 @@ class TheAccountTheFixIsTiedTo(unittest.TestCase):
         lister = Lister([("00000001", "Chris", True)])
         raw = npcache.read_for(lister, "00000001")
         workdir = tempfile.mkdtemp()
-        remote, local = npcache.place(lister, "BLES01031", raw, workdir)
-        self.assertEqual(remote, npcache.destination("BLES01031"))
+        content_id = content_id_for("BLES01031")
+        remote, local = npcache.place(lister, content_id, raw, workdir)
+        self.assertEqual(remote, npcache.destination(content_id))
         with open(local, "rb") as handle:
             self.assertEqual(handle.read(), raw)
 
@@ -633,7 +715,7 @@ class TheWholeRun(unittest.TestCase):
         record = next(item for item in titles.binaries_for("BLES01031")
                       if item["name"] == name)
         image = IMAGE if state == "stock" else \
-            bo1.apply(IMAGE, "BLES01031")[0]
+            bo1.apply(IMAGE, "EP0002-BLES01031_00-CODBLOPSPATCH012")[0]
         if record["site"] is None:
             # Something beside the one being changed, which must be listed and
             # left alone. It is not the multiplayer binary and does not carry
@@ -743,10 +825,10 @@ class TheWholeRun(unittest.TestCase):
         self.assertTrue(report.can_patch, report.error or report.notes)
         writer = self.writer()
         raw = npcache.read_for(writer, user)
+        content_id = content_id_for("BLES01031")
         result = flow.patch(
             writer, tool, report, root=self.workdir,
-            context={"title_id": "BLES01031"},
-            extra_files=(npcache.place(writer, "BLES01031", raw,
+            extra_files=(npcache.place(writer, content_id, raw,
                                        self.workdir),))
         return report, result, files
 
@@ -853,7 +935,7 @@ class TheWholeRun(unittest.TestCase):
     def test_the_copy_of_np_cache_goes_into_the_game_s_folder(self):
         _report, result, _files = self.run_it()
         self.assertTrue(result.ok, result.error)
-        remote = npcache.destination("BLES01031")
+        remote = npcache.destination(content_id_for("BLES01031"))
         self.assertIn(remote, self.server.written)
         self.assertEqual(
             struct.unpack(">Q", self.server.written[remote][:8])[0],
@@ -865,7 +947,7 @@ class TheWholeRun(unittest.TestCase):
         _report, result, _files = self.run_it()
         remote = f"{titles.usrdir_for('BLES01031')}/t5mp_ps3f.self"
         _fields, _key, landed = self.images.unwrap(self.server.written[remote])
-        self.assertIn(npcache.destination("BLES01031").encode("ascii"), landed)
+        self.assertIn(npcache.destination(content_id_for("BLES01031")).encode("ascii"), landed)
 
     def test_the_copy_is_the_chosen_account_and_not_the_first_one(self):
         """The user folder is not always 00000001.
@@ -879,7 +961,7 @@ class TheWholeRun(unittest.TestCase):
         _report, result, _files = self.run_it(home=("00000001", "00000006"),
                                               user="00000006")
         self.assertTrue(result.ok, result.error)
-        landed = self.server.written[npcache.destination("BLES01031")]
+        landed = self.server.written[npcache.destination(content_id_for("BLES01031"))]
         self.assertEqual(struct.unpack(">Q", landed[:8])[0],
                          self.account_for("00000006"))
         self.assertNotEqual(self.account_for("00000006"),
@@ -894,13 +976,13 @@ class TheWholeRun(unittest.TestCase):
     def test_the_run_says_the_copy_is_a_snapshot_of_one_account(self):
         _report, result, _files = self.run_it()
         said = " ".join(result.notes)
-        self.assertIn(npcache.destination("BLES01031"), said)
+        self.assertIn(npcache.destination(content_id_for("BLES01031")), said)
         self.assertIn("signed in", said)
 
     def test_the_copy_is_not_counted_as_a_patched_binary(self):
         _report, result, _files = self.run_it()
         self.assertEqual(result.changed, ["t5mp_ps3f.self"])
-        self.assertNotIn(npcache.destination("BLES01031"), result.uploaded)
+        self.assertNotIn(npcache.destination(content_id_for("BLES01031")), result.uploaded)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,20 @@
-| Title | Problem | Status | Consoles |
-|---|---|---|---|
-| **Black Ops II** | Freezes while a PSN session is active | 🟢 **Fixed** — in the app | CFW confirmed |
-| **Modern Warfare 3** | Drops to the multiplayer menu a second after joining a lobby | 🟢 **Fixed** — in the app | CFW confirmed, HEN under investigation |
-| **Black Ops** | Multiplayer rank and stats reset to level 1 | 🟡 **Fixed, beta** — in the app | CFW confirmed on BLES01031 |
-| **Modern Warfare 2** | Believed to be the same identity fault as Black Ops | 🔵 *Under investigation* | — |
-| **World at War** | Lobbies fail to connect | ⚪ *Not investigated* | — |
-| **Modern Warfare** | Lobbies fail to connect | ⚪ *Not investigated* | — |
-| **Ghosts** | Reported connection problems | ⚪ *Not investigated* | — |
-| **Advanced Warfare** | Online services reported to have ended | ⚫ *Out of scope* | — |
+<table>
+  <tr>
+    <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops-ii"><img src="docs/cards/black-ops-2.svg" alt="Black Ops II, fixed" width="180"></a></td>
+    <td align="center"><a href="docs/tested-releases.md#call-of-duty-modern-warfare-3"><img src="docs/cards/modern-warfare-3.svg" alt="Modern Warfare 3, fixed" width="180"></a></td>
+    <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops"><img src="docs/cards/black-ops.svg" alt="Black Ops, fixed" width="180"></a></td>
+    <td align="center"><a href="docs/tested-releases.md#modern-warfare-2"><img src="docs/cards/modern-warfare-2.svg" alt="Modern Warfare 2, investigating" width="180"></a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="docs/tested-releases.md#world-at-war"><img src="docs/cards/world-at-war.svg" alt="World at War, untested" width="180"></a></td>
+    <td align="center"><a href="docs/tested-releases.md#modern-warfare"><img src="docs/cards/modern-warfare.svg" alt="Modern Warfare, untested" width="180"></a></td>
+    <td align="center"><a href="docs/tested-releases.md#ghosts"><img src="docs/cards/ghosts.svg" alt="Ghosts, untested" width="180"></a></td>
+    <td align="center"><a href="docs/tested-releases.md#advanced-warfare"><img src="docs/cards/advanced-warfare.svg" alt="Advanced Warfare, out of scope" width="180"></a></td>
+  </tr>
+</table>
+
+Click a title for every release of it that has been tested, region by region.
+Black Ops II, Modern Warfare 3 and Black Ops are fixed and in the app.
 
 Several titles also stop finding matches once their map packs are installed.
 That is separate from the fixes above and is not yet addressed.
@@ -155,10 +162,11 @@ account or your network.
 | Left alone | | `default.self`, campaign and Spec Ops | `t5_ps3f.self` and `EBOOT.BIN`, campaign and zombies |
 | Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 | BLES01031, title update 1.13 |
 
-### Black Ops is in beta
+### Black Ops, and what follows from how it works
 
-It is watched working on hardware and is newer than the other two, which is
-what the **Beta** badge on its card means.
+It is watched working on hardware. It still carries a **Beta** badge in the
+app, which means only that it is the newest of the three and has been on
+fewer consoles, not that anything about it is unfinished.
 
 The fault is an identity one. The game works out who you are by hashing your
 PSN online ID; the server works it out from your account ID, for every account
@@ -166,6 +174,12 @@ made after Sony's 2018 change. The two never agree, so every lookup asks for
 somebody the server has never heard of and you are handed a fresh rank 1. The
 fix has the game use the account ID instead, and rank and experience are then
 kept through backing out of a lobby, going back in, and a full restart.
+
+**Only apply this if your rank actually resets.** Accounts made before late
+2018 already work, and this fix would give them an identity the server does
+not hold. If your progress saves, leave this alone. Nothing on the console
+tells the two schemes apart, so the app asks you to confirm you are seeing
+resets before it will apply anything.
 
 Two things follow from how it works.
 
@@ -449,8 +463,10 @@ two patch scripts in `tools/patchers/`.
 
 For Black Ops II and Modern Warfare 3 it will **attempt any released version**,
 and tells you honestly when it cannot read one rather than refusing everything
-it has not seen before. Black Ops is narrower on purpose and is listed
-separately below.
+it has not seen before. Black Ops is narrower on purpose: three builds have
+been opened and compared and only those three are attempted, because that fix
+finds its own patch site rather than trusting an address, and a build nobody
+has opened is one nobody can say that about.
 
 The mechanism is attempt-and-verify rather than a list of approved SKUs.
 Decryption is
@@ -480,58 +496,19 @@ for the first two come from those builds, and any other release of those games
 is checked against them. Black Ops has no offset written down at all: it finds
 its own, and the build above is the one that was watched working.
 
-### Reference data
+### Every other release
 
-`BLUS31011`, `BLES01718`, `BLUS31140`, `BLUS30838`. Stock file sizes and update
-hashes are recorded for these, so the tool can tell you which title update you
-are on.
+**[The full list is in docs/tested-releases.md](docs/tested-releases.md)** —
+every title ID the tool recognises, the region it sold in, whether it came on a
+disc or as a download, and which of three things is actually known about it:
+confirmed on hardware, update hashes recorded, or recognised and not yet
+reported on. That page is generated from the same table the program reads at
+run time, so it cannot drift from what the tool will really attempt.
 
-### Recognised
-
-Every other release below. The tool knows they are the game and will try. **If
-one fails to decrypt, that is worth reporting** — it means that region needs
-different parameters, and the message names the title ID so you can say which.
-
-Some of these are demos or betas rather than the full game.
-
-**Black Ops II**
-
-```
-BCKS10223  BCKS10232  BCUS91450
-BLES01717  BLES01718  BLES01719  BLES01720
-BLJM60548  BLJM60549  BLJM61109  BLJM61110  BLJM61230  BLJM61231
-BLUS31011  BLUS31080  BLUS31140  BLUS31141  BLUS41005
-NPEB01204  NPEB01205  NPEB01206  NPEB01207
-NPUB31055  NPUB31056
-```
-
-**Black Ops**
-
-Three builds, and only three, because these are the ones that have actually
-been opened and compared. Two of them decrypt to an identical image and the
-third is a different compile, which is why this fix finds its own way around
-rather than trusting an address. A release that is not here is not attempted;
-if you have one, it is worth reporting.
-
-```
-BLES01031  BLUS30591  NPEB00756
-```
-
-The digital release, `NPEB00756`, is fake-signed and cannot be opened by the
-decrypter this program ships, so it is recognised and then refused with a
-message saying why.
-
-**Modern Warfare 3**
-
-```
-BCKS10195
-BLES01428  BLES01429  BLES01430  BLES01431  BLES01432  BLES01433  BLES01434
-BLJM60404  BLJM60422  BLJM60534  BLJM60535  BLJM61111  BLJM61112
-BLUS30838  BLUS30872  BLUS30887
-NPEB00964  NPEB00965  NPEB00966  NPEB00967  NPEB00968  NPEB00977  NPEB00978
-NPEB90450  NPEB90451
-NPUB30787  NPUB30788
-```
+The short version: most recognised releases are in the third state, and that is
+not a defect. **If one fails to decrypt, that is worth reporting** — it means
+that region needs different parameters, and the message names the title ID so
+you can say which.
 
 Title IDs from [SerialStation](https://serialstation.com).
 

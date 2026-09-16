@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="180" height="130" viewBox="0 0 180 130" role="img" aria-label="Advanced Warfare, out of scope">
+  <title>Advanced Warfare, out of scope</title>
+  <rect x="0" y="0" width="180" height="130" rx="14" fill="#0d0f14"/>
+  <rect x="6.5" y="6.5" width="167" height="117" rx="10" fill="#161a22" stroke="#2d3543" stroke-width="1" stroke-dasharray="5 4"/>
+  <rect x="68" y="16" width="44" height="44" rx="10" fill="#0d0f14" stroke="#2d3543" stroke-width="1"/>
+  <text x="90" y="43.95" font-family="DejaVu Sans, Verdana, sans-serif" font-size="17" font-weight="bold" text-anchor="middle" fill="#9aa4b6">AW</text>
+  <text x="90" y="88" font-family="DejaVu Sans, Verdana, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#e9ecf3">Advanced Warfare</text>
+  <text x="90" y="110" font-family="DejaVu Sans, Verdana, sans-serif" font-size="10.5" letter-spacing="0.4" text-anchor="middle" fill="#9aa4b6">out of scope</text>
+</svg>

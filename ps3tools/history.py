@@ -29,6 +29,30 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.3.1",
+        date="2026-09-16",
+        summary="Black Ops 1 patched the wrong folder on two of the three "
+                "releases it says it supports.",
+        changes=(
+            "The Black Ops 1 fix reads the folder it looks for np_cache.dat "
+            "in out of the game's own content ID. It used to be told the "
+            "folder name, which is right on the European disc and wrong on "
+            "the American and digital ones, and the fix then opened a path "
+            "that was not there, quietly did nothing, and still reported as "
+            "applied.",
+            "A title that does not read as four letters and five digits is "
+            "refused with a reason rather than written into a path.",
+            "The copy of np_cache.dat the tool places and the path the fix "
+            "opens are built by the same function, so they cannot come out "
+            "different.",
+            "The Black Ops 1 screen says to leave the fix alone unless your "
+            "rank actually resets. Accounts made before late 2018 already "
+            "work, and this fix would hand one of those an identity the "
+            "server does not hold. Apply stays off until you confirm you are "
+            "seeing resets.",
+        ),
+    ),
+    Release(
         version="1.3.0",
         date="2026-09-16",
         summary="The Black Ops 1 stats fix, and a home screen that says which "

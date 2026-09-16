@@ -330,6 +330,11 @@ class Result:
         return self.machine.pc == SENTINEL
 
 
+def content_id_for(title_id):
+    """A content ID carrying a given title, the way a real SELF spells one."""
+    return f"EP0002-{title_id}_00-CODBLOPSPATCH012"
+
+
 def run_cave(files=None, read_errors=(), title_id="BLES01031",
              online_id=ONLINE_ID, image=None):
     """Patch an image, then run the cave it wrote against a fake console.
@@ -338,7 +343,8 @@ def run_cave(files=None, read_errors=(), title_id="BLES01031",
     out of what["paths"] rather than spelling out, so that changing where the
     fix looks changes the tests' fixtures with it.
     """
-    data, what = bo1.apply(IMAGE if image is None else image, title_id)
+    data, what = bo1.apply(IMAGE if image is None else image,
+                           content_id_for(title_id))
     machine = Machine()
     machine.map_image(bo1.Image(data), data)
     machine.write(ONLINE_ID_AT, online_id.encode("ascii") + b"\x00")
@@ -381,7 +387,7 @@ def account_file(value=ACCOUNT_ID, extra=b"shtum_pill34\x00\x00\x00\x00"):
 
 def the_path(title_id="BLES01031"):
     """The one path the cave asks for, taken from the patcher itself."""
-    _out, what = bo1.apply(IMAGE, title_id)
+    _out, what = bo1.apply(IMAGE, content_id_for(title_id))
     return what["paths"][0]
 
 
@@ -519,7 +525,7 @@ class ItGivesTheGameBackWhatItBorrowed(unittest.TestCase):
     """
 
     def setUp(self):
-        _out, self.what = bo1.apply(IMAGE, "BLES01031")
+        _out, self.what = bo1.apply(IMAGE, content_id_for("BLES01031"))
         self.path = self.what["paths"][0]
 
     def test_it_returns_to_its_caller_rather_than_running_on(self):
@@ -558,7 +564,7 @@ class ItGivesTheGameBackWhatItBorrowed(unittest.TestCase):
         # The addresses the cave calls are found in the image rather than
         # written down, so a cave built for another layout has to run too.
         other = build_image(cave_size=0x3000)
-        _out, what = bo1.apply(other, "BLUS30591")
+        _out, what = bo1.apply(other, content_id_for("BLUS30591"))
         result = run_cave(files={what["paths"][0]: account_file()},
                           title_id="BLUS30591", image=other)
         self.assertEqual(result.console.user_ids, [ACCOUNT_TEXT])

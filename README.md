@@ -1,3 +1,19 @@
+| Title | Problem | Status | Consoles |
+|---|---|---|---|
+| **Black Ops II** | Freezes while a PSN session is active | 🟢 **Fixed** — in the app | CFW confirmed |
+| **Modern Warfare 3** | Drops to the multiplayer menu a second after joining a lobby | 🟢 **Fixed** — in the app | CFW confirmed, HEN under investigation |
+| **Black Ops** | Multiplayer rank and stats reset to level 1 | 🟡 *Fixed, in testing* | CFW confirmed on BLES01031 |
+| **Modern Warfare 2** | Believed to be the same identity fault as Black Ops | 🔵 *Under investigation* | — |
+| **World at War** | Lobbies fail to connect | ⚪ *Not investigated* | — |
+| **Modern Warfare** | Lobbies fail to connect | ⚪ *Not investigated* | — |
+| **Ghosts** | Reported connection problems | ⚪ *Not investigated* | — |
+| **Advanced Warfare** | Online services reported to have ended | ⚫ *Out of scope* | — |
+
+Several titles also stop finding matches once their map packs are installed.
+That is separate from the fixes above and is not yet addressed.
+
+---
+
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
 
 > ### HEN support is being tested

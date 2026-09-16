@@ -202,6 +202,7 @@ def clear_cache():
 # key to drawing lives here rather than on the screens.
 _BY_KEY = {
     "diagnostics": "diagnostics",
+    "bo1": "gamepad",
     "bo2": "gamepad",
     "mw3": "gamepad",
     "about": "info",

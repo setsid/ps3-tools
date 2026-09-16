@@ -2,10 +2,11 @@
 
 Two different questions are answered here and they must not be run together.
 
-  Recognised   the title ID is one of the published releases of one of the two
-               games. That is enough to detect it, name it on screen, and
-               attempt the fix on it. The lists below are every title ID either
-               game shipped under.
+  Recognised   the title ID is one of the releases this tool has looked at.
+               That is enough to detect it, name it on screen, and attempt the
+               fix on it. For Black Ops II and Modern Warfare 3 the lists below
+               are every title ID either game shipped under; for Black Ops 1
+               they are the three builds that were actually compared.
 
   Verified     somebody has actually watched the fix work on that release, and
                the update-package hashes for it have been read off Sony's live
@@ -14,18 +15,28 @@ Two different questions are answered here and they must not be run together.
 
 An unverified release is attempted rather than refused, because the attempt
 cannot go wrong quietly. The klicensee is either right, in which case scetool
-hands back a decrypted binary whose patch site is then cross-checked against
-the offset in PATCH_SITES, or it is wrong, in which case scetool produces
-nothing at all and the run stops there having read the file and written
-nothing. There is no third outcome where a wrong key produces a plausible
-binary. The signing parameters that rebuild the file are read back off the
-user's own copy rather than looked up here, so nothing about re-signing needs
-a per-release table either.
+hands back a decrypted binary whose patch site is then checked, or it is wrong,
+in which case scetool produces nothing at all and the run stops there having
+read the file and written nothing. There is no third outcome where a wrong key
+produces a plausible binary. The signing parameters that rebuild the file are
+read back off the user's own copy rather than looked up here, so nothing about
+re-signing needs a per-release table either.
 
-What stays forbidden is patching at an offset nobody has checked. The fix finds
-its own site in the decrypted image and that answer has to agree with the
-verified offset below; a disagreement is a different build of the game and is
-refused.
+What stays forbidden is patching at a site nobody has checked, and there are
+two ways a site is checked.
+
+  By offset    Black Ops II and Modern Warfare 3. The fix finds its own site in
+               the decrypted image and that answer has to agree with the
+               verified offset below. A disagreement is a different build of
+               the game and is refused.
+
+  By pattern   Black Ops 1, whose two known builds put the same code at
+               different addresses, so there is no offset either of them could
+               be checked against. Its site records none, and what takes the
+               place of the agreement is inside patch-bo1.py: two independent
+               signatures that have to land on the same function, imports
+               resolved the way the loader resolves them, and a refusal
+               wherever anything matches twice or not at all.
 
 Two kinds of hash live here and they must never be confused:
 
@@ -34,9 +45,10 @@ Two kinds of hash live here and they must never be confused:
                        console's disk. It says which TU the user is on. It can
                        never say whether a file has been patched.
 
-  Patch state          is read from the bytes at a known offset in the
-                       decrypted binary, and from nothing else. Never from a
-                       file size, never from a hash of a SELF.
+  Patch state          is read from the bytes of the decrypted binary, at a
+                       known offset where there is one and at the site the fix
+                       finds for itself where there is not. Never from a file
+                       size, never from a hash of a SELF.
 """
 
 # Where the update manifests were read from, recorded so the next person knows
@@ -50,6 +62,8 @@ UPDATE_MANIFEST_URL = ("https://a0.ww.np.dl.playstation.net/tpl/np/"
 BO2_KLICENSEE = "8C10AC1473DF38ADD7A4F2EE8C838DAB"
 # InfinityWardKey as raw ASCII with a trailing NUL.
 MW3_KLICENSEE = "496E66696E697479576172644B657900"
+# Black Ops 1's multiplayer binary.
+BO1_KLICENSEE = "AF0A8F0A8909F09234091AFADF909AF0"
 
 FREE = None
 
@@ -91,6 +105,27 @@ PATCH_SITES = {
         "patched": b"\x3B\x80\x00\x00",
         "note": "the account identifier comparison, forced to the good path",
     },
+    # The one site with no numbers in it, and the reason the shape of this
+    # table had to grow a second kind.
+    #
+    # Three builds of Black Ops 1 were compared. The two disc releases,
+    # BLES01031 and BLUS30591, decrypt to a byte-identical image, so region on
+    # its own changes nothing. The digital release NPEB00756 is a different
+    # compile: the site happens to land at the same address and everything
+    # after it has moved, code by 0x238 and data by 0x240. No single offset
+    # covers both, so this site records none and the fix finds every address
+    # it needs in the image it was handed.
+    #
+    # What replaces the cross-check against a recorded offset is written in
+    # patch-bo1.py: two independent signatures have to agree on one function,
+    # the imports are resolved the way the loader resolves them, and anything
+    # that matches twice or not at all is refused rather than guessed at.
+    "bo1-multiplayer": {
+        "image": "t5mp.elf",
+        "located_by": "pattern",
+        "note": ("the call that hashes the online ID, sent into a code cave "
+                 "that hashes the account ID instead"),
+    },
 }
 
 # A bl is 18 in the top six bits with the link bit set, so the stock value is
@@ -114,6 +149,18 @@ BO2_BINARIES = (
            "campaign and zombies, the copy the game actually spawns"),
     binary("t6mp_ps3f.self", BO2_KLICENSEE, "bo2-multiplayer", "mp.elf",
            "multiplayer"),
+)
+
+BO1_BINARIES = (
+    binary("t5mp_ps3f.self", BO1_KLICENSEE, "bo1-multiplayer", "t5mp.elf",
+           "multiplayer"),
+    # Listed so a scan names them rather than passing over two files sitting
+    # beside the one being changed. Neither has a patch site: the identity is
+    # only asked for online, and neither of these goes online.
+    binary("t5_ps3f.self", BO1_KLICENSEE, None, None,
+           "campaign and zombies; unaffected"),
+    binary("EBOOT.BIN", FREE, None, None,
+           "the launcher; unaffected"),
 )
 
 MW3_BINARIES = (
@@ -167,6 +214,15 @@ MW3_TITLE_IDS = (
     "NPUB30787", "NPUB30788",
 )
 
+# Only what has actually been looked at. Three builds were compared byte for
+# byte and these are those three. A release that is not in here is not
+# recognised, which means the tool says so and reads nothing, and that is the
+# right way for this list to be wrong: adding a title ID from memory would
+# have the tool attempt a build nobody has opened.
+BO1_TITLE_IDS = (
+    "BLES01031", "BLUS30591", "NPEB00756",
+)
+
 # BLJM61034 was in an earlier draft of this table. Sony's manifest returns
 # nothing for it: it is not a Black Ops II title ID and it is not included.
 NOT_A_TITLE = ("BLJM61034",)
@@ -179,6 +235,44 @@ NOT_A_TITLE = ("BLJM61034",)
 # and which is current. Never used for patch state.
 
 TITLES = {
+    "bo1": {
+        "key": "bo1",
+        "name": "Call of Duty: Black Ops",
+        "short": "Black Ops 1",
+        "binaries": BO1_BINARIES,
+        "title_ids": BO1_TITLE_IDS,
+        "latest_update": "1.13",
+        "verified_update": "1.13",
+        "repo": "https://github.com/setsid/bo1-ps3-stats-fix",
+        "symptom": ("Multiplayer opens at rank 1 every time and nothing you "
+                    "do is kept, on any PSN account made after late 2018. "
+                    "The game asks the server about an identity the server "
+                    "has never held, so there is nothing to send back."),
+        "set_advice": ("Only the multiplayer binary is changed. The campaign "
+                       "and the launcher are left alone."),
+        "advice": ("The fix reads your account ID out of np_cache.dat and "
+                   "puts a readable copy of that file in the game's own "
+                   "folder for the game to read. It is tied to the account "
+                   "that was signed in when it ran: sign in with a different "
+                   "PSN account and run the fix again. The file is re-signed "
+                   "using the content ID, application type and key revision "
+                   "read back off your own copy. Keep the backup: it is the "
+                   "only way back."),
+        # Empty, and not because nothing has been confirmed. The fix was
+        # watched working on BLES01031 title update 1.13: rank and experience
+        # survive backing out of a lobby, going back in, and a full relaunch.
+        # What is missing is the other half of what a verified entry means
+        # here, which is the sha1 of Sony's update package for that build, and
+        # a verified release with no package hash is a release this tool would
+        # claim to have confirmed and could not then recognise.
+        #
+        # The practical effect is that there is no title-update check on this
+        # game, and it matters less here than it would on the other two. Their
+        # patch site is an offset that is only right for one build. This one
+        # finds its own site, so a build it was not written for either matches
+        # the patterns, in which case it is the same code, or is refused.
+        "skus": {},
+    },
     "bo2": {
         "key": "bo2",
         "name": "Call of Duty: Black Ops II",

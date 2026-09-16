@@ -1707,12 +1707,11 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class TheCardForSomethingStillBeingWorkedOn(unittest.TestCase):
-    """In the grid with the tools, and plainly not one of them.
+class TheBlackOpsOneCard(unittest.TestCase):
+    """It was a placeholder that opened nothing. Now it is a tool.
 
-    A card that looks live and opens nothing reads as a card that is broken,
-    so this one is drawn quiet and dashed and says what it is. Off to one side
-    it would be a placeholder nobody connects to the tools it belongs beside.
+    The badge it wore as a placeholder it still wears, because it says the
+    same thing about the fix it always did.
     """
 
     @classmethod
@@ -1728,43 +1727,92 @@ class TheCardForSomethingStillBeingWorkedOn(unittest.TestCase):
         self.addCleanup(window.deleteLater)
         return window.launcher, launcher_module
 
-    def test_it_is_in_the_same_grid_as_the_tools(self):
+    def card(self):
+        # Built from the class rather than from the registry. The registry is
+        # a global that every other test in this file clears and refills, and
+        # importing a module that has already been imported does not register
+        # anything a second time.
+        from ps3tools.screens.patcher import BlackOpsOnePatcher
+        launcher, _module = self.build()
+        launcher.rebuild([BlackOpsOnePatcher])
+        self.assertEqual(launcher.card_keys(), ["bo1"])
+        return launcher.cards[0]
+
+    def test_it_is_a_tool_now_and_not_a_placeholder(self):
         launcher, module = self.build()
-        drawn = launcher._grid_host.cards
-        self.assertTrue(launcher._placeholders)
-        for card in launcher._placeholders:
-            self.assertIn(card, drawn)
+        self.assertEqual(module.COMING_SOON, ())
+        self.assertEqual(launcher._placeholders, [])
 
-    def test_it_is_not_counted_as_a_tool(self):
-        # A build with no tools in it must still say so, whatever else is
-        # sitting in the grid.
-        launcher, _module = self.build()
-        self.assertNotIn("bo1stats", launcher.card_keys())
+    def test_it_opens_its_screen(self):
+        card = self.card()
+        seen = []
+        card.activated.connect(seen.append)
+        card.click()
+        self.assertEqual(seen, ["bo1"])
 
-    def test_it_says_what_it_is_and_what_is_being_worked_on(self):
-        launcher, _module = self.build()
-        card = launcher._placeholders[0]
-        self.assertIn("Black Ops 1", card.text())
-        self.assertIn("stat reset", card.accessibleDescription())
-        self.assertIn("under development", card.accessibleName().lower())
+    def test_it_still_says_beta(self):
+        self.assertEqual(self.card().badge, "Beta")
 
-    def test_the_only_thing_on_it_that_clicks_is_the_discord_link(self):
-        launcher, module = self.build()
-        card = launcher._placeholders[0]
-        self.assertEqual(card.url, module.DISCORD_URL)
-        self.assertIn(module.DISCORD_URL, card._link.text())
-        # Nothing to press, and nothing to tab on to.
-        self.assertFalse(hasattr(card, "activated"))
-        from PySide6.QtCore import Qt
-        self.assertEqual(card.focusPolicy(), Qt.FocusPolicy.NoFocus)
+    def test_it_says_what_it_fixes(self):
+        card = self.card()
+        self.assertIn("rank 1", card.accessibleDescription())
 
-    def test_it_is_the_same_size_as_the_cards_beside_it(self):
-        from ps3tools.shell.widgets import ToolCard
-        launcher, _module = self.build()
-        card = launcher._placeholders[0]
-        self.assertEqual(card.width(), ToolCard.CARD_WIDTH)
-        self.assertEqual(card.height(), ToolCard.CARD_HEIGHT)
 
+class WhatTheRealCardsSay(unittest.TestCase):
+    """The badges and caveats the shipped screens carry, on the real set.
+
+    The point of a badge is that it is rationed. This is the test that notices
+    the day somebody gives every screen one.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.application = QApplication.instance() or QApplication([])
+
+    def screens(self):
+        # Off the modules rather than out of the registry, which is a global
+        # that every other test in this file clears and refills. Importing a
+        # module that is already imported registers nothing a second time, so
+        # a registry emptied by somebody else stays empty.
+        import importlib
+        import pkgutil
+
+        import ps3tools.screens as package
+        from ps3tools.shell.screen import Screen
+
+        found = {}
+        for info in pkgutil.iter_modules(package.__path__):
+            module = importlib.import_module(
+                f"{package.__name__}.{info.name}")
+            for value in vars(module).values():
+                if (isinstance(value, type) and issubclass(value, Screen)
+                        and getattr(value, "key", "")):
+                    found[value.key] = value
+        self.assertTrue(found)
+        return [found[key] for key in sorted(found)]
+
+    def test_a_badge_is_rationed_to_the_screen_that_asked_for_one(self):
+        # One, and it is the fix that is in beta. A page where everything is
+        # badged is a page where a badge means nothing.
+        badged = {screen.key: screen.badge for screen in self.screens()
+                  if screen.badge}
+        self.assertEqual(badged, {"bo1": "Beta"})
+
+    def test_both_shipping_fixes_say_digital_releases_are_not_done_yet(self):
+        # The reference values were read off disc releases. A digital install
+        # comes back unrecognised, which is the safe way round, and somebody
+        # holding one should learn that from the card and not from the scan.
+        from ps3tools.screens.patcher import NO_DIGITAL, PatcherScreen
+        fixes = [screen for screen in self.screens()
+                 if issubclass(screen, PatcherScreen)]
+        self.assertTrue(fixes)
+        for screen in fixes:
+            self.assertIn(NO_DIGITAL, screen.note, screen.key)
+
+    def test_modern_warfare_3_also_says_what_is_happening_on_hen(self):
+        from ps3tools.screens.patcher import ModernWarfareThreePatcher
+        self.assertIn("HEN", ModernWarfareThreePatcher.note)
 
 class ClosingTheWindowEndsTheProgram(unittest.TestCase):
     """Pressing the X left it running with nothing on screen.

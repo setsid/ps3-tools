@@ -33,17 +33,31 @@ DISCORD_HINT = "Ask a question or say how you got on in the Discord."
 
 
 def _wording(screen_class):
-    """The three things off a screen that end up on the face of its card."""
-    return (screen_class.key, screen_class.title, screen_class.blurb)
+    """Everything off a screen that ends up on the face of its card.
+
+    Compared against what is already drawn to decide whether a rebuild has
+    anything to do, so a screen attribute that shows on a card belongs here.
+    A badge left out of this is a badge that only appears after the next time
+    the grid happens to be torn down for some other reason.
+    """
+    return (screen_class.key, screen_class.title, screen_class.blurb,
+            getattr(screen_class, "badge", "") or "",
+            getattr(screen_class, "note", "") or "")
 
 
 #: A tool being worked on, shown in the grid with the rest so that somebody
 #: who wants it can see it is coming. It opens nothing.
-COMING_SOON = (
-    ("bo1stats", "Black Ops 1 stats fix",
-     "The stat reset on Black Ops 1 is being worked on.",
-     "Progress on Discord", DISCORD_URL),
-)
+#:
+#: (key, title, blurb, link text, url, badge) -- the badge spelled the way a
+#: Screen spells it, so a placeholder that becomes a real tool keeps the face
+#: it had.
+#:
+#: Empty, and kept. The Black Ops 1 stats fix was the one entry in here and is
+#: now a tool with a screen of its own, wearing the same Beta badge its
+#: placeholder wore. The machinery stays because the next thing being worked
+#: on will want it, and because a grid that has held one of these is a grid
+#: that has been tested holding one.
+COMING_SOON = ()
 
 
 class CardGrid(QWidget):
@@ -101,6 +115,20 @@ class CardGrid(QWidget):
         self._cards = list(cards)
         self.sync_height()
 
+    def note_room(self, card_width):
+        """The extra height a caveat on any card needs at this card width.
+
+        A row is a row: every card in the grid gets the room the largest of
+        them needs, so one card carrying a caveat does not leave a ragged row.
+        A card with nothing to warn about spends the room on a roomier blurb.
+        """
+        wanted = [0]
+        for card in self._cards:
+            ask = getattr(card, "note_height", None)
+            if ask is not None:
+                wanted.append(ask(card_width))
+        return max(wanted)
+
     @property
     def cards(self):
         return list(self._cards)
@@ -117,7 +145,7 @@ class CardGrid(QWidget):
             columns -= 1
         card_width = (usable - (columns - 1) * self.GAP) // columns
         card_width = max(1, min(card_width, self.MAX_CARD_WIDTH))
-        card_height = ToolCard.CARD_HEIGHT
+        card_height = ToolCard.CARD_HEIGHT + self.note_room(card_width)
         if card_width < ToolCard.CARD_WIDTH:
             card_height += self.EXTRA_LINE
         block = columns * card_width + (columns - 1) * self.GAP
@@ -383,7 +411,9 @@ class Launcher(QWidget):
         for screen_class in screens:
             card = ToolCard(screen_class.key, screen_class.title,
                             screen_class.blurb, screen_class.tile,
-                            self._theme, self._grid_host)
+                            self._theme, self._grid_host,
+                            badge=getattr(screen_class, "badge", ""),
+                            note=getattr(screen_class, "note", ""))
             card.activated.connect(self.open_screen)
             # Shown by hand, and this is the fix for the empty home screen
             # rather than a tidy-up. A widget built with a parent starts
@@ -400,9 +430,9 @@ class Launcher(QWidget):
         # and counting it as one would make a build with no tools in it look
         # as though it had one.
         self._placeholders = []
-        for key, title, blurb, link_text, url in COMING_SOON:
+        for key, title, blurb, link_text, url, badge in COMING_SOON:
             card = ComingSoonCard(key, title, blurb, link_text, url,
-                                  self._theme, self._grid_host)
+                                  self._theme, self._grid_host, badge=badge)
             card.show()
             self._placeholders.append(card)
 
@@ -429,8 +459,8 @@ class Launcher(QWidget):
 
     def _drawn(self):
         """What the cards on screen are currently saying."""
-        return [(card.key, card.text(), card.accessibleDescription())
-                for card in self._cards]
+        return [(card.key, card.text(), card.accessibleDescription(),
+                 card.badge, card.note) for card in self._cards]
 
     def _sync_grid(self):
         self._grid_host.sync_height()

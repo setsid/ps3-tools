@@ -29,6 +29,44 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.3.0",
+        date="2026-09-16",
+        summary="The Black Ops 1 stats fix, and a home screen that says which "
+                "cards are the game fixes.",
+        changes=(
+            "The Black Ops 1 stats fix. Multiplayer opened at rank 1 every "
+            "time on any PSN account made after late 2018, because the game "
+            "works out who you are from your online ID and the server works "
+            "it out from your account ID. The fix has the game use the "
+            "account ID, and rank and experience are then kept. Watched "
+            "working on a real console through backing out of a lobby, going "
+            "back in, and a full restart.",
+            "The Black Ops 1 fix finds everything it needs inside your own "
+            "copy of the game rather than at written-down addresses. The "
+            "disc and digital builds of that game are laid out differently, "
+            "and one set of numbers could not have been right for both.",
+            "The Black Ops 1 fix is tied to the PSN account that was signed "
+            "in when it ran, and says so. Run it again after switching "
+            "accounts. Where a console has more than one account on it, it "
+            "asks which one rather than assuming the first.",
+            "A console that has never signed in to PSN is told to do that "
+            "once and come back, rather than being patched into a fix with "
+            "nothing to read.",
+            "The Black Ops 1 screen says that the map packs, not this fix, "
+            "are what stops public matches being found, and what to do about "
+            "it in the meantime.",
+            "Black Ops 1 is marked Beta on its card.",
+            "The three game fixes carry their titles in larger type, so the "
+            "cards most people open are the ones the eye lands on first.",
+            "Black Ops II and Modern Warfare 3 say on their cards that "
+            "digital releases are not supported yet. Modern Warfare 3 also "
+            "says it has been reported failing on HEN consoles and that this "
+            "is being looked into.",
+            "A long title on one of those cards wraps rather than being cut "
+            "short with a full stop.",
+        ),
+    ),
+    Release(
         version="1.2.3",
         date="2026-09-15",
         summary="A console read once, and said the same way on every screen.",

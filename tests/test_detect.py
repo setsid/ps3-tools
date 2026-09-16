@@ -197,7 +197,7 @@ class States(FixtureCase):
         said = [note for note in report.notes if "left alone" in note]
         self.assertEqual(said, [
             "BLES00683 looks like a Call of Duty installation but is not a "
-            "release of either of the two games this tool fixes, so it will "
+            "release this tool has a fix for, so it will "
             "be left alone."])
 
     def test_several_unknown_variants_are_named_in_one_sentence(self):
@@ -211,8 +211,8 @@ class States(FixtureCase):
         said = [note for note in report.notes if "left alone" in note]
         self.assertEqual(said, [
             "BLES00683, BLES01945 and BLES02077 look like Call of Duty "
-            "installations but are not releases of either of the two games "
-            "this tool fixes, so they will be left alone."])
+            "installations but are not releases this tool has a fix for, "
+            "so they will be left alone."])
 
     def test_unknown_variants_do_not_add_a_note_each(self):
         # The note was made inside the loop over installations, so the

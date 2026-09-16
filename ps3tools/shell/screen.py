@@ -305,6 +305,17 @@ class Screen(QWidget):
     #: card order on the home screen, lowest first
     order = 100
 
+    #: One or two words for a pill on the card saying what state the tool is
+    #: in -- "Beta", and nothing else so far. Empty for a tool that is simply
+    #: finished, which is most of them. Words, never an emoji.
+    badge = ""
+
+    #: A short caveat on the card, beside the Open affordance, for a tool that
+    #: works but has something known wrong with it. A few words: it is drawn
+    #: on one line and what does not fit is cut. The card's tooltip carries it
+    #: in full. Empty for a tool with nothing to warn about.
+    note = ""
+
     #: True while work is in flight; the shell shows it and blocks navigation
     busy_changed = Signal(bool)
     #: a short line for the shell's status area

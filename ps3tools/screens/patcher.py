@@ -1,10 +1,17 @@
 """The patcher screen, registered once per title.
 
-One class does the work and two subclasses carry nothing but configuration.
-There is no Black Ops II screen and no Modern Warfare 3 screen: the two titles
-differ in a title key, a card heading and a tile, and everything else about
-them lives in ps3tools.titles and ps3tools.patching.flow. A third card is four
-lines here and an entry in the table.
+One class does the work and the subclasses carry configuration. There is no
+Black Ops II screen and no Modern Warfare 3 screen: those two differ in a title
+key, a card heading and a tile, and everything else about them lives in
+ps3tools.titles and ps3tools.patching.flow. A card like that is four lines here
+and an entry in the table.
+
+Black Ops 1 is the one that needed more, and what it needed is four methods
+rather than a second screen. Its fix has to know which local user is signed in,
+because the account ID it hashes is that user's, and it has to put a readable
+copy of that user's np_cache.dat where the game can open it. scan_extras,
+on_scan_extras, patch_ready and patch_extras are where that goes, and every
+other title inherits a default that does nothing.
 
 The screen scans the moment it is entered, with no button to press. A user who
 has come here to find out whether their game is patched should not have to work
@@ -41,11 +48,14 @@ at all rather than a bad one.
 """
 
 import os
+import shutil
+import tempfile
 
 from PySide6.QtCore import QMetaMethod, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QFrame, QHBoxLayout,
                                QInputDialog, QLabel, QMessageBox, QProgressBar,
+                               QSizePolicy,
                                QPushButton, QSizePolicy, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
@@ -53,8 +63,10 @@ from ps3diag import transport
 from ps3tools import titles
 from ps3tools.patching import backup as backups
 from ps3tools.patching import flow
+from ps3tools.patching import npcache
 from ps3tools.patching.ftpwrite import FtpWriter
 from ps3tools.patching.scetool import Scetool
+from ps3tools.patching.unfself import WithFakeSigned
 from ps3tools.shell import icons
 from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
@@ -126,6 +138,21 @@ STATE_WORDS = {
 # useful for none. Each entry is what the user is meant to do next.
 #
 # The token is the theme's, never a colour: see docs/screen-interface.md.
+
+
+def _wrapping(widget, vertical=QSizePolicy.Policy.Minimum):
+    """Let a word-wrapped widget ask a layout for the height it needs.
+
+    setWordWrap on its own is not enough inside a layout with something
+    stretchy in it: the label's own minimum is one line, so that is what it
+    gets and the rest of the sentence is drawn outside its box.
+    """
+    if isinstance(widget, QLabel):
+        widget.setWordWrap(True)
+    policy = QSizePolicy(QSizePolicy.Policy.Preferred, vertical)
+    policy.setHeightForWidth(True)
+    widget.setSizePolicy(policy)
+    return widget
 
 
 def _state_message(location, name):
@@ -293,6 +320,18 @@ def _human(count):
 class PatcherScreen(Screen):
     """Scan an installed title, and repair it once the user agrees."""
 
+    #: A framed note under the explanation, for something true about the game
+    #: that this fix is not the cause of and does not yet cure. Empty for a
+    #: screen with nothing to add.
+    NOTICE = ""
+
+    #: The part of that note which is about what is being done rather than
+    #: about what is true, drawn bold and in the accent colour. Separate from
+    #: NOTICE so that the work being done is the part that catches the eye,
+    #: which is the half somebody reading a list of things wrong with their
+    #: game most needs to see.
+    NOTICE_WORK = ""
+
     #: which entry in ps3tools.titles this card is for
     title_key = ""
 
@@ -361,6 +400,38 @@ class PatcherScreen(Screen):
         self._symptom = QLabel(self.config.get("symptom", ""))
         self._symptom.setWordWrap(True)
         layout.addWidget(self._symptom)
+
+        # Under the explanation, because it is about the game rather than
+        # about this program, and above everything else, because somebody who
+        # needs it needs it before they start reading a table.
+        self._notice = QFrame()
+        self._notice.setObjectName("sidenotice")
+        notice = QVBoxLayout(self._notice)
+        notice.setContentsMargins(16, 12, 16, 12)
+        notice.setSpacing(6)
+        self._notice_text = _wrapping(QLabel(self.NOTICE))
+        notice.addWidget(self._notice_text)
+        self._notice_work = _wrapping(QLabel(self.NOTICE_WORK))
+        work_font = self._notice_work.font()
+        work_font.setBold(True)
+        self._notice_work.setFont(work_font)
+        self._notice_work.setVisible(bool(self.NOTICE_WORK))
+        notice.addWidget(self._notice_work)
+        # Otherwise the table below takes the stretch and squeezes this to one
+        # line, which cuts the second one through the middle of its letters.
+        # A word-wrapped QLabel reports the height of a single line until it
+        # has been laid out, and a layout that believes it never gives it the
+        # room to be more than that.
+        _wrapping(self._notice, QSizePolicy.Policy.Minimum)
+        self._notice.setVisible(bool(self.NOTICE or self.NOTICE_WORK))
+        layout.addWidget(self._notice)
+        if not self._notice.isHidden():
+            # Painted here as well as on a theme change. The other panels on
+            # this screen are hidden until something shows them and are
+            # painted at that moment; this one is on the screen from the start
+            # and would otherwise be an unstyled rectangle until the user
+            # changed theme.
+            self._paint_notice()
 
         self._where = QLabel("")
         self._where.setWordWrap(True)
@@ -651,9 +722,11 @@ class PatcherScreen(Screen):
         lister = self._lister
         writer = self._writer
 
+        extras = self.scan_extras
+
         def work(control):
             return _scan_console(host, title_key, tool, lister, writer,
-                                 control.progress, control)
+                                 control.progress, control, extras)
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -674,6 +747,41 @@ class PatcherScreen(Screen):
         self._reading_back = False
         self._back.setEnabled(True)
         self._set_busy(False)
+
+    # -- what a title needs beyond replacing some bytes
+    #
+    # Two of the three fixes need none of this and inherit every default. The
+    # Black Ops 1 fix has to know which local user is signed in and has to put
+    # a readable copy of their np_cache.dat where the game can reach it, and
+    # neither of those is a thing the other two should have to know about.
+
+    def scan_extras(self, lister):
+        """Anything else to read while the console is open for the scan.
+
+        Runs on the worker with the read-only client, alongside the scan
+        itself, so a title that needs to know something about the console
+        does not cost a second trip.
+        """
+        return {}
+
+    def on_scan_extras(self, extras):
+        """Whatever scan_extras read, back on the GUI thread."""
+
+    def patch_ready(self):
+        """(ready, why not). Asked before the confirmation box is shown."""
+        return True, ""
+
+    def patch_context(self):
+        """What the fix needs that is not in the binary. See flow.apply_fix."""
+        return None
+
+    def patch_extras(self, writer, workdir):
+        """(remote, local) pairs to put on the console beside the binaries.
+
+        Runs on the worker with the writing client already open. Staged into
+        workdir, which the caller owns and cleans up.
+        """
+        return ()
 
     # The three seams. Tests replace all three: the bundled scetool is a
     # Windows binary, and the mock console listens on a port of its own rather
@@ -706,7 +814,11 @@ class PatcherScreen(Screen):
                                      + 2 * self._files.frameWidth())
 
     def _on_scanned(self, result):
-        location, report, where = result
+        # Three or four. A test that drives this screen builds the three the
+        # screen has always taken, and a title with nothing extra to read
+        # never produces the fourth.
+        location, report, where = result[0], result[1], result[2]
+        self.on_scan_extras(result[3] if len(result) > 3 else {})
         self._scan = report
         self._location = location
         self._task = None
@@ -792,30 +904,34 @@ class PatcherScreen(Screen):
             (f"{len(report.to_patch)} file(s) to fix" if report.to_patch
              else "nothing to do"))
 
-    def _show_next_step(self, report):
-        """Where to go when this program will not touch a file.
+    def next_step_words(self):
+        """What to say when this program will not touch a file, or "".
 
-        Only for a file it did not recognise. A game whose files somebody has
-        already modified, by a mod menu that replaces the eboot for instance,
-        reads exactly like that from here, and the manual sequence in the
-        fix's own repository can still do it because the signing details are
-        supplied by hand there.
+        Only reached for a file it did not recognise. A game whose files
+        somebody has already modified, by a mod menu that replaces the eboot
+        for instance, reads exactly like that from here.
 
         The repository rather than the standalone exe beside it. That exe uses
         the same detection as this screen and would refuse the same file for
         the same reason.
         """
         repo = self.config.get("repo", "")
-        if report is None or not report.unrecognised or not repo:
+        if not repo:
+            return ""
+        return (f"If the game files have already been modified, for example "
+                f"by a mod menu that replaces the eboot, this tool will not "
+                f"touch them. The manual scetool sequence in "
+                f"<a href=\"{repo}\">the repo</a> will, because it lets you "
+                f"supply the signing details yourself.")
+
+    def _show_next_step(self, report):
+        """Where to go when this program will not touch a file."""
+        words = self.next_step_words()
+        if report is None or not report.unrecognised or not words:
             self._next_step.setText("")
             self._next_step.hide()
             return
-        self._next_step.setText(
-            f"If the game files have already been modified, for example by a "
-            f"mod menu that replaces the eboot, this tool will not touch "
-            f"them. The manual scetool sequence in "
-            f"<a href=\"{repo}\">the repo</a> will, because it lets you "
-            f"supply the signing details yourself.")
+        self._next_step.setText(words)
         self._next_step.show()
 
     def _on_file_ticked(self, row, column):
@@ -946,6 +1062,29 @@ class PatcherScreen(Screen):
             f" border-left: 8px solid {accent};"
             f" border-radius: 6px; }}")
         self._restart_text.setStyleSheet(f"color: {accent}; border: none;")
+
+    def _paint_notice(self):
+        """Quieter than the restart notice, and in the same shape.
+
+        It is information rather than an instruction: nobody has to act on it
+        to make the fix work, and drawing it as loudly as the one sentence
+        somebody must not miss would cost that sentence its meaning.
+        """
+        accent = self._colour_name("info") or self._colour_name("text")
+        surface = self._colour_name("surface_alt") \
+            or self._colour_name("surface")
+        text = self._colour_name("text")
+        if not (accent and surface and text):
+            return
+        self._notice.setStyleSheet(
+            f"QFrame#sidenotice {{ background-color: {surface};"
+            f" border: 1px solid {accent};"
+            f" border-left: 6px solid {accent};"
+            f" border-radius: 6px; }}"
+            f"QFrame#sidenotice QLabel {{ background: transparent;"
+            f" border: none; }}")
+        self._notice_text.setStyleSheet(f"color: {text}; border: none;")
+        self._notice_work.setStyleSheet(f"color: {accent}; border: none;")
 
     def _paint_count(self):
         dim = self._colour_name("text_dim")
@@ -1118,6 +1257,13 @@ class PatcherScreen(Screen):
         # between a user and a patch built for another version of the game.
         if self._update_state is not None and self._update_state.blocks:
             return
+        ready, why = self.patch_ready()
+        if not ready:
+            # An empty reason means the user has just been asked something
+            # and said no, which does not want a second box telling them so.
+            if why:
+                QMessageBox.information(self, "Not yet", why)
+            return
         names = _and_list([item.name for item in self._scan.chosen])
         answer = QMessageBox.question(
             self, "Apply the fix",
@@ -1141,11 +1287,19 @@ class PatcherScreen(Screen):
         self._set_busy(True, "Backing up your files")
 
         open_writer = self._writer
+        context = self.patch_context()
+        collect = self.patch_extras
 
         def work(control):
-            with open_writer(host) as writer:
-                return flow.patch(writer, tool, report,
-                                  progress=control.progress)
+            workdir = tempfile.mkdtemp(prefix="ps3tools-extra-")
+            try:
+                with open_writer(host) as writer:
+                    return flow.patch(writer, tool, report,
+                                      progress=control.progress,
+                                      context=context,
+                                      extra_files=collect(writer, workdir))
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -1670,6 +1824,8 @@ class PatcherScreen(Screen):
     def _repaint(self):
         self._paint_patch_button()
         self._paint_count()
+        if not self._notice.isHidden():
+            self._paint_notice()
         if not self._success.isHidden():
             self._paint_success()
         if not self._restart.isHidden():
@@ -1685,28 +1841,33 @@ class PatcherScreen(Screen):
 
 
 def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
-                  control):
+                  control, extras=None):
     """Find the installation and scan it. Runs on a worker, never on the GUI.
 
     Detection is a read, so it goes through the read-only transport. The write
     client is opened afterwards and only for the files themselves, which keeps
     every writing command in one short stretch of one run.
 
-    Returns (location, report, where). The location is carried out whole rather
-    than reduced to "found or not found": the screen has a different heading,
-    a different colour and different advice for each way this can end, and none
-    of that can be recovered once the answer has become a boolean.
+    Returns (location, report, where, extras). The location is carried out
+    whole rather than reduced to "found or not found": the screen has a
+    different heading, a different colour and different advice for each way
+    this can end, and none of that can be recovered once the answer has become
+    a boolean. extras is whatever the screen's own scan_extras read while the
+    console was open, and is empty for a title that needs nothing.
     """
     progress({"stage": "find", "message": "looking for the game on the console",
               "done": 0, "total": 1})
     detector = detect.find_installations if detect is not None else None
+    extra = {}
     with open_lister(host) as lister:
         location = flow.locate(lister, title_key, detector=detector)
+        if extras is not None:
+            extra = extras(lister) or {}
 
     if control.cancelled:
-        return None, None, ""
+        return None, None, "", extra
     if not location.ready:
-        return location, None, ""
+        return location, None, "", extra
 
     title_id = location.title_id
     where = f"{title_id} in {titles.usrdir_for(title_id)}"
@@ -1715,7 +1876,14 @@ def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
                   ", ".join(location.title_ids) + ")")
     with open_writer(host) as writer:
         report = flow.scan(writer, tool, title_id, progress=progress)
-    return location, report, where
+    return location, report, where, extra
+
+
+#: The reference values both fixes are checked against were read off disc
+#: releases. A digital install comes back unrecognised rather than being
+#: patched wrongly, which is the safe way round, but somebody holding one
+#: should find that out from the card rather than from the scan.
+NO_DIGITAL = "Digital releases are not supported yet."
 
 
 @register
@@ -1727,6 +1895,7 @@ class BlackOpsTwoPatcher(PatcherScreen):
              "active.")
     tile = "B2"
     order = 20
+    note = NO_DIGITAL
 
 
 @register
@@ -1738,3 +1907,187 @@ class ModernWarfareThreePatcher(PatcherScreen):
              "newer PSN account.")
     tile = "M3"
     order = 30
+    # Two things wrong rather than one. The HEN reports are not understood yet
+    # and saying so is better than a card that looks clean to somebody who is
+    # about to hit it.
+    note = NO_DIGITAL + " Reported failing on HEN; under investigation."
+
+
+#: Said on the screen and again in the notes after a run, because it is the
+#: one thing about this fix that is not true forever: the copy it reads is a
+#: snapshot of whoever was signed in when it ran.
+ACCOUNT_LINE = ("The fix will be tied to {label}. It reads that account's own "
+                "identity, so if you sign in with a different PSN account "
+                "afterwards, run this again.")
+
+ACCOUNT_CHOICE = ("There is more than one account on this console. You will "
+                  "be asked which one is signed in before anything is "
+                  "written.")
+
+ACCOUNT_MISSING = (
+    "No account on this console has an np_cache.dat yet. That file is written "
+    "the first time an account signs in to PSN, and the fix reads the account "
+    "ID out of it. Sign in to PSN once on the console and run this again.")
+
+
+@register
+class BlackOpsOnePatcher(PatcherScreen):
+    """Black Ops 1, which needs two things the other two fixes do not.
+
+    It has to know which local user is signed in, because the account ID it
+    hashes is that user's and the numbered folder it lives in is not always
+    00000001. And it has to put a readable copy of np_cache.dat where the game
+    can open it, because the real one is mode rw------- and the game is not
+    that user.
+    """
+
+    title_key = "bo1"
+    key = "bo1"
+    title = "Black Ops 1 stats fix"
+    blurb = ("Stops multiplayer opening at rank 1 on a PSN account made after "
+             "2018.")
+    tile = "B1"
+    # Not this fix's doing and not something this fix cures, so it is said on
+    # the screen rather than left for somebody to find out in a lobby. The
+    # wording stops at what has been seen: two consoles, no date, and no claim
+    # about why the map packs do it.
+    NOTICE = (
+        "If you cannot find a public match, the map packs are the cause "
+        "rather than this fix. Black Ops 1 will not place you in a public "
+        "game while its map packs are installed. Renaming or removing them "
+        "lets matchmaking work again. This has been confirmed on two "
+        "consoles.")
+    NOTICE_WORK = ("This is being looked into, and the aim is a fix that "
+                   "leaves the map packs alone.")
+    # Between Diagnostics and the other two fixes, so the three game fixes sit
+    # together and the card most people are here for is not behind them.
+    order = 15
+    badge = "Beta"
+    note = NO_DIGITAL
+
+    def _scetool(self):
+        """scetool, with unfself behind it.
+
+        The digital release is fake-signed and scetool cannot open it. Nothing
+        about the disc releases changes: scetool is tried first and unfself is
+        only reached by a file scetool has already refused, and only when
+        there is an unfself to reach.
+        """
+        return WithFakeSigned(super()._scetool())
+
+    def __init__(self, services, parent=None):
+        super().__init__(services, parent)
+        #: Local users with an np_cache.dat, which is the ones this can use.
+        self._users = []
+        #: The one the fix will be tied to, once there is an answer.
+        self._user = None
+        self._account_problem = ""
+
+    # -- the account, read with the scan and settled before anything is written
+    def scan_extras(self, lister):
+        try:
+            return {"users": npcache.users(lister)}
+        except npcache.NoAccount as exc:
+            return {"users": [], "problem": str(exc)}
+
+    def on_scan_extras(self, extras):
+        if not extras:
+            # A repaint replays the last scan through _on_scanned without the
+            # extras, so an empty one means "nothing new was read" rather than
+            # "this console has nobody on it". Forgetting which account was
+            # chosen because somebody changed theme would be a strange way to
+            # lose it. A real scan always carries a users key, even when the
+            # list under it is empty.
+            return
+        self._users = npcache.with_cache(extras.get("users") or [])
+        # One candidate is the answer. More than one is a question, and it is
+        # put at the point where it matters rather than on the way in.
+        self._user = self._users[0] if len(self._users) == 1 else None
+        self._account_problem = extras.get("problem", "")
+
+    def patch_ready(self):
+        if self._account_problem:
+            return False, self._account_problem
+        if not self._users:
+            return False, ACCOUNT_MISSING
+        if len(self._users) == 1:
+            self._user = self._users[0]
+            return True, ""
+        labels = [person.label for person in self._users]
+        current = labels.index(self._user.label) if self._user in self._users \
+            else 0
+        chosen, said_yes = QInputDialog.getItem(
+            self, "Which account is signed in?",
+            "The fix reads the identity of the account that is signed in on "
+            "the console. There is more than one account here, so which one "
+            "is it?\n\nIf you pick the wrong one the fix will do nothing, "
+            "and running it again with the right one puts it right.",
+            labels, current, False)
+        if not said_yes:
+            return False, ""
+        self._user = self._users[labels.index(chosen)]
+        return True, ""
+
+    def patch_context(self):
+        # The cave needs the title folder and nothing else. Which account the
+        # copy in it came from is settled here, before the copy is sent, and
+        # is not something the binary can be told apart from the copy itself.
+        return {"title_id": self._scan.title_id if self._scan else ""}
+
+    def patch_extras(self, writer, workdir):
+        """A fresh copy of np_cache.dat, every time.
+
+        Re-read rather than kept from the scan: the point of the copy is that
+        it is the account signed in now, and a console can have been signed
+        out of and into something else since the table on this screen was
+        drawn.
+        """
+        if self._user is None:
+            raise npcache.NoAccount(ACCOUNT_MISSING)
+        raw = npcache.read_for(writer, self._user.folder)
+        # Reading the account ID here is not for the cave, which reads the
+        # file itself. It is so that a file with nothing usable in it stops
+        # the run before anything is written rather than producing a patch
+        # that quietly falls back to the old behaviour.
+        npcache.account_id(raw)
+        return (npcache.place(writer, self._scan.title_id, raw, workdir),)
+
+    def next_step_words(self):
+        """Put the stock files back, run this, then change them again.
+
+        No link to the manual sequence here. Sending somebody with a modified
+        game to a page that will patch it anyway means they end up with this
+        fix applied on top of somebody else's changes to the same binary, and
+        nobody can then say which of the two is responsible for whatever
+        happens next. The order that works is the plain one.
+        """
+        return ("If the game files have already been modified, for example by "
+                "a mod menu that replaces the eboot, this tool will not touch "
+                "them. Put the stock files back on the console first, run "
+                "this fix on those, and then apply your own changes again on "
+                "top of the patched files.")
+
+    def _plan(self, report):
+        lines = super()._plan(report)
+        if not writing_anything(report):
+            return lines
+        if self._account_problem:
+            lines.append(self._account_problem)
+        elif not self._users:
+            lines.append(ACCOUNT_MISSING)
+        elif self._user is not None:
+            lines.append(ACCOUNT_LINE.format(label=self._user.label))
+        else:
+            lines.append(ACCOUNT_CHOICE)
+        return lines
+
+
+def writing_anything(report):
+    """Whether this run would write a binary at all.
+
+    The account only matters when something is going to be patched. Saying
+    which account a fix would be tied to, on a console where the fix is
+    already applied and there is nothing to do, is a sentence about a thing
+    that is not going to happen.
+    """
+    return bool(report is not None and report.chosen)

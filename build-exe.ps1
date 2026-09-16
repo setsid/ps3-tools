@@ -4,7 +4,7 @@
 # Requires Python 3 and PyInstaller:  pip install pyinstaller==6.22.3
 # Run from anywhere:                  .\build-exe.ps1
 #
-# One exe, three tools. It replaces bo2-psn-fix.exe and mw3-psn-fix.exe, which
+# One exe, every tool. It replaces bo2-psn-fix.exe and mw3-psn-fix.exe, which
 # are redundant once this builds.
 
 $ErrorActionPreference = "Stop"
@@ -18,7 +18,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Push-Location $root
 
 try {
-    # scetool and the two patchers are loaded from disk at run time, so a build
+    # scetool and the patchers are loaded from disk at run time, so a build
     # missing any of them produces an exe that fails once the user presses the
     # button rather than one that fails to build.
     $required = @(
@@ -33,6 +33,7 @@ try {
         # Vendored copies of the two fixes. Left out of the exe, every file on
         # a patcher screen comes back "not recognised" on a console that is
         # perfectly fine, because nothing can read the patch site.
+        "tools\patchers\patch-bo1.py",
         "tools\patchers\patch-bo2.py",
         "tools\patchers\patch-mw3.py",
         "certs\scei-dnas-root-05.pem"
@@ -57,19 +58,26 @@ Put a copy at:
 
 The whole data folder is needed, keys included: scetool looks its keys up
 relative to its own folder, so a copy of the exe on its own cannot decrypt
-anything. The keyset must carry key revision 0019, which is what Black Ops II
-and Modern Warfare 3 are signed with; that is checked separately below.
+anything. The keyset must carry key revisions 0019 and 0010, which are what
+Black Ops II and Modern Warfare 3, and Black Ops 1, are signed with; both are
+checked separately below.
 "@
             }
             throw "Missing $item. Build from a full checkout."
         }
     }
 
-    # Black Ops II is key revision 0019, which not every keyset carries. A build
-    # made against one that does not produces an exe that cannot decrypt
-    # anything, and the symptom is a misleading complaint about the klicensee.
-    if (-not (Select-String -LiteralPath "tools\scetool\data\keys" -Pattern "^revision=0019" -Quiet)) {
-        throw "tools\scetool\data\keys has no revision 0019 entry, so it cannot handle Black Ops II or Modern Warfare 3."
+    # Each game is signed with a key revision, and not every keyset carries
+    # every one. A build made against a keyset missing one produces an exe that
+    # cannot decrypt that game, and the symptom is a misleading complaint about
+    # the klicensee. 0019 is Black Ops II and Modern Warfare 3; 0010 is Black
+    # Ops 1, read off a stock BLES01031 t5mp_ps3f.self.
+    $revisions = @{ "0019" = "Black Ops II or Modern Warfare 3";
+                    "0010" = "Black Ops 1" }
+    foreach ($revision in $revisions.Keys) {
+        if (-not (Select-String -LiteralPath "tools\scetool\data\keys" -Pattern "^revision=$revision" -Quiet)) {
+            throw "tools\scetool\data\keys has no revision $revision entry, so it cannot handle $($revisions[$revision])."
+        }
     }
 
     # Never installed automatically. Pulling a package down mid-build is how a

@@ -1,9 +1,17 @@
 """Scan and patch. One flow, and everything title-specific comes from a table.
 
-There is no Black Ops II code path and no Modern Warfare 3 code path. There is
-one sequence, and ps3tools.titles says which files it applies to, which of them
-need a klicensee, where each one's patch site is and what the bytes there mean.
-Adding a third title is an entry in that table plus a signing profile below.
+There is no Black Ops II code path, no Modern Warfare 3 code path and no Black
+Ops 1 code path. There is one sequence, and ps3tools.titles says which files it
+applies to, which of them need a klicensee, where each one's patch site is and
+what the bytes there mean.
+
+Adding the third title is what the two extra shapes in here are for, and both
+are worth knowing about before adding a fourth. A site may say it is located by
+pattern, which means there is no offset to check the fix's own answer against
+and the checking lives inside the fix; see pattern_site_state. And a fix may
+need a context and extra files -- something that is not in the binary and
+something that has to be on the console beside it. Everything else is the same
+sequence it always was.
 
 Two rules run through all of it.
 
@@ -69,6 +77,13 @@ CANNOT_DECRYPT = "cannot decrypt"
 #   mw3  -1 FALSE -s TRUE, with -t handing scetool the original as a template,
 #        which is where the Auth-ID, Vendor-ID and control info come from
 SIGNING = {
+    # Compression on. With it off the rebuilt file comes out at nearly twice
+    # the size of the stock one, which is the shape of a file that will not
+    # load. The licence type needs no special handling: it is read back off
+    # the user's own file, where it is 0x03, and scetool is given the word
+    # FREE for that number rather than LOCAL, which would write 0x02.
+    "bo1": SigningProfile(compressed="TRUE", skip_sections="FALSE",
+                          use_template=False, carry_ids=True),
     "bo2": SigningProfile(compressed="TRUE", skip_sections="FALSE",
                           use_template=False, carry_ids=True),
     "mw3": SigningProfile(compressed="FALSE", skip_sections="TRUE",
@@ -79,6 +94,13 @@ SIGNING = {
 # These are the values on the files each fix was verified against, and a run
 # that falls back to one of them says so in its notes.
 FIELD_FALLBACKS = {
+    # These four were read off a stock BLES01031 t5mp_ps3f.self, except the
+    # firmware version, which that read does not show. A firmware version
+    # guessed at would be written into a file that then does not load, so
+    # there is none here and a scetool that does not print one stops the run
+    # instead, saying what is missing.
+    "bo1": {"auth_id": "1010000001000003", "vendor_id": "01000002",
+            "app_version": "0001000000000000"},
     "bo2": {"auth_id": "1010000001000003", "vendor_id": "01000002",
             "app_version": "0001000000000000",
             "fw_version": "0004002000000000"},
@@ -86,6 +108,13 @@ FIELD_FALLBACKS = {
             "app_version": "0001000000000000",
             "fw_version": "0004000000000000"},
 }
+
+# What scetool's -e needs on the command line, over and above the five below.
+# A title with no verified fallback for one of these stops rather than being
+# signed with somebody else's value.
+SIGN_FIELDS = ("key_revision", "self_type", "app_type", "licence_type",
+               "content_id", "auth_id", "vendor_id", "app_version",
+               "fw_version")
 
 # The five fields that must come back unchanged on a rebuilt file. CID_FN is a
 # hash of the name given to -g, and a file with the wrong one is perfectly
@@ -147,6 +176,48 @@ def _bytes_state(site, word):
     return None
 
 
+def pattern_site_state(image, kind):
+    """(state, detail) for a site that is found rather than looked up.
+
+    Black Ops 1 only. The other two titles read their state twice over, once
+    from the bytes at a recorded offset and once from the fix's own site
+    finding, and demand that the two agree. There is no recorded offset here
+    to be the second reading: the two known builds of this game put the same
+    code at different addresses, which is the whole reason the site is found
+    rather than written down.
+
+    What takes its place is inside the fix. It will not answer at all unless
+    two independent signatures land on the same function, the imports resolve
+    the way the loader resolves them, and every landmark it needs is found
+    exactly once. Anything else comes back here as unknown, and unknown is
+    reported and left alone exactly as an unreadable four bytes would be.
+    """
+    found = patchstate.decrypted_state(image, kind)
+    if found.get("tool_fault"):
+        return NOT_EXAMINED, (
+            f"{found.get('missing') or 'a file this program needs'} is not "
+            f"part of this build of the program, so the patch site was never "
+            f"looked at. This is a fault in this program. Nothing is wrong "
+            f"with the file on the console.")
+    if found["state"] == patchstate.UNKNOWN:
+        return UNRECOGNISED, found["evidence"]
+    return (PATCHED if found["state"] == patchstate.PATCHED else NOT_PATCHED,
+            found["evidence"])
+
+
+def site_offset(site, image, kind):
+    """Where the patch site is in this image, for showing. None if not known.
+
+    A site with an offset written down answers straight away. A site found by
+    pattern has to be looked for, and the answer is whatever the fix itself
+    found, because nothing else could know: the two known builds of that game
+    put the same code at different addresses.
+    """
+    if site.get("located_by") != "pattern":
+        return site.get("file_offset")
+    return patchstate.decrypted_state(image, kind).get("offset")
+
+
 def site_state(site, image, kind):
     """(state, detail) for one decrypted image, from its bytes.
 
@@ -157,6 +228,8 @@ def site_state(site, image, kind):
     written for, and the answer is then unrecognised rather than a guess at
     which of the two to believe.
     """
+    if site.get("located_by") == "pattern":
+        return pattern_site_state(image, kind)
     offset = site["file_offset"]
     if len(image) < offset + 4:
         return UNRECOGNISED, (
@@ -478,20 +551,37 @@ def _scan_one(writer, tool, config, item, workdir, states, index, total,
         return
 
     step(f"reading the header of {item.name}")
+    # Still read for a file with no patch site, because the ContentID out of
+    # it is what the cross-check below uses to notice a set of files that came
+    # from two different installs. A failure here is only fatal to a file this
+    # program is going to write to.
+    header_problem = ""
     try:
         item.info = tool.info(local, item.record["klicensee"])
     except ScetoolError as exc:
-        item.state = UNRECOGNISED
-        item.detail = str(exc)
-        return
+        header_problem = str(exc)
 
     site = item.site
     if site is None:
-        # MW3's default.self. Reported rather than ignored, because a file
-        # sitting beside the one being changed is something the user should
-        # see named, but it has no patch site: the fault is not in it.
+        # MW3's default.self, and Black Ops 1's EBOOT.BIN and t5_ps3f.self.
+        # Reported rather than ignored, because a file sitting beside the one
+        # being changed is something the user should see named, but it has no
+        # patch site: the fault is not in it and nothing here will touch it.
+        #
+        # Including when its header would not read. Black Ops 1's EBOOT.BIN
+        # does not, and it came up in red as "not recognised" next to a column
+        # already saying it was unaffected: two contradictory things about a
+        # file this program never opens for writing. What could not be read
+        # about a file nothing is going to be written to is not a fault, and
+        # putting it on screen in the colour kept for faults is how a scan
+        # that found nothing wrong worries somebody for no reason.
         item.state = NO_SITE
         item.detail = item.record["purpose"]
+        return
+
+    if header_problem:
+        item.state = UNRECOGNISED
+        item.detail = header_problem
         return
 
     step(f"decrypting {item.name}")
@@ -517,12 +607,13 @@ def _scan_one(writer, tool, config, item, workdir, states, index, total,
     # came back with the campaign file's verdict.
     key = (item.image_sha1, item.record.get("site"))
     if key not in states:
-        states[key] = site_state(site, image, kind)
-    item.state, item.detail = states[key]
+        states[key] = site_state(site, image, kind) + \
+            (site_offset(site, image, kind),)
+    item.state, item.detail, found_at = states[key]
     if item.state == NOT_EXAMINED:
         item.missing_tool = patchstate.PATCHER_FILES.get(kind, "")
-    item.offset = (site["file_offset"]
-                   if item.state not in (UNRECOGNISED, NOT_EXAMINED) else None)
+    item.offset = (found_at if item.state not in (UNRECOGNISED, NOT_EXAMINED)
+                   else None)
 
 
 def _cross_check(report):
@@ -598,16 +689,33 @@ def _same_image_check(report, present):
 
 # --- applying the fix ------------------------------------------------------
 
-def apply_fix(image, kind, module):
+def apply_fix(image, kind, module, context=None):
     """The fix itself, from the repository that owns it. Returns (bytes, offset).
 
     This is each script's main() with the file handling and the printing taken
-    out. It is not called directly because both take their paths on argv, and
+    out. It is not called directly because they take their paths on argv, and
     because patch-bo2.py's main stops on a file that is already patched rather
     than saying so.
+
+    context is what a fix needs that is not in the binary. Two of the three
+    need nothing. Black Ops 1 writes the path it will read the account ID from
+    into its own code cave, and that path has the title ID in it, which cannot
+    be read out of the image.
     """
     data = bytearray(image)
+    context = context or {}
     try:
+        if kind == "bo1":
+            title_id = context.get("title_id")
+            if not title_id:
+                raise PatchFailed(
+                    "the fix was not told which title folder to read the "
+                    "account ID from, so nothing has been changed")
+            try:
+                patched, what = module.apply(bytes(data), title_id)
+            except module.NotThisBuild as exc:
+                raise PatchFailed(f"{exc}.")
+            return patched, what["offset"]
         if kind == "mw3":
             offset, state = module.find_site(data)
             if offset is None:
@@ -651,7 +759,7 @@ class PatchReport:
 
 
 def patch(writer, tool, report, root=None, progress=None, when=None,
-          reread=True, workdir=None):
+          reread=True, workdir=None, context=None, extra_files=()):
     """Back up, patch, write back, verify, and put the originals back if not.
 
     The order is the whole design. The backup is taken and checked against the
@@ -659,6 +767,13 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
     backup stops having changed nothing. Everything is then built and verified
     locally, and only files that decrypt back to exactly what went into them
     are uploaded at all.
+
+    extra_files is (remote path, local path) for anything a fix needs put on
+    the console beside the binaries. Black Ops 1 needs a readable copy of
+    np_cache.dat in the game's own folder. They go up first and are checked
+    the same way the binaries are, because a fix whose supporting file did not
+    arrive is a fix that would quietly do nothing, and finding that out before
+    anything is patched costs a file that does nothing on its own.
     """
     out = PatchReport(report.title_id)
     if not report.can_patch:
@@ -687,12 +802,20 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
         return out
     out.backup = saved
 
+    for remote, local in extra_files or ():
+        try:
+            _send_extra(writer, remote, local, progress, out)
+        except (PatchFailed, OSError) as exc:
+            out.error = (f"{exc} Nothing has been patched, and your original "
+                         f"files are in {folder}.")
+            return out
+
     own_workdir = workdir is None
     workdir = workdir or tempfile.mkdtemp(prefix="ps3tools-patch-")
     try:
         try:
             built = _build_all(tool, chosen, saved, kind, module, workdir,
-                               progress, out)
+                               progress, out, context)
         except (PatchFailed, ScetoolError) as exc:
             out.error = (f"{exc} Nothing has been written to the console, and "
                          f"your original files are in {folder}.")
@@ -704,7 +827,34 @@ def patch(writer, tool, report, root=None, progress=None, when=None,
     return out
 
 
-def _build_all(tool, chosen, saved, kind, module, workdir, progress, out):
+def _send_extra(writer, remote, local, progress, out):
+    """One supporting file up, and read back to prove it arrived whole."""
+    name = os.path.basename(remote)
+    if progress:
+        progress({"stage": "upload", "file": name, "done": 0, "total": 1,
+                  "message": f"putting {name} where the game can read it"})
+    with open(local, "rb") as handle:
+        wanted = handle.read()
+    writer.store(local, remote)
+    try:
+        arrived = writer.retrieve_bytes(remote)
+    except Exception as exc:
+        raise PatchFailed(f"{name} was sent to {remote} and could not be read "
+                          f"back ({exc.__class__.__name__}: {exc}).")
+    if arrived != wanted:
+        raise PatchFailed(
+            f"{name} arrived at {remote} as {len(arrived)} bytes and "
+            f"{len(wanted)} were sent, so the copy did not finish.")
+    # Deliberately not added to out.uploaded, which is the list of patched
+    # binaries. A supporting file is not one of those and anything reading
+    # that list to say what was changed would be wrong about this.
+    out.notes.append(f"{remote} is the copy the fix reads the account ID "
+                     f"from. It is a snapshot of the account that was signed "
+                     f"in when this ran.")
+
+
+def _build_all(tool, chosen, saved, kind, module, workdir, progress, out,
+               context=None):
     """Every file rebuilt and checked locally before any of them is uploaded.
 
     Built from the backup copies rather than from what the scan downloaded, so
@@ -732,13 +882,17 @@ def _build_all(tool, chosen, saved, kind, module, workdir, progress, out):
         image = tool.decrypt(source, image_path, klicensee)
 
         step(f"applying the fix to {item.name}")
-        patched, offset = apply_fix(image, kind, module)
+        patched, offset = apply_fix(image, kind, module, context)
         site = item.site
-        if offset != site["file_offset"]:
+        # A site found by pattern has no recorded offset to be checked
+        # against, on purpose: see the note on pattern_site_state above. The
+        # check still runs for every title that does have one.
+        expected = site.get("file_offset")
+        if expected is not None and offset != expected:
             raise PatchFailed(
                 f"the fix wants to change {item.name} at file offset "
                 f"{offset:08X}, where the verified table for this title says "
-                f"{site['file_offset']:08X}.")
+                f"{expected:08X}.")
         state, detail = site_state(site, patched, kind)
         if state != PATCHED:
             raise PatchFailed(f"{item.name} does not read as patched after "
@@ -751,6 +905,17 @@ def _build_all(tool, chosen, saved, kind, module, workdir, progress, out):
         step(f"signing {item.name}")
         info = dict(fallbacks)
         info.update(item.info)
+        # Everything -e needs, before scetool is asked for a file rather than
+        # after. A missing firmware version used to come back as a KeyError
+        # with a traceback, which says nothing about which file or why.
+        missing = [name for name in SIGN_FIELDS if not info.get(name)]
+        if missing:
+            raise PatchFailed(
+                f"this scetool did not print "
+                + ", ".join(FIELD_TITLES[name] for name in sorted(missing))
+                + f" for {item.name}, and this fix has no verified value to "
+                f"fall back on. Signing with a guess produces a file that is "
+                f"valid and will not load, so nothing has been written.")
         used_fallback = [name for name in fallbacks if name not in item.info]
         if used_fallback:
             out.notes.append(

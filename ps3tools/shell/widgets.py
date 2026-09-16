@@ -8,8 +8,9 @@ three QLabels cannot do that without a stylesheet per state.
 from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
                             QSize, Property, Qt, Signal)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
-from PySide6.QtWidgets import (QAbstractButton, QFrame, QLabel, QLayout,
-                               QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel,
+                               QLayout, QSizePolicy, QToolButton, QVBoxLayout,
+                               QWidget)
 
 from . import icons
 
@@ -71,6 +72,138 @@ def mix(first, second, amount):
         round(one.green() + (two.green() - one.green()) * amount),
         round(one.blue() + (two.blue() - one.blue()) * amount),
     ).name()
+
+
+#: The space either side of the word in a pill, and the space above and below
+#: it. Both are fixed pixels rather than a fraction of the text, because a
+#: pill is a shape with a word in it and the shape should be the same on every
+#: card whatever the desktop's font size does to the word.
+PILL_SIDES = 9
+PILL_ENDS = 3
+PILL_MINIMUM_HEIGHT = 18
+
+
+def pill_colours(theme, token="accent"):
+    """(fill, ink, edge) for a pill in one of the theme's own colours.
+
+    The colour on the quiet tile colour rather than white on a solid fill: a
+    pill shares a card with an icon tile, and two solid shapes on one card is
+    one too many. It is also the pair the palette check already guarantees at
+    4.5:1 in both themes for every token it is used with, which is the reason
+    for reusing it rather than mixing a wash that reads at 4.3 in the dark.
+    """
+    colour = theme.colour
+    return (colour("surface_alt"), colour(token),
+            mix(colour("border"), colour(token), 0.55))
+
+
+def pill_font(base):
+    """The font a pill's word is set in, given the card's own font."""
+    font = QFont(base)
+    font.setPointSizeF(max(7.0, base.pointSizeF() - 1.0))
+    font.setWeight(QFont.Weight.DemiBold)
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+    return font
+
+
+def pill_size(base, text):
+    """The QSize a pill carrying `text` wants, at the card's own font."""
+    metrics = QFontMetrics(pill_font(base))
+    return QSize(metrics.horizontalAdvance(text) + 2 * PILL_SIDES,
+                 max(PILL_MINIMUM_HEIGHT, metrics.height() + 2 * PILL_ENDS))
+
+
+def pill_rule(theme, font, height):
+    """The body of a stylesheet rule that draws a pill.
+
+    The size is named here as well as set on the font: an application-wide
+    stylesheet with a font-size in it beats setFont on any widget the
+    stylesheet reaches, which is every label on a card. A pill measured at one
+    size and drawn at another is a pill with its word hanging out of it.
+    """
+    fill, ink, edge = pill_colours(theme)
+    return (f"background: {fill}; color: {ink}; border: 1px solid {edge};"
+            f" border-radius: {height // 2}px;"
+            f" font-size: {font.pointSizeF():g}pt; font-weight: 600;")
+
+
+def draw_pill(painter, rect, text, base, theme):
+    """Paint a pill into `rect`. Used by the cards that paint themselves."""
+    fill, ink, edge = pill_colours(theme)
+    radius = rect.height() / 2.0
+    painter.setPen(QColor(edge))
+    painter.setBrush(QColor(fill))
+    painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), radius, radius)
+    painter.setPen(QColor(ink))
+    painter.setFont(pill_font(base))
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+
+def wrapped_lines(metrics, text, width, limit):
+    """`text` broken to fit `width` in at most `limit` lines, last elided.
+
+    Qt word wraps a drawn string on its own, but it will happily run past the
+    bottom of the box doing it, and a title clipped through the middle of its
+    letters reads as a rendering fault rather than as a long title. The lines
+    are decided here so the caller knows how many there are before it draws
+    any of them, and so a test can ask whether a title fits without looking at
+    pixels.
+    """
+    words = (text or "").split()
+    if not words:
+        return []
+    lines = [words[0]]
+    for word in words[1:]:
+        candidate = lines[-1] + " " + word
+        if metrics.horizontalAdvance(candidate) <= width:
+            lines[-1] = candidate
+        elif len(lines) < limit:
+            lines.append(word)
+        else:
+            # Out of lines: the rest goes on the end of the last one and is
+            # cut off there, which at least ends in an ellipsis rather than
+            # in the middle of a letter.
+            lines[-1] = candidate
+    # Only what overflows is cut. Qt's own elidedText will shorten a line
+    # whose advance is exactly the width it is given, and a title that fits to
+    # the pixel losing its last word to that is a title cut short for nothing.
+    return [line if metrics.horizontalAdvance(line) <= width
+            else metrics.elidedText(line, Qt.TextElideMode.ElideRight, width)
+            for line in lines]
+
+
+def all_of_it(text, lines):
+    """True when `lines` is the whole of `text` with nothing cut off."""
+    return " ".join(lines) == " ".join((text or "").split())
+
+
+class PillBadge(QLabel):
+    """A pill, as a widget, for a card that is built out of labels.
+
+    The same colours and the same word as the painted cards use, so the two
+    kinds of card cannot drift apart.
+    """
+
+    def __init__(self, text, theme, parent=None):
+        super().__init__(text, parent)
+        self._theme = theme
+        # Sized off the card's font rather than the label's own, so that a
+        # pill on a card and a pill painted by a card come out the same.
+        base = parent.font() if parent is not None else self.font()
+        # Named, because a card that styles its own labels reaches this one
+        # too and a pill with the card's "no background, no border" applied to
+        # it is a pill that has stopped being a pill.
+        self.setObjectName("pillBadge")
+        self.setFont(pill_font(base))
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.setFixedSize(pill_size(base, text))
+        self._paint()
+        theme.changed.connect(self._paint)
+
+    def _paint(self):
+        self.setStyleSheet("QLabel { " + pill_rule(self._theme, self.font(),
+                                                   self.height()) + " }")
 
 
 class FlowLayout(QLayout):
@@ -215,14 +348,46 @@ class ToolCard(QAbstractButton):
     BADGE = 48
     ACTION = "Open"
 
+    #: Points over the card's own font for the title. One size for every
+    #: card. Drawing the game fixes larger than the tools around them was
+    #: tried and looked wrong: a grid of cards the same shape with one set of
+    #: titles swollen reads as a mistake rather than as emphasis.
+    TITLE_POINTS = 2.0
+
+    #: The space inside the caveat's own rounded box, and the radius of it.
+    #: Bare coloured text on a card reads as something having gone wrong with
+    #: the drawing; the same words in a box of their own read as a label.
+    NOTE_SIDES = 9
+    NOTE_ENDS = 5
+    NOTE_RADIUS = 8
+
+    #: The most lines a caveat may take, and the gap above the action row. A
+    #: caveat is given the room it actually needs at the width it will be
+    #: drawn at rather than this many lines always: the wording that falls in
+    #: two lines on a wide window falls in three on a narrow one, and picking
+    #: one of those and living with it means either a cut sentence or a band
+    #: of empty card. The grid gives every card in it the room the largest of
+    #: them needs, so a row stays a row and a card with nothing to warn about
+    #: spends the room on a roomier blurb.
+    NOTE_LINES = 3
+    NOTE_GAP = 8
+
+    #: A title wraps rather than being cut short. Some of these are the names
+    #: of games, and a game recognised by the first half of its name is one
+    #: the reader still has to stop and work out. Two lines is what the band
+    #: beside the icon holds.
+    TITLE_LINES = 2
+
     activated = Signal(str)
 
     def __init__(self, key, title, blurb, tile, theme, parent=None,
-                 icon_name=None):
+                 icon_name=None, badge="", note=""):
         super().__init__(parent)
         self.key = key
         self._blurb = blurb
         self._tile = tile
+        self.badge = badge or ""
+        self.note = note or ""
         # The two letter tile is the fallback the frozen Screen interface
         # guarantees; a drawn icon is preferred where the set has one.
         self.icon_name = (icons.for_key(key, title) if icon_name is None
@@ -234,8 +399,12 @@ class ToolCard(QAbstractButton):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setAccessibleName(title)
-        self.setAccessibleDescription(blurb)
-        self.setToolTip(blurb)
+        # The caveat goes in both, because it is the half of what the card
+        # says that a reader most needs before pressing it, and on the card
+        # itself it is drawn short.
+        self.setAccessibleDescription(
+            f"{blurb} {self.note}".strip() if self.note else blurb)
+        self.setToolTip(f"{blurb}\n\n{self.note}" if self.note else blurb)
         # Hover is animated rather than switched so that sweeping the pointer
         # across the grid does not strobe.
         self._animation = QPropertyAnimation(self, b"lift", self)
@@ -269,6 +438,91 @@ class ToolCard(QAbstractButton):
         self._animation.setStartValue(self._lift)
         self._animation.setEndValue(value)
         self._animation.start()
+
+    # -- the title, worked out rather than measured off the screen
+    #
+    # The paint below asks these three for what it draws, so a test can ask
+    # the same questions and get the same answers without reading pixels back
+    # out of a rendered card.
+    def body_rect(self, width=None, height=None):
+        """The rounded rectangle the card is drawn inside."""
+        rect = QRect(0, 0,
+                     self.width() if width is None else width,
+                     self.height() if height is None else height)
+        return rect.adjusted(1, 2, -1, -3)
+
+    def title_font(self):
+        font = QFont(self.font())
+        font.setPointSizeF(self.font().pointSizeF() + self.TITLE_POINTS)
+        font.setWeight(QFont.Weight.DemiBold)
+        return font
+
+    def title_box(self, width=None, body=None):
+        """Where the title goes: the whole band beside the icon."""
+        body = self.body_rect(width) if body is None else body
+        left = body.left() + self.PADDING + self.BADGE + 14
+        right = body.right() - self.PADDING
+        return QRect(left, body.top() + self.PADDING,
+                     max(1, right - left), self.BADGE)
+
+    def title_layout(self, width=None, body=None):
+        """(font, lines) for the title."""
+        font = self.title_font()
+        lines = wrapped_lines(QFontMetrics(font), self.text(),
+                              self.title_box(width, body).width(),
+                              self.TITLE_LINES)
+        return font, lines
+
+    def title_lines(self, width=None):
+        """The title as it is drawn, line by line, elided where it must be."""
+        return self.title_layout(width)[1]
+
+    def note_font(self):
+        font = QFont(self.font())
+        font.setPointSizeF(max(7.0, self.font().pointSizeF() - 1.0))
+        return font
+
+    def note_width(self, width=None, body=None):
+        """The room the words have, which is inside the box they sit in."""
+        body = self.body_rect(width) if body is None else body
+        return max(1, body.width() - 2 * self.PADDING - 2 * self.NOTE_SIDES)
+
+    def note_lines(self, width=None, body=None):
+        """The caveat as it is drawn, line by line."""
+        if not self.note:
+            return []
+        return wrapped_lines(QFontMetrics(self.note_font()), self.note,
+                             self.note_width(width, body), self.NOTE_LINES)
+
+    def note_height(self, width=None, body=None):
+        """The room a caveat needs at that width, or 0 where there is none.
+
+        Asked by the grid before the card is that size, so the width is an
+        argument rather than something read off the widget.
+        """
+        lines = self.note_lines(width, body)
+        if not lines:
+            return 0
+        return (QFontMetrics(self.note_font()).lineSpacing() * len(lines)
+                + 2 * self.NOTE_ENDS + self.NOTE_GAP)
+
+    def note_box(self, body=None, width=None):
+        """The box the caveat is drawn in, just above the action row.
+
+        As wide as the words in it and no wider. A box run out to the full
+        card with one short line in it reads as an empty panel somebody forgot
+        to fill; one that stops where the words do reads as a label.
+        """
+        body = self.body_rect(width) if body is None else body
+        action_height = max(QFontMetrics(self.font()).height(), 18)
+        bottom = body.bottom() - self.PADDING - action_height - self.NOTE_GAP
+        height = max(0, self.note_height(body=body) - self.NOTE_GAP)
+        room = body.width() - 2 * self.PADDING
+        metrics = QFontMetrics(self.note_font())
+        wanted = max([metrics.horizontalAdvance(line)
+                      for line in self.note_lines(body=body)] or [0])
+        return QRect(body.left() + self.PADDING, bottom - height,
+                     min(room, wanted + 2 * self.NOTE_SIDES), height)
 
     def paintEvent(self, event):
         colour = self._theme.colour
@@ -338,20 +592,22 @@ class ToolCard(QAbstractButton):
             painter.setPen(mark)
             painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, self._tile)
 
-        title_font = QFont(self.font())
-        title_font.setPointSizeF(self.font().pointSizeF() + 2.0)
-        title_font.setWeight(QFont.Weight.DemiBold)
-        painter.setFont(title_font)
+        drawn_font, lines = self.title_layout(body=body)
+        painter.setFont(drawn_font)
         painter.setPen(QColor(colour("text")))
-        title_box = QRect(badge.right() + 14, badge.top(),
-                          body.right() - badge.right() - 14 - padding,
-                          badge.height())
-        metrics = QFontMetrics(title_font)
-        painter.drawText(
-            title_box,
-            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-            metrics.elidedText(self.text(), Qt.TextElideMode.ElideRight,
-                               title_box.width()))
+        title_box = self.title_box(body=body)
+        metrics = QFontMetrics(drawn_font)
+        # Centred as a block on the icon beside it, so a one line title and a
+        # two line one both sit against the middle of the tile rather than the
+        # second line hanging below it.
+        step = metrics.lineSpacing()
+        top = title_box.center().y() - (len(lines) * step) // 2
+        for index, line in enumerate(lines):
+            painter.drawText(
+                QRect(title_box.left(), top + index * step,
+                      title_box.width(), step),
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                line)
 
         # The affordance sits on the bottom line of the card, so the blurb
         # stops short of it rather than running underneath.
@@ -360,12 +616,13 @@ class ToolCard(QAbstractButton):
         action_metrics = QFontMetrics(action_font)
         action_height = max(action_metrics.height(), 18)
         action_top = body.bottom() - padding - action_height
+        blurb_bottom = action_top - self.note_height(body=body)
 
         painter.setFont(self.font())
         painter.setPen(QColor(colour("text_dim")))
         blurb_box = QRect(body.left() + padding, badge.bottom() + 14,
                           body.width() - 2 * padding,
-                          action_top - badge.bottom() - 14 - 8)
+                          max(0, blurb_bottom - badge.bottom() - 14 - 8))
         painter.drawText(
             blurb_box,
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
@@ -394,6 +651,43 @@ class ToolCard(QAbstractButton):
                       self.ACTION) + 6 + nudge,
                   action_box.center().y() - 8, 16, 16), arrow)
         painter.setOpacity(1.0)
+
+        # The caveat sits above the action row, wrapped, in the warn colour.
+        # Dim would have been quieter and this is the line that decides
+        # whether somebody presses Open at all, so it is not drawn as an
+        # afterthought. It is given its own room rather than taking the
+        # blurb's: the blurb is the screen's own sentence and cutting it in
+        # half to fit a caveat leaves two half-sentences.
+        if self.note:
+            note_font = self.note_font()
+            note_metrics = QFontMetrics(note_font)
+            box = self.note_box(body)
+            fill, ink, edge = pill_colours(self._theme, "warn")
+            painter.setPen(QColor(edge))
+            painter.setBrush(QColor(fill))
+            painter.drawRoundedRect(box.adjusted(0, 0, -1, -1),
+                                    self.NOTE_RADIUS, self.NOTE_RADIUS)
+            painter.setFont(note_font)
+            painter.setPen(QColor(ink))
+            step = note_metrics.lineSpacing()
+            top = box.top() + self.NOTE_ENDS
+            for index, line in enumerate(self.note_lines(body=body)):
+                painter.drawText(
+                    QRect(box.left() + self.NOTE_SIDES, top + index * step,
+                          box.width() - 2 * self.NOTE_SIDES, step),
+                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                    line)
+
+        # The pill goes on the action row rather than up beside the title.
+        # The row is otherwise empty to the right of "Open", and a pill in the
+        # top corner takes its width out of the title, which is the one thing
+        # on the card that wants all the room it can have.
+        if self.badge:
+            size = pill_size(self.font(), self.badge)
+            pill = QRect(body.right() - padding - size.width(),
+                         action_box.center().y() - size.height() // 2,
+                         size.width(), size.height())
+            draw_pill(painter, pill, self.badge, self.font(), self._theme)
 
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -517,15 +811,25 @@ class ComingSoonCard(QFrame):
     CARD_HEIGHT = ToolCard.CARD_HEIGHT
     PADDING = ToolCard.PADDING
 
+    STATUS = "Under development"
+
     def __init__(self, key, title, blurb, link_text, url, theme,
-                 parent=None):
+                 parent=None, badge=""):
         super().__init__(parent)
         self.key = key
         self.url = url
+        self.badge = badge or ""
         self._theme = theme
         self.setObjectName("comingsoon")
-        self.setFixedSize(self.CARD_WIDTH, self.CARD_HEIGHT)
+        # Sized, not fixed. The grid gives every card in a row the same width,
+        # and a card that refuses it sits in the row at the width it was drawn
+        # for -- which on any window but the design width is a card visibly
+        # wider than the ones beside it.
+        self.resize(self.CARD_WIDTH, self.CARD_HEIGHT)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        # The pill says what state the tool will be in when it lands. What it
+        # is now is still said here, because a screen reader is the one place
+        # a dashed border and a quiet grey say nothing at all.
         self.setAccessibleName(f"{title}, under development")
         self.setAccessibleDescription(blurb)
 
@@ -534,19 +838,26 @@ class ComingSoonCard(QFrame):
                                self.PADDING, self.PADDING)
         box.setSpacing(8)
 
-        self._status = QLabel("Under development")
-        status_font = QFont(self.font())
-        status_font.setWeight(QFont.Weight.DemiBold)
-        status_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
-        status_font.setPointSizeF(max(7.0, self.font().pointSizeF() - 0.5))
-        self._status.setFont(status_font)
-        box.addWidget(self._status)
+        # One state marker, not two. A card reading "Under development" over
+        # a pill reading "Beta" is a card asking the reader to work out which
+        # of the two it means, so the pill stands in place of the line when
+        # there is one -- and it goes down on the last row, where a painted
+        # card puts its own.
+        self._status = None
+        self._pill = None
+        if not self.badge:
+            self._status = QLabel(self.STATUS)
+            status_font = QFont(self.font())
+            status_font.setWeight(QFont.Weight.DemiBold)
+            status_font.setLetterSpacing(
+                QFont.SpacingType.AbsoluteSpacing, 0.8)
+            status_font.setPointSizeF(max(7.0,
+                                          self.font().pointSizeF() - 0.5))
+            self._status.setFont(status_font)
+            box.addWidget(self._status)
 
         self._title = QLabel(title)
-        title_font = QFont(self.font())
-        title_font.setPointSizeF(self.font().pointSizeF() + 2.0)
-        title_font.setWeight(QFont.Weight.DemiBold)
-        self._title.setFont(title_font)
+        self._title.setFont(self.title_font())
         self._title.setWordWrap(True)
         box.addWidget(self._title)
 
@@ -558,14 +869,43 @@ class ComingSoonCard(QFrame):
         self._link = QLabel(f'<a href="{url}">{link_text}</a>')
         self._link.setOpenExternalLinks(True)
         self._link.setToolTip(f"Open {url} in your browser.")
-        box.addWidget(self._link)
+        last = QHBoxLayout()
+        last.setContentsMargins(0, 0, 0, 0)
+        last.setSpacing(8)
+        last.addWidget(self._link, 1, Qt.AlignmentFlag.AlignVCenter)
+        if self.badge:
+            self._pill = PillBadge(self.badge, theme, self)
+            last.addWidget(self._pill, 0, Qt.AlignmentFlag.AlignVCenter)
+        box.addLayout(last)
 
         self._paint()
         theme.changed.connect(self._paint)
 
+    def sizeHint(self):
+        return QSize(self.CARD_WIDTH, self.CARD_HEIGHT)
+
+    def title_font(self):
+        """The same title a painted card would draw, at the same size."""
+        font = QFont(self.font())
+        font.setPointSizeF(self.font().pointSizeF() + ToolCard.TITLE_POINTS)
+        font.setWeight(QFont.Weight.DemiBold)
+        return font
+
     def text(self):
         """As QAbstractButton spells it, so the grid can read every card."""
         return self._title.text()
+
+    def _pill_rule(self):
+        """The pill, said again past the card's own rule for its labels.
+
+        A rule naming the card wins over one the pill sets on itself however
+        specific the pill tries to be, so the card has to say it.
+        """
+        if self._pill is None:
+            return ""
+        return ("QFrame#comingsoon QLabel#pillBadge { "
+                + pill_rule(self._theme, self._pill.font(),
+                            self._pill.height()) + " }")
 
     def _paint(self):
         colour = self._theme.colour
@@ -574,8 +914,18 @@ class ComingSoonCard(QFrame):
             f" border: 1px dashed {colour('border')};"
             f" border-radius: 14px; }}"
             f"QFrame#comingsoon QLabel {{ background: transparent;"
-            f" border: none; }}")
-        self._status.setStyleSheet(f"color: {colour('text_dim')};")
-        self._title.setStyleSheet(f"color: {colour('text_dim')};")
+            f" border: none; }}"
+            + self._pill_rule())
+        if self._pill is not None:
+            self._pill._paint()
+        if self._status is not None:
+            self._status.setStyleSheet(f"color: {colour('text_dim')};")
+        # The title is the one thing on a quiet card that still has to be
+        # read from the far side of the grid, so it keeps the full text
+        # colour where the rest of the card is dimmed.
+        title = self.title_font()
+        self._title.setStyleSheet(
+            f"color: {colour('text')};"
+            f" font-size: {title.pointSizeF():g}pt; font-weight: 600;")
         self._blurb.setStyleSheet(f"color: {colour('text_dim')};")
         self._link.setStyleSheet(f"color: {colour('accent')};")

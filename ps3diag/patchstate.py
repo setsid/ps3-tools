@@ -441,13 +441,15 @@ def _read_npdrm(data, start, end):
 # Set either of these to the patcher script if the copy that ships is not the
 # one you want used. Nothing here ever fetches them: a missing patcher means
 # the decrypted path answers unknown, which is the honest answer anyway.
-PATCHER_ENV = {"bo2": "PS3DIAG_BO2_PATCHER", "mw3": "PS3DIAG_MW3_PATCHER"}
+PATCHER_ENV = {"bo2": "PS3DIAG_BO2_PATCHER", "mw3": "PS3DIAG_MW3_PATCHER",
+               "bo1": "PS3DIAG_BO1_PATCHER"}
 
 # The vendored copies, which are what an exe has. They are the same scripts the
 # two repositories publish, kept here because those repositories are not on the
 # machine the exe runs on. Without them every file on the patcher screen came
 # back "not recognised" on a console that was perfectly fine.
-PATCHER_FILES = {"bo2": "patch-bo2.py", "mw3": "patch-mw3.py"}
+PATCHER_FILES = {"bo2": "patch-bo2.py", "mw3": "patch-mw3.py",
+                 "bo1": "patch-bo1.py"}
 BUNDLED_DIR = os.path.join("tools", "patchers")
 
 # Sibling checkouts, still searched so that a developer working on one of the
@@ -455,7 +457,9 @@ BUNDLED_DIR = os.path.join("tools", "patchers")
 PATCHER_PATHS = {"bo2": ("bo2/repo/patch-bo2.py", "bo2/patch-bo2.py",
                          "bo2-ps3-psn-freeze-fix/patch-bo2.py"),
                  "mw3": ("mw3-psn-fix/patch-mw3.py",
-                         "mw3-ps3-psn-fix/patch-mw3.py")}
+                         "mw3-ps3-psn-fix/patch-mw3.py"),
+                 "bo1": ("bo1/repo/patch-bo1.py", "bo1/patch-bo1.py",
+                         "bo1-ps3-stats-fix/patch-bo1.py")}
 
 _patchers = {}
 
@@ -550,6 +554,8 @@ def decrypted_state(data, kind):
             return _mw3_decrypted(module, data)
         if kind == "bo2":
             return _bo2_decrypted(module, data)
+        if kind == "bo1":
+            return _bo1_decrypted(module, data)
     except SystemExit as error:
         out["evidence"] = "the patcher stopped: %s" % (error or "no reason")
         return out
@@ -571,6 +577,31 @@ def _mw3_decrypted(module, data):
             "confidence": HIGH, "offset": offset,
             "evidence": ("the patcher's own signature matches at file offset "
                          "%08X and reads as %s" % (offset, state))}
+
+
+def _bo1_decrypted(module, data):
+    """Black Ops 1, which finds every address it uses in the image itself.
+
+    The other two answer against an offset recorded in titles.py as well as
+    against their own signature. This one has no such offset to answer
+    against, because its two known builds put the same code in different
+    places, so the whole of the checking lives in the patcher and a refusal
+    from it comes back as unknown rather than as a verdict.
+    """
+    try:
+        offset, state = module.find_site(bytes(data))
+    except module.NotThisBuild as error:
+        return {"state": UNKNOWN, "confidence": LOW,
+                "evidence": "%s" % error}
+    if state is None:
+        return {"state": UNKNOWN, "confidence": LOW, "offset": offset,
+                "evidence": ("the call at file offset %08X has been changed "
+                             "to something this fix did not write, so the "
+                             "file is left alone" % offset)}
+    return {"state": UNPATCHED if state == "stock" else PATCHED,
+            "confidence": HIGH, "offset": offset,
+            "evidence": ("the call the fix replaces is at file offset %08X "
+                         "and reads as %s" % (offset, state))}
 
 
 def _bo2_decrypted(module, data):

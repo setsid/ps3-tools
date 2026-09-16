@@ -12,10 +12,12 @@ own does not create it. So a title that is present with no USRDIR is the common
 case, not a fault, and it is reported as no_update rather than as an error: the
 user runs the game once, lets the update download, and comes back.
 
-A title ID that ps3tools.titles does not recognise as either game is left
-alone: there is nothing here that could say what it is. Every published release
-of the two games is recognised, and most of them are releases nobody has
-confirmed the fix on. Those are reported with verified set to False and are
+A title ID that ps3tools.titles does not recognise is left alone: there is
+nothing here that could say what it is. Which releases are in that table is
+that file's business, and it is not the same answer for every title -- two of
+the three games have every release they shipped under in there, and the third
+has the builds somebody has actually opened. Most of what is recognised is a
+release nobody has confirmed the fix on. Those are reported with verified set to False and are
 still worth scanning, because whether the fix suits them is settled by trying
 to decrypt one of their files and not by anything that can be read from a
 directory listing.
@@ -220,15 +222,14 @@ def _examine(lister, folder, param_sfo_reader):
     if config is None:
         if not _looks_like_cod(files):
             return None
-        # A Call of Duty this tool cannot name. Every published release of the
-        # two games it does fix is in the table, so this is either a third
-        # Call of Duty or a title ID nobody has heard of, and in both cases
-        # there is no klicensee to try. It is surfaced in order to be refused.
+        # A Call of Duty this tool cannot name. It is either a game with no
+        # fix here or a build nobody has opened, and in both cases there is no
+        # klicensee to try. It is surfaced in order to be refused.
         return Installation(
             title_id=title_id, path=path, usrdir=usrdir,
             state=UNKNOWN_VARIANT, files=files or [],
-            tu_detail=("This is not a release of either of the two games this "
-                       "tool fixes, so nothing about it was read."))
+            tu_detail=("This is not a release this tool has a fix for, so "
+                       "nothing about it was read."))
 
     sku = titles.sku_for(title_id) or {}
     expected = [record["name"] for record in titles.binaries_for(title_id)]
@@ -347,8 +348,8 @@ def _unknown_variants_note(title_ids):
         looks = "look like Call of Duty installations"
         but = "but are not releases"
         them = "they"
-    return (f"{_and_list(title_ids)} {looks} {but} of either of the two "
-            f"games this tool fixes, so {them} will be left alone.")
+    return (f"{_and_list(title_ids)} {looks} {but} this tool has a fix for, "
+            f"so {them} will be left alone.")
 
 
 def _absent(key):

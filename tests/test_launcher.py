@@ -26,7 +26,9 @@ from ps3tools.shell import consolestats, icons, registry
 from ps3tools.shell import launcher as launcher_module
 from ps3diag.transport import Response
 from ps3tools.shell.launcher import SUPPORT_ADDRESS, CardGrid, Launcher
-from ps3tools.shell.widgets import ToolCard
+from ps3tools.shell.theme import contrast_ratio
+from ps3tools.shell.widgets import (ToolCard, all_of_it, pill_colours,
+                                    pill_size, wrapped_lines)
 from ps3tools.shell.screen import ConnectionState, Screen, Services
 from ps3tools.shell.theme import AppTheme
 
@@ -458,6 +460,324 @@ class CardGridTests(LauncherCase):
         grid = self.grid()
         card = self.launcher.cards[0]
         self.assertEqual(grid.height(), 2 * card.height() + CardGrid.GAP)
+
+
+# --- the face of a card ----------------------------------------------------
+
+class BadgedScreen(FirstScreen):
+    key = "badged"
+    title = "Modern Warfare 3 patch"
+    blurb = "A screen with the longest title any of these carry."
+    tile = "H1"
+    badge = "Beta"
+
+
+#: The longest titles the program carries, with a badge on them, which is the
+#: worst case for room on a card.
+GAME_FIXES = ("Black Ops II patch", "Modern Warfare 3 patch",
+              "Black Ops 1 stats fix")
+
+#: Every window the program supports, from the smallest it can be opened at.
+WINDOWS = (1024, 1280, 1440, 1600, 1920, 2560)
+
+#: What the launcher's own margins take out of the window before the grid
+#: gets a say. 32 either side, as the body layout sets.
+MARGINS = 64
+
+
+class CardTitleTests(LauncherCase):
+    """One size of title on every card, and none of them cut short.
+
+    Drawing the game fixes larger than the tools beside them was tried and
+    looked wrong: a grid of cards the same shape with one set of titles
+    swollen reads as a mistake rather than as emphasis. What was kept from it
+    is the wrapping, which every card now has.
+    """
+
+    def card(self, screen_class, width=ToolCard.CARD_WIDTH):
+        self.launcher.rebuild([screen_class])
+        card = self.launcher.cards[0]
+        card.resize(width, ToolCard.CARD_HEIGHT)
+        return card
+
+    def test_every_card_sets_its_title_at_the_same_size(self):
+        plain = self.card(FirstScreen).title_font()
+        fix = self.card(BadgedScreen).title_font()
+        self.assertEqual(fix.pointSizeF(), plain.pointSizeF())
+        self.assertEqual(fix.weight(), plain.weight())
+        self.assertEqual(plain.pointSizeF(),
+                         self.card(FirstScreen).font().pointSizeF()
+                         + ToolCard.TITLE_POINTS)
+
+    def test_a_short_title_is_still_one_line(self):
+        card = self.card(FirstScreen)
+        self.assertEqual(card.title_lines(), [FirstScreen.title])
+
+    def test_the_card_takes_the_badge_off_the_screen_class(self):
+        self.launcher.rebuild([BadgedScreen])
+        self.assertEqual(self.launcher.cards[0].badge, "Beta")
+
+    def test_a_badge_added_to_a_screen_reaches_the_card(self):
+        # The grid is left alone when nothing on it has changed, so anything
+        # that shows on a card has to be part of what "changed" means. This
+        # screen says the same words as the one before it and differs only in
+        # the badge.
+        class Later(FirstScreen):
+            badge = "Beta"
+
+        self.launcher.rebuild([FirstScreen])
+        self.assertEqual(self.launcher.cards[0].badge, "")
+        self.launcher.rebuild([Later])
+        self.assertEqual(self.launcher.cards[0].badge, "Beta")
+
+    def test_a_title_is_never_cut_short_on_a_window_it_supports(self):
+        for window in WINDOWS:
+            width = CardGrid().metrics(window - MARGINS)[1]
+            for title in GAME_FIXES:
+                card = ToolCard("fix", title, "blurb", "FX", self.theme,
+                                badge="Beta")
+                self.addCleanup(card.deleteLater)
+                card.resize(width, ToolCard.CARD_HEIGHT)
+                self.assertTrue(
+                    all_of_it(title, card.title_lines()),
+                    f"{title!r} at a {window} window is "
+                    f"{card.title_lines()}")
+
+    def test_a_long_title_takes_a_second_line_rather_than_an_ellipsis(self):
+        card = ToolCard("fix", "Modern Warfare 3 patch", "blurb", "FX",
+                        self.theme)
+        self.addCleanup(card.deleteLater)
+        card.resize(CardGrid.MIN_CARD_WIDTH, ToolCard.CARD_HEIGHT)
+        lines = card.title_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all_of_it("Modern Warfare 3 patch", lines))
+
+    def test_the_title_never_takes_more_than_the_band_beside_the_icon(self):
+        card = ToolCard("fix", " ".join(["Extremely"] * 12), "blurb", "FX",
+                        self.theme)
+        self.addCleanup(card.deleteLater)
+        card.resize(ToolCard.CARD_WIDTH, ToolCard.CARD_HEIGHT)
+        self.assertLessEqual(len(card.title_lines()), ToolCard.TITLE_LINES)
+
+    def test_a_card_with_a_badge_paints_in_both_themes(self):
+        card = self.card(BadgedScreen)
+        for mode in ("light", "dark"):
+            self.theme.set_mode(mode)
+            self.assertGreater(len(ink_pixels(card.grab())), 100, mode)
+
+
+class BadgePillTests(LauncherCase):
+    """The pill, which is the one new thing on a card and has to be read."""
+
+    def test_the_word_is_legible_on_the_pill_in_both_themes(self):
+        for mode in ("light", "dark"):
+            fill, ink, _edge = pill_colours(AppTheme(mode))
+            ratio = contrast_ratio(ink, fill)
+            self.assertGreaterEqual(
+                ratio, 4.5, f"{mode}: the badge reads at {ratio:.2f}:1")
+
+    def test_the_pill_stands_out_from_the_card_it_sits_on(self):
+        for mode in ("light", "dark"):
+            theme = AppTheme(mode)
+            fill, _ink, _edge = pill_colours(theme)
+            for ground in ("surface", "bg"):
+                self.assertNotEqual(fill, theme.colour(ground), mode)
+
+    def test_the_pill_costs_the_title_nothing(self):
+        # It sits on the action row, which is empty to the right of "Open".
+        # In the top corner it would take its width out of the one thing on a
+        # headline card that was given more room rather than less.
+        bare = ToolCard("fix", "A tool", "blurb", "FX", self.theme)
+        badged = ToolCard("fix", "A tool", "blurb", "FX", self.theme,
+                          badge="Beta")
+        for card in (bare, badged):
+            self.addCleanup(card.deleteLater)
+            card.resize(ToolCard.CARD_WIDTH, ToolCard.CARD_HEIGHT)
+        self.assertEqual(badged.title_box(), bare.title_box())
+        # And the card itself is untouched, so the grid is the grid.
+        self.assertEqual(badged.size(), bare.size())
+
+    def test_a_badge_changes_what_is_drawn(self):
+        bare = ToolCard("fix", "A tool", "blurb", "FX", self.theme)
+        badged = ToolCard("fix", "A tool", "blurb", "FX", self.theme,
+                          badge="Beta")
+        for card in (bare, badged):
+            self.addCleanup(card.deleteLater)
+            card.resize(ToolCard.CARD_WIDTH, ToolCard.CARD_HEIGHT)
+        self.assertNotEqual(badged.grab().toImage(), bare.grab().toImage())
+
+    def test_the_pill_is_big_enough_for_its_own_word(self):
+        card = ToolCard("fix", "A tool", "blurb", "FX", self.theme,
+                        badge="Beta")
+        self.addCleanup(card.deleteLater)
+        size = pill_size(card.font(), "Beta")
+        self.assertGreater(size.width(), 0)
+        self.assertGreater(size.height(), 0)
+        self.assertGreater(pill_size(card.font(), "Beta test").width(),
+                           size.width())
+
+    def test_a_badge_is_words_and_never_a_picture(self):
+        for entry in launcher_module.COMING_SOON:
+            badge = entry[5]
+            self.assertTrue(badge.isascii(), badge)
+            self.assertTrue(badge.replace(" ", "").isalnum(), badge)
+
+    def test_a_card_with_no_badge_keeps_the_whole_band_for_its_title(self):
+        bare = ToolCard("fix", "A tool", "blurb", "FX", self.theme)
+        self.addCleanup(bare.deleteLater)
+        bare.resize(ToolCard.CARD_WIDTH, ToolCard.CARD_HEIGHT)
+        self.assertEqual(bare.badge, "")
+        # QRect.right() is the last pixel inside, not the edge past it.
+        self.assertEqual(bare.title_box().right() + 1,
+                         bare.body_rect().right() - ToolCard.PADDING)
+
+
+class NotedScreen(FirstScreen):
+    key = "noted"
+    title = "A tool with a caveat"
+    blurb = "A screen that works, with something known wrong with it."
+    tile = "N1"
+    note = "Digital releases are not supported yet."
+
+
+class CardCaveatTests(LauncherCase):
+    """The line on a card saying what is known to be wrong with the tool."""
+
+    def cards(self, *screen_classes):
+        self.launcher.rebuild(list(screen_classes))
+        self.launcher.resize(1500, 900)
+        self.launcher.show()
+        self.addCleanup(self.launcher.hide)
+        for _ in range(8):
+            application.processEvents()
+        return self.launcher.cards
+
+    def test_the_caveat_reaches_the_card(self):
+        card = self.cards(NotedScreen)[0]
+        self.assertEqual(card.note, NotedScreen.note)
+        self.assertTrue(card.note_lines())
+
+    def test_a_tool_with_nothing_wrong_with_it_has_no_caveat(self):
+        card = self.cards(FirstScreen)[0]
+        self.assertEqual(card.note, "")
+        self.assertEqual(card.note_lines(), [])
+        self.assertEqual(card.note_height(), 0)
+
+    def test_the_whole_caveat_is_drawn_and_not_cut_short(self):
+        for window in WINDOWS:
+            width = CardGrid().metrics(window - MARGINS)[1]
+            card = ToolCard("noted", "A tool", "blurb", "N1", self.theme,
+                            note=NotedScreen.note)
+            self.addCleanup(card.deleteLater)
+            card.resize(width, ToolCard.CARD_HEIGHT)
+            self.assertTrue(all_of_it(NotedScreen.note, card.note_lines()),
+                            f"at a {window} window: {card.note_lines()}")
+
+    def test_the_caveat_is_in_the_tooltip_and_the_description(self):
+        # On the card it is drawn short. Somebody reading it with anything
+        # other than their eyes gets the whole of it.
+        card = self.cards(NotedScreen)[0]
+        self.assertIn(NotedScreen.note, card.toolTip())
+        self.assertIn(NotedScreen.blurb, card.toolTip())
+        self.assertIn(NotedScreen.note, card.accessibleDescription())
+
+    def test_the_caveat_buys_the_card_its_own_room(self):
+        # Not taken out of the blurb: the blurb is the screen's own sentence
+        # and half of one is worse than none.
+        noted = ToolCard("noted", "A tool", "blurb", "N1", self.theme,
+                         note=NotedScreen.note)
+        plain = ToolCard("plain", "A tool", "blurb", "P1", self.theme)
+        for card in (noted, plain):
+            self.addCleanup(card.deleteLater)
+            card.resize(ToolCard.CARD_WIDTH, ToolCard.CARD_HEIGHT)
+        self.assertGreater(noted.note_height(), 0)
+        self.assertEqual(plain.note_height(), 0)
+
+    def test_one_caveat_makes_the_whole_row_taller(self):
+        cards = self.cards(FirstScreen, NotedScreen)
+        # Every card in a row is the same height, or it is not a row.
+        self.assertEqual(cards[0].height(), cards[1].height())
+        self.assertGreater(cards[0].height(), ToolCard.CARD_HEIGHT)
+
+    def test_a_grid_with_no_caveat_in_it_is_the_height_it_always_was(self):
+        cards = self.cards(FirstScreen, SecondScreen)
+        self.assertEqual(cards[0].height(), ToolCard.CARD_HEIGHT)
+
+    def test_a_caveat_added_to_a_screen_reaches_the_card(self):
+        class Later(FirstScreen):
+            note = "Something is wrong with it."
+
+        self.launcher.rebuild([FirstScreen])
+        self.assertEqual(self.launcher.cards[0].note, "")
+        self.launcher.rebuild([Later])
+        self.assertEqual(self.launcher.cards[0].note, Later.note)
+
+    def test_it_is_drawn_in_the_warning_colour_in_both_themes(self):
+        # A caveat drawn in the dim colour is one nobody reads, and this is
+        # the line that decides whether somebody presses Open at all.
+        card = ToolCard("noted", "A tool", "blurb", "N1", self.theme,
+                        note=NotedScreen.note)
+        self.addCleanup(card.deleteLater)
+        card.resize(ToolCard.CARD_WIDTH, ToolCard.CARD_HEIGHT + 40)
+        for mode in ("light", "dark"):
+            self.theme.set_mode(mode)
+            warn = QColor(self.theme.colour("warn"))
+            image = card.grab().toImage()
+            box = card.note_box()
+            found = any(
+                image.pixelColor(x, y) == warn
+                for y in range(box.top(), box.bottom() + 1)
+                for x in range(box.left(), box.right() + 1))
+            self.assertTrue(found, f"{mode}: no warn pixels in the caveat")
+
+
+class WrappingTests(unittest.TestCase):
+    """The line breaking the titles are drawn with.
+
+    Qt will word wrap a drawn string on its own and will run out of the bottom
+    of the box doing it, so the lines are decided up front. That decision is
+    checked here rather than by looking at a rendered card.
+    """
+
+    def setUp(self):
+        from PySide6.QtGui import QFont, QFontMetrics
+        self.metrics = QFontMetrics(QFont())
+
+    def test_a_title_that_fits_is_left_in_one_piece(self):
+        text = "Back up save data"
+        room = self.metrics.horizontalAdvance(text) + 20
+        self.assertEqual(wrapped_lines(self.metrics, text, room, 2), [text])
+
+    def test_a_title_exactly_the_width_it_is_given_keeps_its_last_word(self):
+        # Qt's own elidedText cuts a string whose advance is exactly the width
+        # it was handed, which is a word lost for nothing.
+        text = "Black Ops II patch"
+        room = self.metrics.horizontalAdvance(text)
+        self.assertEqual(wrapped_lines(self.metrics, text, room, 1), [text])
+
+    def test_it_takes_a_second_line_rather_than_cutting(self):
+        text = "Modern Warfare 3 patch"
+        room = self.metrics.horizontalAdvance("Modern Warfare 3")
+        lines = wrapped_lines(self.metrics, text, room, 2)
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(all_of_it(text, lines))
+
+    def test_it_cuts_only_once_it_is_out_of_lines(self):
+        text = "Modern Warfare 3 patch"
+        room = self.metrics.horizontalAdvance("Modern")
+        lines = wrapped_lines(self.metrics, text, room, 1)
+        self.assertEqual(len(lines), 1)
+        self.assertFalse(all_of_it(text, lines))
+
+    def test_nothing_to_say_is_no_lines_rather_than_one_empty_one(self):
+        self.assertEqual(wrapped_lines(self.metrics, "", 100, 2), [])
+
+    def test_one_word_wider_than_the_box_is_still_cut_to_the_box(self):
+        text = "Supercalifragilisticexpialidocious"
+        room = self.metrics.horizontalAdvance("Super")
+        lines = wrapped_lines(self.metrics, text, room, 2)
+        self.assertEqual(len(lines), 1)
+        self.assertLessEqual(self.metrics.horizontalAdvance(lines[0]), room)
 
 
 # --- the console stats strip -----------------------------------------------

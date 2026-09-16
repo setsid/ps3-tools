@@ -2,7 +2,7 @@
 |---|---|---|---|
 | **Black Ops II** | Freezes while a PSN session is active | 🟢 **Fixed** — in the app | CFW confirmed |
 | **Modern Warfare 3** | Drops to the multiplayer menu a second after joining a lobby | 🟢 **Fixed** — in the app | CFW confirmed, HEN under investigation |
-| **Black Ops** | Multiplayer rank and stats reset to level 1 | 🟡 *Fixed, in testing* | CFW confirmed on BLES01031 |
+| **Black Ops** | Multiplayer rank and stats reset to level 1 | 🟡 **Fixed, beta** — in the app | CFW confirmed on BLES01031 |
 | **Modern Warfare 2** | Believed to be the same identity fault as Black Ops | 🔵 *Under investigation* | — |
 | **World at War** | Lobbies fail to connect | ⚪ *Not investigated* | — |
 | **Modern Warfare** | Lobbies fail to connect | ⚪ *Not investigated* | — |
@@ -145,15 +145,49 @@ to, and checks added later can be run against a report collected months ago.
 
 ## The patchers
 
-Both games freeze or drop you out because of a fault in the game binary, not
-because of your account or your network.
+Each game misbehaves because of a fault in the game binary, not because of your
+account or your network.
 
-| | Black Ops II | Modern Warfare 3 |
-| --- | --- | --- |
-| Symptom | Freezes while a PSN session is active | You reach a multiplayer lobby and are dropped back to the menu about a second later, on any account made after late 2018 |
-| Files changed | `EBOOT.BIN`, `t6_ps3f.self`, `t6mp_ps3f.self` | `default_mp.self` |
-| Left alone | | `default.self`, campaign and Spec Ops |
-| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 |
+| | Black Ops II | Modern Warfare 3 | Black Ops |
+| --- | --- | --- | --- |
+| Symptom | Freezes while a PSN session is active | You reach a multiplayer lobby and are dropped back to the menu about a second later, on any account made after late 2018 | Multiplayer opens at rank 1 every time and nothing is kept, on any account made after late 2018 |
+| Files changed | `EBOOT.BIN`, `t6_ps3f.self`, `t6mp_ps3f.self` | `default_mp.self` | `t5mp_ps3f.self` |
+| Left alone | | `default.self`, campaign and Spec Ops | `t5_ps3f.self` and `EBOOT.BIN`, campaign and zombies |
+| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 | BLES01031, title update 1.13 |
+
+### Black Ops is in beta
+
+It is watched working on hardware and is newer than the other two, which is
+what the **Beta** badge on its card means.
+
+The fault is an identity one. The game works out who you are by hashing your
+PSN online ID; the server works it out from your account ID, for every account
+made after Sony's 2018 change. The two never agree, so every lookup asks for
+somebody the server has never heard of and you are handed a fresh rank 1. The
+fix has the game use the account ID instead, and rank and experience are then
+kept through backing out of a lobby, going back in, and a full restart.
+
+Two things follow from how it works.
+
+**It is tied to one PSN account.** It reads the identity of the account signed
+in when it ran and puts a readable copy of that account's `np_cache.dat` in the
+game's own folder. Sign in with a different account afterwards and the fix is
+reading the wrong one, so run it again. Where a console has more than one
+account on it, it asks which is signed in rather than assuming the first.
+
+**The console has to have signed in to PSN at least once.** The file the fix
+reads is written the first time an account signs in. Without it there is
+nothing to read, and the fix says so instead of patching.
+
+Unlike the other two, this fix is not aimed at an address written down here.
+The disc and digital builds of that game are different compiles and one set of
+numbers could not be right for both, so it finds the code it needs inside your
+own copy and refuses anything it cannot recognise.
+
+Separately, and not this fix's doing: **Black Ops will not place you in a
+public match while its map packs are installed.** Renaming or removing them
+lets matchmaking work again. That is being looked into, and the aim is a fix
+that leaves the map packs alone.
 
 Other releases are attempted rather than refused. See
 [Which releases it will patch](#which-releases-it-will-patch).
@@ -413,8 +447,10 @@ two patch scripts in `tools/patchers/`.
 
 ## Which releases it will patch
 
-It will **attempt any released version of either game**, and tells you honestly
-when it cannot read one, rather than refusing everything it has not seen before.
+For Black Ops II and Modern Warfare 3 it will **attempt any released version**,
+and tells you honestly when it cannot read one rather than refusing everything
+it has not seen before. Black Ops is narrower on purpose and is listed
+separately below.
 
 The mechanism is attempt-and-verify rather than a list of approved SKUs.
 Decryption is
@@ -437,9 +473,12 @@ type and key revision are all read back off your own file.
 | --- | --- |
 | Black Ops II | **BLES01717**, title update 1.19 |
 | Modern Warfare 3 | **BLES01428**, title update 1.24 |
+| Black Ops | **BLES01031**, title update 1.13 |
 
 Patched, written back, read off the console again and booted. The patch offsets
-come from these two, and any other release is checked against them.
+for the first two come from those builds, and any other release of those games
+is checked against them. Black Ops has no offset written down at all: it finds
+its own, and the build above is the one that was watched working.
 
 ### Reference data
 
@@ -465,6 +504,22 @@ BLUS31011  BLUS31080  BLUS31140  BLUS31141  BLUS41005
 NPEB01204  NPEB01205  NPEB01206  NPEB01207
 NPUB31055  NPUB31056
 ```
+
+**Black Ops**
+
+Three builds, and only three, because these are the ones that have actually
+been opened and compared. Two of them decrypt to an identical image and the
+third is a different compile, which is why this fix finds its own way around
+rather than trusting an address. A release that is not here is not attempted;
+if you have one, it is worth reporting.
+
+```
+BLES01031  BLUS30591  NPEB00756
+```
+
+The digital release, `NPEB00756`, is fake-signed and cannot be opened by the
+decrypter this program ships, so it is recognised and then refused with a
+message saying why.
 
 **Modern Warfare 3**
 

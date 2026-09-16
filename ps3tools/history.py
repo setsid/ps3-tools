@@ -29,6 +29,41 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.3.2",
+        date="2026-09-16",
+        summary="Choosing which copy of a game to fix, and saying which one "
+                "was fixed.",
+        changes=(
+            "Where more than one supported release of a game is installed, "
+            "the patchers ask which copy to fix. They used to take whichever "
+            "they found first, with no way to choose and no way to tell "
+            "which one it had been. Nothing is selected in that box until "
+            "you pick, and the copies you do not pick are left untouched.",
+            "Every patch names the release it worked on, on the screen "
+            "before it runs and in the result afterwards, including when "
+            "only one copy is installed.",
+            "The Black Ops 1 account question lists PSN online IDs rather "
+            "than folder numbers. Nobody knows their own folder number.",
+            "That question offers the account that signed in most recently "
+            "first, and does not ask at all when only one account on the "
+            "console can be used. The account it settled on is named on the "
+            "screen either way.",
+            "An account whose name cannot be read is still listed, as its "
+            "folder number, rather than being left out of the list.",
+            "Black Ops 1 is confirmed working on the American disc release, "
+            "BLUS30591, as well as the European one. That is a region the "
+            "fix was never written against, which is the test that matters "
+            "for a fix that finds its own patch site.",
+            "A file with nothing in it for a fix to change reads as not "
+            "affected. Black Ops 1's EBOOT.BIN came up in red as not "
+            "recognised, in a row whose own description already said it was "
+            "unaffected.",
+            "bjocampos and OpenResty are credited in the About screen and "
+            "the README for the testing and the finding that this release "
+            "and the last one rest on.",
+        ),
+    ),
+    Release(
         version="1.3.1",
         date="2026-09-16",
         summary="Black Ops 1 patched the wrong folder on two of the three "
@@ -50,6 +85,10 @@ RELEASES = (
             "work, and this fix would hand one of those an identity the "
             "server does not hold. Apply stays off until you confirm you are "
             "seeing resets.",
+            "Every release of every title this tool recognises is listed in "
+            "docs/tested-releases.md, with its region and what is actually "
+            "known about it. The front page links to it from a card for each "
+            "game, coloured by how far along that fix is.",
         ),
     ),
     Release(
@@ -80,8 +119,12 @@ RELEASES = (
             "are what stops public matches being found, and what to do about "
             "it in the meantime.",
             "Black Ops 1 is marked Beta on its card.",
-            "The three game fixes carry their titles in larger type, so the "
-            "cards most people open are the ones the eye lands on first.",
+            "A card can carry a short warning about what is known to be "
+            "wrong with a tool, in a box of its own beside the Open link.",
+            "A file the patchers do not recognise no longer points somebody "
+            "with a modified game at a page that will patch it anyway. Black "
+            "Ops 1 says to put the stock files back, run this fix on those, "
+            "and apply their own changes again afterwards.",
             "Black Ops II and Modern Warfare 3 say on their cards that "
             "digital releases are not supported yet. Modern Warfare 3 also "
             "says it has been reported failing on HEN consoles and that this "

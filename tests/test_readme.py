@@ -12,7 +12,6 @@ no page: it says a release is recognised when the program no longer thinks so.
 
 import os
 import re
-import subprocess
 import sys
 import unittest
 
@@ -153,26 +152,22 @@ class TheCardsAreLegible(unittest.TestCase):
 class ThePageTheCardsLeadTo(unittest.TestCase):
     """Generated, so the thing to check is that it has been regenerated."""
 
+    def maker(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("make_releases", MAKER)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
     def test_it_is_what_the_generator_would_write_today(self):
         """A stale page says a release is recognised when it is not.
 
-        Run docs/make-releases.py if this fails. It reads ps3tools/titles.py,
-        which is the table the program itself uses, so the two cannot disagree
-        for long without this noticing.
+        Compared against what the generator produces right now rather than
+        against what is committed, so that it answers the question it is for
+        on a working tree with edits in it. Run docs/make-releases.py if this
+        fails.
         """
-        finished = subprocess.run(
-            [sys.executable, MAKER], capture_output=True, text=True,
-            cwd=ROOT, check=False)
-        self.assertEqual(finished.returncode, 0, finished.stderr)
-        # The generator writes in place, so compare against git rather than
-        # against a copy: a difference here means the committed page was out
-        # of date before this ran.
-        diff = subprocess.run(
-            ["git", "diff", "--stat", "--", "docs/tested-releases.md"],
-            capture_output=True, text=True, cwd=ROOT, check=False)
-        self.assertEqual(diff.stdout.strip(), "",
-                         "docs/tested-releases.md was out of date; it has "
-                         "just been regenerated, so commit it")
+        self.assertEqual(read(PAGE), self.maker().build())
 
     def test_every_release_the_program_knows_is_on_the_page(self):
         page = read(PAGE)
@@ -188,12 +183,24 @@ class ThePageTheCardsLeadTo(unittest.TestCase):
             self.assertNotIn(title_id, page, title_id)
 
     def test_it_never_claims_more_than_somebody_has_actually_seen(self):
-        # One release per game is confirmed on hardware. Everything else is
-        # either reference data or recognised, and the page has to keep those
-        # apart, because "recognised" is most of the list.
-        page = read(PAGE)
-        self.assertEqual(page.count("| Confirmed on hardware |"),
-                         len(titles.TITLES))
+        """Confirmed on hardware means somebody watched it work.
+
+        The page has to keep that apart from "recognised", which is most of
+        the list, so the count of confirmed rows has to match the list of
+        builds the generator was told about and nothing else.
+        """
+        module = self.maker()
+        wanted = sum(len(builds) for builds in module.CONFIRMED.values())
+        self.assertGreaterEqual(wanted, len(titles.TITLES))
+        self.assertEqual(read(PAGE).count("| Confirmed on hardware |"), wanted)
+
+    def test_every_confirmed_build_is_a_release_the_program_knows(self):
+        # A build confirmed on hardware that the program does not recognise
+        # would be a claim about a release it will refuse to touch.
+        for key, builds in self.maker().CONFIRMED.items():
+            known = titles.TITLES[key]["title_ids"]
+            for title_id, _update in builds:
+                self.assertIn(title_id, known, title_id)
 
 
 if __name__ == "__main__":

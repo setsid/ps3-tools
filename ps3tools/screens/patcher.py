@@ -53,8 +53,9 @@ import tempfile
 
 from PySide6.QtCore import QMetaMethod, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QFrame,
-                               QHBoxLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog,
+                               QDialogButtonBox, QFrame, QHBoxLayout,
+                               QListWidget,
                                QInputDialog, QLabel, QMessageBox, QProgressBar,
                                QSizePolicy,
                                QPushButton, QSizePolicy, QTreeWidget,
@@ -378,6 +379,9 @@ class PatcherScreen(Screen):
         # folder of their own so that nothing reads a real Desktop.
         self._backup_root = None
         self._title_id = ""
+        #: Which installed release the user picked, when more than one of them
+        #: is on the console. Empty until they have been asked.
+        self._release = ""
         self._build()
         if self.theme is not None:
             try:
@@ -642,7 +646,10 @@ class PatcherScreen(Screen):
         buttons.addWidget(self._back)
         buttons.addStretch(1)
         self._rescan = QPushButton("Scan again")
-        self._rescan.clicked.connect(lambda: self.start_scan())
+        # A fresh scan asks again which release to work on. Keeping the answer
+        # would leave somebody with two copies installed no way to change
+        # their mind short of leaving the screen.
+        self._rescan.clicked.connect(self._on_rescan)
         buttons.addWidget(self._rescan)
         # Beside Apply rather than in a card of its own. Undoing is the other
         # half of applying, it is wanted at the same moment and by the same
@@ -738,10 +745,11 @@ class PatcherScreen(Screen):
         writer = self._writer
 
         extras = self.scan_extras
+        wanted = self._release
 
         def work(control):
             return _scan_console(host, title_key, tool, lister, writer,
-                                 control.progress, control, extras)
+                                 control.progress, control, extras, wanted)
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -750,6 +758,10 @@ class PatcherScreen(Screen):
         task.done.connect(self._scan_done)
         self._task = task
         return task
+
+    def _on_rescan(self):
+        self._release = ""
+        self.start_scan()
 
     def _scan_done(self):
         """The screen is let go of here and nowhere else.
@@ -847,6 +859,43 @@ class PatcherScreen(Screen):
         self._files.setMinimumHeight(header_height + rows * row_height
                                      + 2 * self._files.frameWidth())
 
+    def _choose_release(self, title_ids):
+        """Which of several installed releases to work on, or "" if cancelled.
+
+        Nothing is selected when the box opens and the button stays off until
+        something is. A preselected answer to this question is an answer
+        somebody can accept without reading it, and the cost of the wrong one
+        is a patched copy of a game they do not play.
+        """
+        box = QDialog(self)
+        box.setWindowTitle("Which copy of the game?")
+        rows = QVBoxLayout(box)
+        words = _wrapping(QLabel(
+            "There is more than one copy of this game on the console. Choose "
+            "the one to fix. The others are left exactly as they are.\n\n"
+            "If you pick the wrong one, put its originals back from the "
+            "button on this screen and run it again on the other."))
+        words.setMinimumWidth(420)
+        rows.addWidget(words)
+        listing = QListWidget()
+        for title_id in title_ids:
+            listing.addItem(_release_label(title_id))
+        listing.setCurrentRow(-1)
+        rows.addWidget(listing)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok
+                                   | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(box.accept)
+        buttons.rejected.connect(box.reject)
+        rows.addWidget(buttons)
+        ok = buttons.button(QDialogButtonBox.Ok)
+        ok.setEnabled(False)
+        listing.currentRowChanged.connect(
+            lambda row: ok.setEnabled(row >= 0))
+        listing.itemDoubleClicked.connect(lambda _item: box.accept())
+        if box.exec() != QDialog.Accepted or listing.currentRow() < 0:
+            return ""
+        return title_ids[listing.currentRow()]
+
     def _on_scanned(self, result):
         # Three or four. A test that drives this screen builds the three the
         # screen has always taken, and a title with nothing extra to read
@@ -862,6 +911,27 @@ class PatcherScreen(Screen):
         self._refresh_restore(
             (report.title_id if report is not None else "")
             or (location.title_id if location is not None else ""))
+        if (report is None and location is not None and location.ready
+                and len(location.title_ids) > 1 and not self._release):
+            # The scan stopped to ask. Whatever comes back, the next scan
+            # knows which folder to read, and a cancelled question leaves the
+            # screen saying so rather than showing another copy's files.
+            self._rescan.setEnabled(True)
+            chosen = self._choose_release(location.title_ids)
+            if chosen:
+                self._release = chosen
+                self.start_scan()
+                return
+            self._patch.setEnabled(False)
+            self._restore.setEnabled(False)
+            self._hide_update()
+            self._show_state(
+                "text_dim", "There is more than one copy of this game",
+                "Press Scan again and choose which one to fix. Nothing has "
+                "been read and nothing will be written until you do.",
+                reason="On the console: "
+                       + _and_list(location.title_ids) + ".")
+            return
         if report is None:
             self._patch.setEnabled(False)
             self._hide_update()
@@ -1371,7 +1441,8 @@ class PatcherScreen(Screen):
     def _on_patched(self, result):
         lines = []
         if result.changed:
-            lines.append("Changed: " + ", ".join(result.changed) + ".")
+            lines.append(f"Changed in {result.title_id}: "
+                         + ", ".join(result.changed) + ".")
             lines.append(f"Your original files are in {result.folder}. Keep "
                          f"them: they are the only way back.")
             lines.append("The patched files are re-signed with the original "
@@ -1877,8 +1948,13 @@ class PatcherScreen(Screen):
             self._on_scanned((self._location, self._scan, self._where.text()))
 
 
+def _release_label(title_id):
+    """One installed release, as the dialogue and the screen name it."""
+    return f"{title_id} in {titles.usrdir_for(title_id)}"
+
+
 def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
-                  control, extras=None):
+                  control, extras=None, wanted=""):
     """Find the installation and scan it. Runs on a worker, never on the GUI.
 
     Detection is a read, so it goes through the read-only transport. The write
@@ -1897,7 +1973,8 @@ def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
     detector = detect.find_installations if detect is not None else None
     extra = {}
     with open_lister(host) as lister:
-        location = flow.locate(lister, title_key, detector=detector)
+        location = flow.locate(lister, title_key, detector=detector,
+                               wanted=wanted)
         if extras is not None:
             extra = extras(lister) or {}
 
@@ -1906,14 +1983,16 @@ def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
     if not location.ready:
         return location, None, "", extra
 
+    if len(location.title_ids) > 1 and not wanted:
+        # Several supported releases are installed and nobody has said which.
+        # The scan stops here rather than reading one of them. Everything this
+        # screen shows afterwards is a statement about one particular folder,
+        # and a page of facts about the wrong folder is worse than a question.
+        return location, None, "", extra
     title_id = location.title_id
-    where = f"{title_id} in {titles.usrdir_for(title_id)}"
-    if len(location.title_ids) > 1:
-        where += (" (more than one copy is installed; the first was used: " +
-                  ", ".join(location.title_ids) + ")")
     with open_writer(host) as writer:
         report = flow.scan(writer, tool, title_id, progress=progress)
-    return location, report, where, extra
+    return location, report, _release_label(title_id), extra
 
 
 #: The reference values both fixes are checked against were read off disc
@@ -1957,9 +2036,9 @@ ACCOUNT_LINE = ("The fix will be tied to {label}. It reads that account's own "
                 "identity, so if you sign in with a different PSN account "
                 "afterwards, run this again.")
 
-ACCOUNT_CHOICE = ("There is more than one account on this console. You will "
-                  "be asked which one is signed in before anything is "
-                  "written.")
+ACCOUNT_CHOICE = ("There are {count} accounts on this console. You will be "
+                  "asked which one is signed in before anything is written, "
+                  "with the one that signed in most recently offered first.")
 
 #: The one thing somebody has to decide before this fix is any use to them,
 #: said on the screen and agreed to before Apply will do anything.
@@ -2054,6 +2133,12 @@ class BlackOpsOnePatcher(PatcherScreen):
             return {"users": [], "problem": str(exc)}
 
     def on_scan_extras(self, extras):
+        """Whose accounts these are, read while the console was open.
+
+        The single account case is settled here rather than at the moment
+        Apply is pressed, so that the sentence naming it is on the screen
+        before anybody decides anything.
+        """
         if not extras:
             # A repaint replays the last scan through _on_scanned without the
             # extras, so an empty one means "nothing new was read" rather than
@@ -2074,18 +2159,24 @@ class BlackOpsOnePatcher(PatcherScreen):
         if not self._users:
             return False, ACCOUNT_MISSING
         if len(self._users) == 1:
+            # Nothing to choose between. Asking somebody to confirm the only
+            # answer is a question that teaches them to click through
+            # questions. The screen says which account it is instead, above
+            # the button they are about to press.
             self._user = self._users[0]
             return True, ""
         labels = [person.label for person in self._users]
-        current = labels.index(self._user.label) if self._user in self._users \
-            else 0
+        # The newest np_cache.dat first, which is the account signed in now,
+        # and it starts selected. The list is short and a person reading their
+        # own PSN name knows at a glance whether the top one is right.
         chosen, said_yes = QInputDialog.getItem(
             self, "Which account is signed in?",
-            "The fix reads the identity of the account that is signed in on "
-            "the console. There is more than one account here, so which one "
-            "is it?\n\nIf you pick the wrong one the fix will do nothing, "
-            "and running it again with the right one puts it right.",
-            labels, current, False)
+            "The fix reads the identity of the account signed in on the "
+            "console. There is more than one account here.\n\nThe one that "
+            "signed in most recently is first and is already selected. If "
+            "you pick the wrong one the fix will do nothing, and running it "
+            "again with the right one puts it right.",
+            labels, 0, False)
         if not said_yes:
             return False, ""
         self._user = self._users[labels.index(chosen)]
@@ -2161,7 +2252,7 @@ class BlackOpsOnePatcher(PatcherScreen):
         elif self._user is not None:
             lines.append(ACCOUNT_LINE.format(label=self._user.label))
         else:
-            lines.append(ACCOUNT_CHOICE)
+            lines.append(ACCOUNT_CHOICE.format(count=len(self._users)))
         return lines
 
 

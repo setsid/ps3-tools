@@ -202,8 +202,45 @@ class ContentTests(AboutCase):
     def test_credits_name_what_is_bundled(self):
         text = self.text_of(self.build())
         for name in ("webMAN MOD", "scetool", "naehrwert", "PySide6",
-                     "patch-bo2.py", "patch-mw3.py"):
+                     "patch-bo1.py", "patch-bo2.py", "patch-mw3.py"):
             self.assertIn(name, text)
+
+    def test_the_patcher_credit_names_every_script_that_ships(self):
+        """The entry has to keep pace with tools/patchers.
+
+        It said "patch-bo2.py and patch-mw3.py" for as long as there were two
+        of them, and stayed that way after the Black Ops script arrived. A
+        credit for what is inside the exe is worth nothing if it does not list
+        everything that is inside the exe, so the names are checked against
+        the directory rather than against a list written out here.
+        """
+        entry = [detail for name, detail in about.CREDITS
+                 if "patch-bo1.py" in name][0]
+        scripts = sorted(path.name for path in
+                         pathlib.Path(ROOT, "tools", "patchers").glob("*.py"))
+        self.assertEqual(scripts,
+                         ["patch-bo1.py", "patch-bo2.py", "patch-mw3.py"])
+        name = [name for name, _detail in about.CREDITS
+                if "patch-bo1.py" in name][0]
+        for script in scripts:
+            self.assertIn(script, name)
+        self.assertIn("three", entry)
+
+    def test_the_people_who_found_the_faults_are_credited(self):
+        """Two of the three fixes exist because somebody outside this project
+        did the work, and the screen is where that is said.
+
+        bjocampos found that the Black Ops II patch was leaving a third of the
+        game unpatched, and OpenResty found what Demonware actually hashes,
+        which is the whole of the Black Ops fix. A refactor of this tuple that
+        drops either name is a regression whatever else it improves.
+        """
+        names = [name for name, _detail in about.CREDITS]
+        self.assertIn("bjocampos", names)
+        self.assertIn("OpenResty", names)
+        text = self.text_of(self.build())
+        self.assertIn("bjocampos", text)
+        self.assertIn("OpenResty", text)
 
     def test_it_states_its_own_licence_and_only_credits_the_rest(self):
         # The MIT claim is about this project's code. The others are credited,
@@ -851,6 +888,41 @@ class TheLegalNotices(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module.CARDS
+
+
+class TheCreditsInTheReadme(unittest.TestCase):
+    """The people credited on the screen are credited in the README as well.
+
+    Somebody reading the repository and somebody running the exe should come
+    away with the same list of who did what. The README carries the longer
+    account of each contribution and the screen carries the short one, so this
+    checks that the names are in both places rather than that the words match.
+    """
+
+    def readme(self):
+        return pathlib.Path(ROOT, "README.md").read_text(encoding="utf-8")
+
+    def test_the_readme_credits_the_people_the_screen_credits(self):
+        body = self.readme()
+        self.assertIn("## Credits", body)
+        for name in ("bjocampos", "OpenResty"):
+            self.assertIn(name, body)
+            self.assertIn(name, [entry for entry, _detail in about.CREDITS])
+
+    def test_the_readme_says_what_each_of_them_did(self):
+        """A bare name is not a credit, so each one has to carry its story.
+
+        The README entries run to a few sentences each and that is the point
+        of them; a later tidy that cut them back to a list of names would pass
+        the test above and lose what the section is for.
+        """
+        body = self.readme()
+        section = body.split("## Credits", 1)[1].split("\n---", 1)[0]
+        for name in ("bjocampos", "OpenResty"):
+            entry = [block for block in section.split("\n\n")
+                     if name in block][0]
+            self.assertGreater(len(entry.split()), 40, name)
+        self.assertIn("account ID", section)
 
 
 class TheLegalNoticesOnScreen(AboutCase):

@@ -500,39 +500,66 @@ class TheScreenSaysWhatIsKnown(unittest.TestCase):
 
 # --- np_cache.dat ----------------------------------------------------------
 
-class Lister:
-    """A console with whatever users this test wants on it."""
+def np_cache(online_id="shtum_pill34", account=3034630675101139701):
+    """np_cache.dat as the console writes it, to the layout of the real one.
 
-    def __init__(self, people, cache=b""):
+    Read off ~/bo1-BLES01031/np_cache.dat: the account ID in the first eight
+    bytes, then an SceNpOnlineId, which is sixteen bytes of name and a
+    terminator and three of padding.
+    """
+    name = online_id.encode("ascii")
+    return (struct.pack(">Q", account)
+            + name + b"\x00" * (npcache.ONLINE_ID_BYTES + 4 - len(name)))
+
+
+class Lister:
+    """A console with whatever users this test wants on it.
+
+    people is (folder, local name, np_cache.dat or None). The cache carries
+    that account's own online ID, so a test can tell which one was read.
+    """
+
+    def __init__(self, people, cache=None, stamps=None):
         self.people = people
-        self.cache = cache or (struct.pack(">Q", 3034630675101139701)
-                               + b"shtum_pill34\x00\x00\x00\x00")
+        #: Overrides every account's file, for testing a broken one.
+        self.cache = cache
+        #: {folder: listing timestamp}, for testing the ordering.
+        self.stamps = stamps or {}
         self.read = []
+
+    def stamp_for(self, folder):
+        return self.stamps.get(folder, "Jan 01 00:00")
 
     def list_dir(self, path):
         if path == npcache.HOME:
             return "\n".join(
-                "drwxr-xr-x 1 root root 0 Jan 1 00:00 %s" % folder
-                for folder, _name, _has in self.people)
-        for folder, _name, has in self.people:
+                "drwxr-xr-x 1 root root 0 Jan 01 00:00 %s" % folder
+                for folder, _name, _cache in self.people)
+        for folder, _name, cache in self.people:
             if path.endswith(folder):
-                lines = ["-rw-r--r-- 1 root root 6 Jan 1 00:00 localusername"]
-                if has:
-                    lines.append("-rw------- 1 root root 248 Jan 1 00:00 "
-                                 "np_cache.dat")
+                lines = ["-rw-r--r-- 1 root root 6 Jan 01 00:00 "
+                         "localusername"]
+                if cache is not None:
+                    lines.append("-rw------- 1 root root 248 %s np_cache.dat"
+                                 % self.stamp_for(folder))
                 return "\n".join(lines)
         return ""
 
     def retrieve_bytes(self, path):
         self.read.append(path)
+        folder = path.split("/")[-2]
         if path.endswith(npcache.USERNAME):
-            folder = path.split("/")[-2]
-            for item, name, _has in self.people:
+            for item, name, _cache in self.people:
                 if item == folder:
                     return name.encode("utf-8") + b"\x00"
             return b""
         if path.endswith(npcache.NAME):
-            return self.cache
+            if self.cache is not None:
+                return self.cache
+            for item, _name, cache in self.people:
+                if item == folder and cache is not None:
+                    return cache
+            raise OSError("no np_cache.dat")
         raise OSError("no such file")
 
 
@@ -548,23 +575,89 @@ class TheAccountTheFixIsTiedTo(unittest.TestCase):
         self.assertIn("sign in", str(caught.exception).lower())
 
     def test_the_online_id_is_read_for_showing_and_not_for_hashing(self):
-        lister = Lister([("00000001", "Chris", True)])
-        self.assertEqual(npcache.online_id(lister.cache), "shtum_pill34")
+        # Verified against the real np_cache.dat: the account ID occupies the
+        # first eight bytes and the name follows as an SceNpOnlineId.
+        self.assertEqual(npcache.online_id(np_cache()), "shtum_pill34")
+        self.assertEqual(npcache.ONLINE_ID_AT, 8)
+        self.assertEqual(npcache.ONLINE_ID_BYTES, 16)
+
+    def test_a_field_that_is_not_a_name_is_not_shown_as_one(self):
+        # Offsets are the easiest thing to get wrong here, and a field of
+        # rubbish read out of the wrong one would be shown to somebody who is
+        # about to pick their account by it.
+        for rubbish in (b"\x00" * 8 + b"\xff\xfe\x01\x02",
+                        b"\x00" * 8 + b"ab\x00",
+                        b"\x00" * 8 + b"has spaces\x00",
+                        b"\x00" * 4):
+            self.assertEqual(npcache.online_id(rubbish), "")
+
+    def test_the_newest_account_is_first(self):
+        """The one signed in now is the one written most recently.
+
+        The console writes np_cache.dat when an account signs in to PSN, so
+        the newest file is the account being used. The listing only gives a
+        month, day and time for anything recent, which inverts across a new
+        year, and that is why this decides what is offered first rather than
+        what is used.
+        """
+        lister = Lister(
+            [("00000001", "One", np_cache("older_one")),
+             ("00000013", "Two", np_cache("shtum_pill34")),
+             ("00000007", "Three", np_cache("middle_one"))],
+            stamps={"00000001": "Jan 02 09:00",
+                    "00000013": "Sep 06 19:51",
+                    "00000007": "Mar 11 12:30"})
+        people = npcache.users(lister)
+        self.assertEqual([person.folder for person in people],
+                         ["00000013", "00000007", "00000001"])
+        self.assertEqual(people[0].label, "shtum_pill34 (00000013)")
+
+    def test_a_file_stamped_with_a_year_is_older_than_one_with_a_time(self):
+        lister = Lister(
+            [("00000001", "Old", np_cache("last_year")),
+             ("00000002", "New", np_cache("this_year"))],
+            stamps={"00000001": "Dec 20 2024", "00000002": "Jan 05 10:00"})
+        self.assertEqual([person.folder for person in npcache.users(lister)],
+                         ["00000002", "00000001"])
+
+    def test_a_folder_with_no_readable_name_is_listed_as_its_number(self):
+        # Shown rather than hidden. A console with an account this program
+        # cannot read is a console whose owner should see that it is there.
+        lister = Lister([("00000001", "Chris", np_cache()),
+                         ("00000009", "Broken", b"\x00" * 40)])
+        people = npcache.users(lister)
+        self.assertEqual(len(people), 2)
+        labels = {person.folder: person.label for person in people}
+        self.assertEqual(labels["00000001"], "shtum_pill34 (00000001)")
+        self.assertEqual(labels["00000009"], "00000009")
+        # And it is not offered, because the fix cannot name what it would be
+        # tied to.
+        self.assertEqual([person.folder
+                          for person in npcache.with_cache(people)],
+                         ["00000001"])
+
+    def test_each_account_is_read_from_its_own_file(self):
+        lister = Lister([("00000001", "One", np_cache("first_player")),
+                         ("00000002", "Two", np_cache("second_player"))])
+        found = {person.folder: person.online_id
+                 for person in npcache.users(lister)}
+        self.assertEqual(found, {"00000001": "first_player",
+                                 "00000002": "second_player"})
 
     def test_every_local_user_is_listed_with_the_name_it_carries(self):
-        lister = Lister([("00000001", "Chris", True),
-                         ("00000005", "Guest", False)])
+        lister = Lister([("00000001", "Chris", np_cache()),
+                         ("00000005", "Guest", None)])
         people = npcache.users(lister)
         self.assertEqual([person.folder for person in people],
                          ["00000001", "00000005"])
-        self.assertEqual(people[0].label, "Chris (00000001)")
+        self.assertEqual(people[0].label, "shtum_pill34 (00000001)")
 
     def test_an_account_never_online_is_listed_and_then_excluded(self):
         # It has no np_cache.dat, because the file is written the first time
         # an account signs in. Leaving it out of the list entirely would make
         # the account look as though it did not exist.
-        lister = Lister([("00000001", "Chris", True),
-                         ("00000005", "Guest", False)])
+        lister = Lister([("00000001", "Chris", np_cache()),
+                         ("00000005", "Guest", None)])
         people = npcache.users(lister)
         self.assertEqual(len(people), 2)
         self.assertEqual([person.folder
@@ -572,14 +665,15 @@ class TheAccountTheFixIsTiedTo(unittest.TestCase):
                          ["00000001"])
 
     def test_the_user_folder_is_never_assumed_to_be_the_first_one(self):
-        lister = Lister([("00000003", "Only", True)])
+        lister = Lister([("00000003", "Only", np_cache())])
         people = npcache.with_cache(npcache.users(lister))
         self.assertEqual(people[0].folder, "00000003")
         self.assertEqual(npcache.path_for(people[0].folder),
                          "/dev_hdd0/home/00000003/np_cache.dat")
 
     def test_something_that_is_not_a_user_folder_is_passed_over(self):
-        lister = Lister([("00000001", "Chris", True), ("notauser", "x", True)])
+        lister = Lister([("00000001", "Chris", np_cache()),
+                         ("notauser", "x", np_cache())])
         self.assertEqual([person.folder for person in npcache.users(lister)],
                          ["00000001"])
 
@@ -588,13 +682,13 @@ class TheAccountTheFixIsTiedTo(unittest.TestCase):
                          "/dev_hdd0/game/BLES01031/USRDIR/np_cache.dat")
 
     def test_a_short_file_is_refused_rather_than_read_past(self):
-        lister = Lister([("00000001", "Chris", True)], cache=b"\x01\x02")
+        lister = Lister([("00000001", "Chris", np_cache())], cache=b"\x01\x02")
         with self.assertRaises(npcache.NoAccount):
             npcache.read_for(lister, "00000001")
 
     def test_the_copy_staged_is_what_was_read(self):
         import tempfile
-        lister = Lister([("00000001", "Chris", True)])
+        lister = Lister([("00000001", "Chris", np_cache())])
         raw = npcache.read_for(lister, "00000001")
         workdir = tempfile.mkdtemp()
         content_id = content_id_for("BLES01031")
@@ -602,6 +696,95 @@ class TheAccountTheFixIsTiedTo(unittest.TestCase):
         self.assertEqual(remote, npcache.destination(content_id))
         with open(local, "rb") as handle:
             self.assertEqual(handle.read(), raw)
+
+
+class WhichAccountTheScreenAsksAbout(unittest.TestCase):
+    """One account is not a question. Several are, and they get names."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+        cls.application = QApplication.instance() or QApplication([])
+
+    def screen(self, people):
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        from ps3tools.screens.patcher import BlackOpsOnePatcher
+        made = BlackOpsOnePatcher(
+            Services(ConnectionState(""), AppTheme("dark"), {}))
+        self.addCleanup(made.deleteLater)
+        made.on_scan_extras({"users": people})
+        return made
+
+    def refuse_to_ask(self):
+        """Make the chooser fail loudly, so a test can prove it never ran."""
+        from PySide6.QtWidgets import QInputDialog
+        saved = QInputDialog.getItem
+
+        def refuse(*args, **kwargs):
+            raise AssertionError("the screen asked which account to use")
+
+        QInputDialog.getItem = staticmethod(refuse)
+        self.addCleanup(lambda: setattr(QInputDialog, "getItem", saved))
+
+    def test_one_usable_account_is_used_without_asking(self):
+        """Asking somebody to confirm the only answer teaches them to click
+        through questions, and the next question is the one that matters."""
+        self.refuse_to_ask()
+        only = npcache.User("00000013", "Chris", True, "shtum_pill34")
+        screen = self.screen([only])
+        ready, why = screen.patch_ready()
+        self.assertTrue(ready, why)
+        self.assertIs(screen._user, only)
+
+    def test_the_account_it_used_is_said_on_the_screen(self):
+        self.refuse_to_ask()
+        screen = self.screen(
+            [npcache.User("00000013", "Chris", True, "shtum_pill34")])
+        screen.patch_ready()
+
+        class Chosen:
+            name = "t5mp_ps3f.self"
+            present = True
+            state = flow.NOT_PATCHED
+
+        class Writing:
+            chosen = [Chosen()]
+            files = [Chosen()]
+        said = " ".join(screen._plan(Writing()))
+        self.assertIn("shtum_pill34 (00000013)", said)
+
+    def test_an_account_with_no_readable_name_is_not_offered(self):
+        self.refuse_to_ask()
+        screen = self.screen([npcache.User("00000009", "Broken", True, "")])
+        ready, why = screen.patch_ready()
+        self.assertFalse(ready)
+        self.assertIn("sign in", why.lower())
+
+    def test_several_accounts_are_put_to_the_user_by_name(self):
+        from PySide6.QtWidgets import QInputDialog
+        asked = []
+
+        def remember(parent, title, words, items, current, editable):
+            asked.append((words, list(items), current))
+            return items[current], True
+
+        saved = QInputDialog.getItem
+        QInputDialog.getItem = staticmethod(remember)
+        self.addCleanup(lambda: setattr(QInputDialog, "getItem", saved))
+
+        people = [npcache.User("00000013", "A", True, "shtum_pill34"),
+                  npcache.User("00000001", "B", True, "someone_else")]
+        screen = self.screen(people)
+        ready, _why = screen.patch_ready()
+        self.assertTrue(ready)
+        _words, items, current = asked[0]
+        self.assertEqual(items, ["shtum_pill34 (00000013)",
+                                 "someone_else (00000001)"])
+        # The newest is first and starts selected.
+        self.assertEqual(current, 0)
+        self.assertIs(screen._user, people[0])
 
 
 # --- the fake-signed digital release ---------------------------------------

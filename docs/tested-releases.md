@@ -12,7 +12,7 @@ This page is generated from the same table the program reads at run time, by `do
 
 ## Call of Duty: Black Ops II
 
-**Confirmed working on BLES01717, title update 1.19.** Patched, written back, read off the console again and booted.
+**Confirmed working on BLES01717, title update 1.19.** Patched, written back, read off the console again and booted, on that build.
 
 The game freezes on PS3 while a PSN session is active. It is a logging fault in the game. Your connection is fine and your account has not been banned.
 
@@ -50,7 +50,7 @@ The game freezes on PS3 while a PSN session is active. It is a logging fault in 
 
 ## Call of Duty: Modern Warfare 3
 
-**Confirmed working on BLES01428, title update 1.24.** Patched, written back, read off the console again and booted.
+**Confirmed working on BLES01428, title update 1.24.** Patched, written back, read off the console again and booted, on that build.
 
 You reach a multiplayer lobby and are dropped back to the menu about a second later, on any PSN account made after late 2018. Campaign and Spec Ops are unaffected.
 
@@ -91,17 +91,19 @@ You reach a multiplayer lobby and are dropped back to the menu about a second la
 
 ## Call of Duty: Black Ops
 
-**Confirmed working on BLES01031, title update 1.13.** Patched, written back, read off the console again and booted.
+**Confirmed working on BLES01031, title update 1.13 and on BLUS30591, title update 1.13.** Patched, written back, read off the console again and booted, on both.
 
 Multiplayer opens at rank 1 every time and nothing you do is kept, on any PSN account made after late 2018. The game asks the server about an identity the server has never held, so there is nothing to send back.
 
-3 releases of this game are recognised. 1 confirmed on hardware, 2 recognised, not reported on.
+3 releases of this game are recognised. 2 confirmed on hardware, 1 recognised, not reported on.
 
 | Title ID | Region | Media | Status | Update hashes |
 | --- | --- | --- | --- | --- |
 | **BLES01031** | Europe | disc | Confirmed on hardware | none |
-| BLUS30591 | North America | disc | Recognised, not reported on | none |
+| **BLUS30591** | North America | disc | Confirmed on hardware | none |
 | NPEB00756 | Europe | download | Recognised, not reported on | none |
+
+**BLUS30591.** Confirmed by OpenResty on a console running Evilnat with webMAN and no other VSH plugins, title update 1.13, process ID 01020200. Stats synced at sign-in. This is the second region confirmed for this fix and the first one it was not written against, which is the test that matters for a fix that finds its own patch site rather than being given an address.
 
 **NPEB00756.** This release is fake-signed. scetool, which is what the program ships to decrypt with, cannot open a fake-signed file at all. The program falls back to TrueAncestor's unfself where a copy of it has been put in `tools/unfself`, and unfself is not redistributed here, so out of the box this release is recognised and then refused with a message saying why.
 

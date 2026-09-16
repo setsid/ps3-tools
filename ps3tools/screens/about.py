@@ -82,21 +82,32 @@ CREDITS = (
     ("scetool, by naehrwert",
      "Bundled in tools/scetool, with its keyset. It is what decrypts and "
      "re-signs a game binary; nothing else in this program can do that."),
-    ("patch-bo2.py and patch-mw3.py",
-     "The two patch scripts in tools/patchers, from the standalone "
-     "repositories listed above, shipped inside the exe so the patcher does "
-     "not depend on anything being installed alongside it."),
+    ("patch-bo1.py, patch-bo2.py and patch-mw3.py",
+     "The three patch scripts in tools/patchers, two of them from the "
+     "standalone repositories listed above and the Black Ops one written "
+     "for this program, shipped inside the exe so the patcher does not "
+     "depend on anything being installed alongside it."),
     ("PySide6 and Qt",
      "The window, the widgets and the drawing. Used as a dynamically linked "
      "LGPL build, which is the condition that matters for passing this "
      "program on."),
+    ("bjocampos",
+     "Tested these fixes on his own console and reported back on what they "
+     "did there. The Black Ops II patch took the shape it has because of "
+     "those reports, and he has kept testing on real hardware since."),
+    ("OpenResty",
+     "Worked out that Demonware derives the XUID from the account ID "
+     "rather than from the PSN online ID, which is the fault the Black Ops "
+     "fix is built on. Also supplied the regional binaries the patcher was "
+     "developed against, and tested the result, including the American disc "
+     "release."),
 )
 
-# Covers this project's own code only, which is what the MIT header on the two
-# patch scripts says as well. The entries above it credit the work of others;
+# Covers this project's own code only, which is what the MIT header on each
+# of the patch scripts says as well. The entries above it credit the work of others;
 # this line is not a statement about their terms.
 LICENCE_NOTE = (
-    "PS3 Tools is MIT licensed, and so are the two patch scripts it ships. "
+    "PS3 Tools is MIT licensed, and so are the patch scripts it ships. "
     "The components credited above are other people's work and are credited "
     "here as such.")
 

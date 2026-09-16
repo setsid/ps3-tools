@@ -55,9 +55,28 @@ USERNAME = "localusername"
 #: /dev_hdd0/home is not one and is passed over rather than guessed about.
 FOLDER = re.compile(r"^\d{8}$")
 
-#: The account ID is the first eight bytes, big endian. Everything after it is
-#: the online ID and the rest of the cache, which this tool has no use for.
+#: The account ID is the first eight bytes, big endian.
 ACCOUNT_ID_BYTES = 8
+
+#: The online ID sits straight after it, as an SceNpOnlineId: sixteen bytes of
+#: name, a terminator and three of padding. Read off the real file rather than
+#: taken from a header, and the layout is what that file shows: the account ID
+#: at 0, the name at 8, the same name again at 28 where the next structure
+#: starts, and an avatar URL further down.
+ONLINE_ID_AT = 8
+ONLINE_ID_BYTES = 16
+
+#: What Sony allows in one: three to sixteen characters, letters, digits,
+#: hyphen and underscore. Checked rather than trusted, because this string is
+#: shown to somebody who is about to pick their account by it and a field of
+#: rubbish read out of the wrong offset would be picked just as readily.
+ONLINE_ID_ALLOWED = set(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+ONLINE_ID_MINIMUM = 3
+
+#: Months as an FTP listing spells them, for putting the newest account first.
+MONTHS = ("jan", "feb", "mar", "apr", "may", "jun",
+          "jul", "aug", "sep", "oct", "nov", "dec")
 
 #: What the tool reads and copies. Small: a few hundred bytes.
 MOST = 64 * 1024
@@ -70,18 +89,74 @@ class NoAccount(Exception):
 class User:
     """One numbered folder under /dev_hdd0/home."""
 
-    def __init__(self, folder, name="", has_cache=False):
+    def __init__(self, folder, name="", has_cache=False, online_id="",
+                 written=None):
         self.folder = folder
         self.name = name
         self.has_cache = has_cache
+        #: The PSN name out of this account's own np_cache.dat.
+        self.online_id = online_id
+        #: When that file was last written, as a sort key. See _written.
+        self.written = written or ()
+
+    @property
+    def usable(self):
+        """Whether the fix can be run for this account.
+
+        Both halves have to be there. A folder with an np_cache.dat this
+        program cannot read an online ID out of is a folder it cannot name on
+        screen either, and picking an account by a number nobody recognises is
+        the thing this is meant to stop.
+        """
+        return bool(self.has_cache and self.online_id)
 
     @property
     def label(self):
-        """What to show somebody choosing between two of these."""
-        return f"{self.name} ({self.folder})" if self.name else self.folder
+        """What to show somebody choosing between two of these.
+
+        The PSN name first, because that is what a person knows themselves
+        by. The folder number stays in brackets: it is what the tool reads
+        from, and somebody reporting a problem needs to be able to say it.
+        """
+        if self.online_id:
+            return f"{self.online_id} ({self.folder})"
+        return self.folder
 
     def __repr__(self):
-        return f"User({self.folder!r}, {self.name!r}, {self.has_cache})"
+        return (f"User({self.folder!r}, {self.online_id!r}, "
+                f"{self.has_cache})")
+
+
+def _written(entry):
+    """A sort key for when a listing says a file was last written.
+
+    An FTP listing gives "Sep 06 19:51" for anything recent and "Dec 20 2024"
+    for anything older, so a file with a time is newer than a file with a
+    year and that is the first thing compared. Within the recent group only
+    the month and day and time are available, which inverts across a new
+    year: a file from last December looks later in the year than one from
+    this January. That is why the newest is preselected rather than chosen.
+    """
+    stamp = (entry or {}).get("modified", "")
+    parts = stamp.split()
+    if len(parts) != 3:
+        return ()
+    month = MONTHS.index(parts[0][:3].lower()) + 1 \
+        if parts[0][:3].lower() in MONTHS else 0
+    try:
+        day = int(parts[1])
+    except ValueError:
+        return ()
+    if ":" in parts[2]:
+        hour, _, minute = parts[2].partition(":")
+        try:
+            return (1, month, day, int(hour), int(minute))
+        except ValueError:
+            return ()
+    try:
+        return (0, int(parts[2]), month, day, 0)
+    except ValueError:
+        return ()
 
 
 def _read_text(lister, path):
@@ -116,16 +191,34 @@ def users(lister):
             inner = _by_name(lister.list_dir(path))
         except Exception:                                   # noqa: BLE001
             inner = {}
+        entry = inner.get(NAME)
+        # The file is a few hundred bytes and is read here rather than later,
+        # because the name inside it is what this account is called on screen
+        # and a list of numbers is a list nobody can choose from.
+        raw = b""
+        if entry is not None:
+            try:
+                raw = lister.retrieve_bytes(f"{path}/{NAME}")
+            except Exception:                               # noqa: BLE001
+                raw = b""
         found.append(User(name, _read_text(lister, f"{path}/{USERNAME}"),
-                          NAME in inner))
+                          entry is not None, online_id(raw),
+                          _written(entry)))
+    # Newest first, so the account signed in now is the one at the top. The
+    # console writes np_cache.dat when an account signs in to PSN, so the most
+    # recently written one is the one being used.
+    found.sort(key=lambda person: person.written, reverse=True)
     return found
 
 
 def with_cache(people):
-    """The users that have an np_cache.dat, which is the ones that can be
-    used. An account that has never signed in to PSN has no such file: it is
-    written the first time, so its absence is ordinary and is not a fault."""
-    return [person for person in people if person.has_cache]
+    """The users the fix can actually be run for, newest first.
+
+    Both an np_cache.dat and a readable name out of it. An account that has
+    never signed in to PSN has no such file, because it is written the first
+    time, so its absence is ordinary and is not a fault.
+    """
+    return [person for person in people if person.usable]
 
 
 def path_for(folder):
@@ -173,9 +266,11 @@ def online_id(raw):
     read so that a screen can say which account it is about to tie the fix to
     in words somebody recognises.
     """
-    field = raw[ACCOUNT_ID_BYTES:ACCOUNT_ID_BYTES + 16]
+    field = raw[ONLINE_ID_AT:ONLINE_ID_AT + ONLINE_ID_BYTES]
     text = field.split(b"\x00")[0].decode("ascii", "ignore").strip()
-    return text if text.isprintable() else ""
+    if len(text) < ONLINE_ID_MINIMUM:
+        return ""
+    return text if set(text) <= ONLINE_ID_ALLOWED else ""
 
 
 def destination(content_id):

@@ -201,7 +201,12 @@ class ButtonColours(unittest.TestCase):
     def test_what_writes_over_something_is_red(self):
         for module_name, attribute in self.DANGER_BUTTONS.items():
             with self.subTest(module_name):
-                button = getattr(self._screen(module_name), attribute)
+                # The screen is held for the length of the check. Reading the
+                # button straight off a throwaway leaves nothing referring to
+                # the screen, and a screen collected between the two lines
+                # takes its buttons with it on the C++ side.
+                screen = self._screen(module_name)
+                button = getattr(screen, attribute)
                 self.assertTrue(button.property("danger"), button.text())
                 self.assertFalse(button.property("primary"), button.text())
 

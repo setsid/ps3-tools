@@ -160,7 +160,7 @@ account or your network.
 | Symptom | Freezes while a PSN session is active | You reach a multiplayer lobby and are dropped back to the menu about a second later, on any account made after late 2018 | Multiplayer opens at rank 1 every time and nothing is kept, on any account made after late 2018 |
 | Files changed | `EBOOT.BIN`, `t6_ps3f.self`, `t6mp_ps3f.self` | `default_mp.self` | `t5mp_ps3f.self` |
 | Left alone | | `default.self`, campaign and Spec Ops | `t5_ps3f.self` and `EBOOT.BIN`, campaign and zombies |
-| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 | BLES01031, title update 1.13 |
+| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 | BLES01031 and BLUS30591, title update 1.13 |
 
 ### Black Ops, and what follows from how it works
 
@@ -397,6 +397,14 @@ Without that test it would have shipped fixing two thirds of the game. He has
 kept testing against real hardware since, and most of what this gets right about
 a real console was found that way.
 
+**OpenResty** — worked out that Demonware derives the XUID from the account ID
+rather than from the PSN online ID. That is the fault behind every account made
+after 2018 opening Black Ops at rank 1, and the fix follows straight from it.
+Also supplied binaries from more than one region and from both the disc and the
+digital release, which is what made it possible to support all of them
+together, and tested the result on hardware, including the American disc
+release.
+
 ---
 
 ## Building from source
@@ -455,7 +463,7 @@ written down.
 ## Licence
 
 MIT. See [LICENSE](LICENSE). That covers everything written here, including the
-two patch scripts in `tools/patchers/`.
+patch scripts in `tools/patchers/`.
 
 ---
 
@@ -489,12 +497,14 @@ type and key revision are all read back off your own file.
 | --- | --- |
 | Black Ops II | **BLES01717**, title update 1.19 |
 | Modern Warfare 3 | **BLES01428**, title update 1.24 |
-| Black Ops | **BLES01031**, title update 1.13 |
+| Black Ops | **BLES01031** and **BLUS30591**, title update 1.13 |
 
 Patched, written back, read off the console again and booted. The patch offsets
 for the first two come from those builds, and any other release of those games
 is checked against them. Black Ops has no offset written down at all: it finds
-its own, and the build above is the one that was watched working.
+its own. Both of the builds above were watched working, and the American one is
+a region the fix was never written against, which is the test that matters for
+finding a patch site rather than being given one.
 
 ### Every other release
 

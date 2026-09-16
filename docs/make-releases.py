@@ -41,13 +41,18 @@ from ps3tools import titles                                # noqa: E402
 
 PAGE = os.path.join(HERE, "tested-releases.md")
 
-#: The build of each game somebody has actually watched the fix work on, and
-#: the title update it was on. Written here rather than derived, because it is
-#: a statement about what a person did and there is nowhere else it lives.
+#: The builds somebody has actually watched the fix work on, and the title
+#: update each was on. Written here rather than derived, because it is a
+#: statement about what a person did and there is nowhere else it lives.
+#:
+#: A title may have more than one. Black Ops has two, which is what makes the
+#: claim about that fix finding its own patch site something more than a
+#: claim: the two are different regions of the same game and the fix was not
+#: told anything about either of them.
 CONFIRMED = {
-    "bo2": ("BLES01717", "1.19"),
-    "mw3": ("BLES01428", "1.24"),
-    "bo1": ("BLES01031", "1.13"),
+    "bo2": (("BLES01717", "1.19"),),
+    "mw3": (("BLES01428", "1.24"),),
+    "bo1": (("BLES01031", "1.13"), ("BLUS30591", "1.13")),
 }
 
 #: The order the titles appear in, which is the order of the cards on the
@@ -58,6 +63,13 @@ ORDER = ("bo2", "mw3", "bo1")
 #: title ID. These are facts about how a release is built rather than about
 #: whether the fix works on it, so they do not belong in the status column.
 PER_RELEASE = {
+    "BLUS30591": (
+        "Confirmed by OpenResty on a console running Evilnat with webMAN and "
+        "no other VSH plugins, title update 1.13, process ID 01020200. Stats "
+        "synced at sign-in. This is the second region confirmed for this fix "
+        "and the first one it was not written against, which is the test that "
+        "matters for a fix that finds its own patch site rather than being "
+        "given an address."),
     "NPEB00756": (
         "This release is fake-signed. scetool, which is what the program "
         "ships to decrypt with, cannot open a fake-signed file at all. The "
@@ -106,9 +118,13 @@ def region_of(title_id):
     return region, media or "unknown"
 
 
+def confirmed_builds(key):
+    return CONFIRMED.get(key, ())
+
+
 def state_of(key, title_id):
     """Which of the three things this release is, and nothing stronger."""
-    if CONFIRMED.get(key, (None,))[0] == title_id:
+    if any(build == title_id for build, _update in confirmed_builds(key)):
         return CONFIRMED_NOTE
     if titles.sku_for(title_id):
         return REFERENCE_NOTE
@@ -150,16 +166,26 @@ def tally(key):
     return counted
 
 
+def confirmed_sentence(key):
+    """The builds somebody has watched this fix work on, as one sentence."""
+    builds = confirmed_builds(key)
+    said = " and on ".join(f"{build}, title update {update}"
+                           for build, update in builds)
+    closing = {1: "on that build"}.get(len(builds), "on each of them")
+    if len(builds) == 2:
+        closing = "on both"
+    return (f"**Confirmed working on {said}.** Patched, written back, read "
+            f"off the console again and booted, {closing}.")
+
+
 def section_for(key):
     config = titles.TITLES[key]
-    build, update = CONFIRMED[key]
     counted = tally(key)
     total = sum(counted.values())
     lines = [
         f"## {config['name']}",
         "",
-        f"**Confirmed working on {build}, title update {update}.** Patched, "
-        f"written back, read off the console again and booted.",
+        confirmed_sentence(key),
         "",
         config["symptom"],
         "",

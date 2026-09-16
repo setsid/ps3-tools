@@ -1123,6 +1123,20 @@ def _by_files_present(picked):
                                     (item.title_id or "").upper()))
 
 
+def _wanted_first(ordered, wanted):
+    """The release the caller asked for at the front, if it is there.
+
+    Everything downstream reads title_ids[0] as the one being worked on, so
+    choosing a release is a matter of putting it there.
+    """
+    if not wanted:
+        return ordered
+    picked = [item for item in ordered if item.title_id == wanted]
+    if not picked:
+        return ordered
+    return picked + [item for item in ordered if item.title_id != wanted]
+
+
 def _several_folders_note(chosen, others):
     """Which folder the fix will work on, when there is a choice.
 
@@ -1141,8 +1155,13 @@ def _several_folders_note(chosen, others):
             f"{names}.")
 
 
-def locate(lister, title_key, detector=None):
+def locate(lister, title_key, detector=None, wanted=""):
     """Find one title on the console, or say precisely why it was not found.
+
+    wanted is a title ID the caller has already settled on, for a console with
+    more than one supported release of the same game installed. Where it is
+    among the ones found it is put first, so title_id and installation are the
+    copy that was chosen rather than the copy that happened to sort first.
 
     Never raises, and never answers "not installed" unless the console was
     actually asked and actually answered. A listing that failed halfway is not
@@ -1180,6 +1199,8 @@ def locate(lister, title_key, detector=None):
     if detector is None:
         found = _known_ids(entries, title_key)
         if found:
+            if wanted in found:
+                found = [wanted] + [item for item in found if item != wanted]
             return Location(READY, found)
         return _confirmed_absence(lister)
 
@@ -1190,6 +1211,7 @@ def locate(lister, title_key, detector=None):
         picked = [item for item in found if item.state == state]
         if picked:
             ordered = _by_files_present(picked)
+            ordered = _wanted_first(ordered, wanted)
             if len(ordered) > 1:
                 notes.append(_several_folders_note(ordered[0], ordered[1:]))
             return Location(state, [item.title_id for item in ordered],

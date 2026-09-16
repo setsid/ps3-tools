@@ -30,8 +30,8 @@ try {
         "ps3tools\titles.py",
         "tools\scetool\scetool.exe",
         "tools\scetool\data\keys",
-        # Vendored copies of the two fixes. Left out of the exe, every file on
-        # a patcher screen comes back "not recognised" on a console that is
+        # Vendored copies of the three fixes. Left out of the exe, every file
+        # on a patcher screen comes back "not recognised" on a console that is
         # perfectly fine, because nothing can read the patch site.
         "tools\patchers\patch-bo1.py",
         "tools\patchers\patch-bo2.py",

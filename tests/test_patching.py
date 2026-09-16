@@ -1482,6 +1482,95 @@ class TheStateTheScreenReports(ScreenCase):
 
 
 
+class ChoosingWhichCopyToPatch(ScreenCase):
+    """Two supported releases of the same game on one console.
+
+    The screen used to take whichever sorted first and say so in a line under
+    the table. Somebody with both the European and the American disc had no
+    way to say which one they play, and no way to tell which one was about to
+    be written to.
+    """
+
+    OTHER = "BLUS31011"
+
+    def screen_with(self, *found, answer=None):
+        """A screen whose scan finds `found`, with the chooser stubbed.
+
+        answer is the title ID the dialogue returns, or None for a cancel.
+        """
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        screen._scetool = lambda: FakeScetool()
+        screen._lister = lambda host: StubLister()
+        self.asked = []
+
+        def choose(title_ids):
+            self.asked.append(list(title_ids))
+            return answer or ""
+
+        screen._choose_release = choose
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        detector = detector_for(*found)
+        patcher.detect = type("stub", (), {"find_installations":
+                                           staticmethod(detector)})
+        screen.on_enter()
+        self.settle_twice(services)
+        return screen, services
+
+    def settle_twice(self, services):
+        """The scan that stops to ask, then the scan the answer starts."""
+        for _ in range(3):
+            self.settle(services)
+
+    def test_one_release_is_not_a_question(self):
+        screen, _services = self.screen_with(installation("ready"))
+        self.assertEqual(self.asked, [])
+        self.assertIn(BO2_ID, screen._where.text())
+
+    def test_the_release_is_named_even_when_there_is_only_one(self):
+        # Either way, the screen says which copy it read.
+        screen, _services = self.screen_with(installation("ready"))
+        self.assertIn(titles.usrdir_for(BO2_ID), screen._where.text())
+
+    def test_two_releases_are_put_to_the_user(self):
+        screen, _services = self.screen_with(
+            installation("ready"), installation("ready", title_id=self.OTHER),
+            answer=self.OTHER)
+        self.assertEqual(len(self.asked), 1)
+        self.assertEqual(sorted(self.asked[0]), sorted([BO2_ID, self.OTHER]))
+        self.assertIn(self.OTHER, screen._where.text())
+
+    def test_nothing_is_read_from_the_copy_that_was_not_chosen(self):
+        screen, _services = self.screen_with(
+            installation("ready"), installation("ready", title_id=self.OTHER),
+            answer=self.OTHER)
+        self.assertEqual(screen._scan.title_id, self.OTHER)
+        self.assertNotIn(BO2_ID, screen._where.text())
+
+    def test_saying_no_reads_nothing_and_says_why(self):
+        screen, _services = self.screen_with(
+            installation("ready"), installation("ready", title_id=self.OTHER),
+            answer=None)
+        self.assertIsNone(screen._scan)
+        self.assertFalse(screen._patch.isEnabled())
+        words = " ".join([screen._panel_heading.text(),
+                          screen._panel_body.text(),
+                          screen._panel_reason.text()])
+        self.assertIn("more than one copy", words)
+        self.assertIn(BO2_ID, words)
+        self.assertIn(self.OTHER, words)
+
+    def test_scanning_again_asks_again(self):
+        # Otherwise a person who picked the wrong one has no way back to the
+        # question short of leaving the screen.
+        screen, services = self.screen_with(
+            installation("ready"), installation("ready", title_id=self.OTHER),
+            answer=self.OTHER)
+        self.assertEqual(len(self.asked), 1)
+        screen._on_rescan()
+        self.settle_twice(services)
+        self.assertEqual(len(self.asked), 2)
+
+
 class ReconnectingCostsNothingWhenNobodyIsInAHurry(unittest.TestCase):
     """The pause before a reconnect is for one cause and should cost only it.
 
@@ -2027,7 +2116,8 @@ class AfterAPatch(ScreenCase):
         self.finish_patch(screen, _patch_result(BO2_ID, self.BO2_FILES))
         self.settle(services)
         text = screen._detail.text()
-        self.assertIn("Changed: EBOOT.BIN, t6_ps3f.self, t6mp_ps3f.self", text)
+        self.assertIn("Changed in %s: EBOOT.BIN, t6_ps3f.self, "
+                      "t6mp_ps3f.self" % BO2_ID, text)
         # And the fresh verdict is there as well, under it.
         self.assertIn("already fixed", text)
 
@@ -2057,7 +2147,7 @@ class AfterAPatch(ScreenCase):
         self.settle(services)
 
         text = screen._detail.text()
-        self.assertIn("Changed: EBOOT.BIN", text)
+        self.assertIn("Changed in %s: EBOOT.BIN" % BO2_ID, text)
         self.assertIn("could not be read back", text)
         self.assertIn("not the same as the fix having failed", text)
         # The sentence the other failures use would be a lie here: the files
@@ -2074,7 +2164,7 @@ class AfterAPatch(ScreenCase):
         self.settle(services)
 
         text = screen._detail.text()
-        self.assertIn("Changed: EBOOT.BIN", text)
+        self.assertIn("Changed in %s: EBOOT.BIN" % BO2_ID, text)
         self.assertIn("could not be read back", text)
         self.assertIn("no route to host", text)
         self.assertNotIn("did not answer", screen._panel_heading.text())
@@ -2176,7 +2266,8 @@ class AfterAPatch(ScreenCase):
                         layout.indexOf(screen._restart))
         self.assertFalse(screen._success_icon.pixmap().isNull())
         # And the one line the user came for is still underneath both.
-        self.assertIn("Changed: EBOOT.BIN, t6_ps3f.self, t6mp_ps3f.self",
+        self.assertIn("Changed in %s: EBOOT.BIN, t6_ps3f.self, "
+                      "t6mp_ps3f.self" % BO2_ID,
                       screen._detail.text())
 
     def test_a_read_back_that_fails_is_not_dressed_up_as_a_success(self):

@@ -75,12 +75,15 @@ from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog,
                                QPushButton, QSizePolicy, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
 
-from ps3diag import transport
+from ps3diag import parsers, transport
 from ps3tools import titles
 from ps3tools.patching import backup as backups
 from ps3tools.patching import flow
 from ps3tools.patching import npcache
 from ps3tools.patching.ftpwrite import FtpWriter
+
+#: webMAN's own page, which names the firmware outright.
+FIRMWARE_PAGE = "/cpursx.ps3"
 from ps3tools.patching.signer import Signer
 from ps3tools.shell import icons
 from ps3tools.shell import widgets
@@ -425,6 +428,11 @@ class PatcherScreen(Screen):
     def __init__(self, services, parent=None):
         super().__init__(services, parent)
         self.config = titles.TITLES.get(self.title_key, {})
+        #: What webMAN said this console is running, and the host it was read
+        #: from, so a different console is asked again rather than inheriting
+        #: the last one's answer.
+        self._firmware_kind = ""
+        self._firmware_host = ""
         self._scan = None
         #: File names the user has taken the tick out of. Held here rather
         #: than on the scan, which is rebuilt every time the console is read.
@@ -965,7 +973,38 @@ class PatcherScreen(Screen):
     # The three seams. Tests replace all three: the mock console listens on a
     # port of its own rather than on 21.
     def _scetool(self):
-        return Signer()
+        return Signer(firmware_kind=self.firmware_kind())
+
+    def firmware_kind(self):
+        """What the console said it is running, or "" if it did not say.
+
+        Read once per host off webMAN's own page and kept, because it decides
+        which form a rebuilt file takes and the answer cannot change while the
+        console is sitting there. A console that did not answer leaves this
+        empty, and every caller treats empty as "keep the behaviour that has
+        shipped" rather than guessing.
+        """
+        host = self.connection.host
+        if not host:
+            return ""
+        if self._firmware_host != host:
+            self._firmware_host = host
+            self._firmware_kind = self._read_firmware(host)
+        return self._firmware_kind
+
+    def _read_firmware(self, host):
+        """The seam. Tests replace this; nothing else reaches the network."""
+        try:
+            page = transport.HttpClient(host).get(FIRMWARE_PAGE)
+            if not getattr(page, "ok", False):
+                return ""
+            return parsers.parse_firmware_line(page.body).get(
+                "firmware_kind", "")
+        except Exception:                                   # noqa: BLE001
+            # A console that will not answer is a console that has not said,
+            # which is the same as saying nothing. It must never become a
+            # guess at the firmware.
+            return ""
 
     def _lister(self, host):
         return transport.FtpLister(host)

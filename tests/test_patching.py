@@ -3578,3 +3578,43 @@ class TheUpdateGateOnScreen(ScreenCase):
         screen, _services = self.scanned_screen("1.09")
         sheet = screen._update.styleSheet() + screen._update_heading.styleSheet()
         self.assertNotIn("#f", sheet.lower().replace("#808080", ""))
+
+
+class SigningForTheFirmwareThatIsThere(unittest.TestCase):
+    """Which form a rebuilt file takes, decided by the console.
+
+    A retail re-sign carries a signature that cannot be regenerated for a
+    file that has been changed. Custom firmware has that check patched out
+    and loads it anyway. PS3HEN appears to keep it, which is what three HEN
+    consoles black-screening at the moment the patched multiplayer binary
+    loads points at, while the campaign, which runs from a binary the fix
+    never touches, was fine on the same consoles.
+    """
+
+    def signer(self, kind):
+        from ps3tools.patching.signer import Signer
+        return Signer(firmware_kind=kind)
+
+    def test_a_hen_console_gets_a_fake_signed_file(self):
+        self.assertTrue(self.signer("hen").fake_signs)
+
+    def test_custom_firmware_keeps_the_retail_re_sign(self):
+        self.assertFalse(self.signer("cfw").fake_signs)
+
+    def test_stock_firmware_keeps_the_retail_re_sign(self):
+        self.assertFalse(self.signer("ofw").fake_signs)
+
+    def test_a_console_that_did_not_say_keeps_what_has_shipped(self):
+        """Guessing wrong in either direction is a game that will not start,
+        so silence must never become a guess."""
+        for unknown in ("", None, "   "):
+            with self.subTest(firmware=unknown):
+                self.assertFalse(self.signer(unknown).fake_signs)
+
+    def test_the_firmware_is_read_off_the_console_and_never_asked(self):
+        """The screen reads webMAN's own page once per host."""
+        from ps3tools.screens import patcher as patcher_module
+        screen = patcher_module.PatcherScreen
+        self.assertTrue(hasattr(screen, "firmware_kind"))
+        self.assertTrue(hasattr(screen, "_read_firmware"))
+        self.assertEqual(patcher_module.FIRMWARE_PAGE, "/cpursx.ps3")

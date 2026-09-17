@@ -41,8 +41,29 @@ class Signer:
     is what they already do.
     """
 
-    def __init__(self, keys_path=""):
+    def __init__(self, keys_path="", firmware_kind=""):
         self.keys_path = keys_path
+        # "cfw", "hen", "ofw", or "" when the console did not say. It decides
+        # which form the rebuilt file takes, and "" keeps the retail re-sign
+        # that every release so far has shipped with.
+        self.firmware_kind = str(firmware_kind or "").strip().lower()
+
+    @property
+    def fake_signs(self):
+        """Whether output should be fake signed rather than re-signed.
+
+        A retail re-sign carries a signature that cannot be regenerated for a
+        file that has been changed. Custom firmware has that check patched out
+        and loads it anyway. PS3HEN appears to keep it, which is what three
+        HEN consoles black-screening at the moment the patched multiplayer
+        binary loads points at, while the campaign, which runs from a binary
+        this never touches, was fine on the same consoles.
+
+        Only a console that said it is running HEN gets the fake-signed form.
+        A console that did not say keeps today's behaviour, because guessing
+        wrong in either direction produces a game that will not start.
+        """
+        return self.firmware_kind == "hen"
 
     @property
     def problem(self):
@@ -154,8 +175,9 @@ class Signer:
         try:
             with open(elf_path, "rb") as handle:
                 elf = handle.read()
-            out = keysmith.sign(elf, source, klicensee or "", self.keys_path,
-                                filename=target_name or "")
+            rebuild = keysmith.fake_sign if self.fake_signs else keysmith.sign
+            out = rebuild(elf, source, klicensee or "", self.keys_path,
+                          filename=target_name or "")
         except keysmith.SceError as exc:
             raise ScetoolError(str(exc)) from None
         except OSError as exc:
@@ -163,4 +185,5 @@ class Signer:
                                f"{exc}") from None
         with open(destination, "wb") as handle:
             handle.write(out)
-        return f"rebuilt {os.path.basename(destination)}, {len(out)} bytes"
+        how = "fake signed" if self.fake_signs else "re-signed"
+        return (f"{how} {os.path.basename(destination)}, {len(out)} bytes")

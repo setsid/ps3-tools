@@ -33,7 +33,20 @@ from ps3tools import keysmith
 described = keysmith.inspect(path, klicensee)   # a report and parsed fields
 elf       = keysmith.decrypt(path, klicensee)   # SELF or fself to ELF
 rebuilt   = keysmith.sign(elf, path, klicensee) # ELF back into its container
+faked     = keysmith.fake_sign(elf, path, klicensee)   # the fake-signed form
 ```
+
+`fake_sign` builds a fake-signed SELF from a retail one, which is the form
+PS3HEN loads. A retail re-sign carries a signature that cannot be regenerated
+for a file that has been changed; custom firmware has that check patched out,
+and HEN appears to keep it. A fake-signed SELF turns out to be its header
+followed by the ELF verbatim, and the header offsets are computed from the
+program header count rather than written down, so a binary with a different
+count does not get overlapping tables.
+
+Every fake-signed file in the corpus is zero across the whole NPDRM block,
+which is why those files answer 8001000F. `fake_sign` carries the retail block
+through whole and refuses a template whose block has no magic.
 
 All three take a path or bytes. All three raise `keysmith.SceError` on failure,
 and the message names the file, the field, what was expected and what was

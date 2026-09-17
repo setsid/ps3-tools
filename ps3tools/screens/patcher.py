@@ -67,8 +67,7 @@ from ps3tools.patching import backup as backups
 from ps3tools.patching import flow
 from ps3tools.patching import npcache
 from ps3tools.patching.ftpwrite import FtpWriter
-from ps3tools.patching.scetool import Scetool
-from ps3tools.patching.unfself import WithFakeSigned
+from ps3tools.patching.signer import Signer
 from ps3tools.shell import icons
 from ps3tools.shell import widgets
 from ps3tools.shell.registry import register
@@ -835,11 +834,10 @@ class PatcherScreen(Screen):
         """
         return ()
 
-    # The three seams. Tests replace all three: the bundled scetool is a
-    # Windows binary, and the mock console listens on a port of its own rather
-    # than on 21.
+    # The three seams. Tests replace all three: the mock console listens on a
+    # port of its own rather than on 21.
     def _scetool(self):
-        return Scetool()
+        return Signer()
 
     def _lister(self, host):
         return transport.FtpLister(host)
@@ -2135,16 +2133,6 @@ class BlackOpsOnePatcher(PatcherScreen):
     order = 15
     badge = "Beta"
     note = NO_DIGITAL
-
-    def _scetool(self):
-        """scetool, with unfself behind it.
-
-        The digital release is fake-signed and scetool cannot open it. Nothing
-        about the disc releases changes: scetool is tried first and unfself is
-        only reached by a file scetool has already refused, and only when
-        there is an unfself to reach.
-        """
-        return WithFakeSigned(super()._scetool())
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)

@@ -1,98 +1,24 @@
-"""scetool, wrapped so that it can be replaced.
+"""The report format keysmith prints, and the parser for it.
 
-scetool is naehrwert's. A copy is bundled under tools/scetool so the program
-works out of the box on the machine it is meant to run on, which is Windows.
-It is a Windows binary: on anything else this reports itself unavailable rather
-than failing nine minutes into a job with a misleading message about the
-klicensee. Every test injects a stand-in instead, which is also why the only
-way the flow ever reaches scetool is through the small interface below.
+This was the wrapper around scetool.exe. The binary is gone: keysmith does the
+decrypting and the re-signing now, in Python, with its keyset inside the
+package rather than beside the working directory.
 
-Three operations are needed and no others:
+What is left is the part that was never about the process. keysmith's report is
+byte for byte the report scetool printed, checked field by field against the
+real binaries, so this parser reads either one and the fields the flow works
+with cannot drift apart from what is printed.
 
-    info      read the signing parameters off the user's own file
-    decrypt   SELF to ELF, with the title's klicensee where one is needed
-    sign      ELF back to SELF, with the parameters read in step one
-
-The parameters are read off the file rather than written down here on purpose.
-The two repositories' readmes print one worked example each, for one region and
-one title update, and a file signed with another install's ContentID or the
-wrong CID_FN hash is perfectly valid and will not load.
+The exception keeps its name because the flow catches it in a dozen places and
+the name still says which layer failed. It no longer means a program refused;
+it means a file could not be read or rebuilt.
 """
 
-import os
 import re
-import subprocess
-import sys
 from collections import namedtuple
 
-# Keeps a console window from flashing on every one of the many calls.
-NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-
-DEFAULT_TIMEOUT = 300
-
-
 class ScetoolError(Exception):
-    """scetool refused or could not be run. The message is what it said."""
-
-
-# --- where it lives --------------------------------------------------------
-
-def bundled():
-    """The copy shipped with the program, or "" if it is not there.
-
-    Under PyInstaller --onefile the tools folder is unpacked below _MEIPASS, so
-    that is looked at first; from a checkout it sits beside the package.
-    """
-    roots = []
-    meipass = getattr(sys, "_MEIPASS", "")
-    if meipass:
-        roots.append(meipass)
-    if getattr(sys, "frozen", False):
-        roots.append(os.path.dirname(os.path.abspath(sys.executable)))
-    roots.append(os.path.dirname(os.path.dirname(
-        os.path.dirname(os.path.abspath(__file__)))))
-    for root in roots:
-        folder = os.path.join(root, "tools", "scetool")
-        for name in ("scetool.exe", "scetool"):
-            candidate = os.path.join(folder, name)
-            if os.path.isfile(candidate):
-                return candidate
-    return ""
-
-
-def _is_windows_binary(path):
-    try:
-        with open(path, "rb") as handle:
-            return handle.read(2) == b"MZ"
-    except OSError:
-        return False
-
-
-def why_not(path):
-    """Why this scetool cannot be used, or "" if it can.
-
-    Checked up front because every one of these fails late and unhelpfully
-    otherwise. The usual mistake is copying scetool.exe out on its own, which
-    only goes wrong once it tries to look up a key.
-    """
-    if not path:
-        return ("scetool is missing. It is bundled with this program, so a "
-                "copy that has lost it was not unpacked properly.")
-    if not os.path.isfile(path):
-        return f"There is no file at {path}."
-    folder = os.path.dirname(os.path.abspath(path))
-    data = os.path.join(folder, "data")
-    if not os.path.isdir(data):
-        return ("There is no data folder beside this scetool. It looks its "
-                "keys up relative to its own folder, so a copy of the "
-                "executable on its own cannot work.")
-    if not os.path.isfile(os.path.join(data, "keys")):
-        return ("The data folder beside this scetool has no keys file in it.")
-    if _is_windows_binary(path) and sys.platform != "win32":
-        return ("The bundled scetool is a Windows program and this is not "
-                "Windows, so the files cannot be decrypted or re-signed here. "
-                "Run this tool on Windows.")
-    return ""
+    """A file could not be read or rebuilt. The message says which and why."""
 
 
 # --- reading a header ------------------------------------------------------
@@ -337,160 +263,3 @@ def title_id_from(content_id):
 
 SigningProfile = namedtuple(
     "SigningProfile", "compressed skip_sections use_template carry_ids")
-
-
-def info_args(path, klicensee=None):
-    args = ["-l", klicensee] if klicensee else []
-    return args + ["-i", path]
-
-
-def decrypt_args(source, destination, klicensee=None):
-    args = ["-v"]
-    if klicensee:
-        args += ["-l", klicensee]
-    return args + ["-d", source, destination]
-
-
-def sign_args(profile, info, source, elf_path, destination, target_name,
-              klicensee=None):
-    """The re-sign from the readmes, with the user's own values in it.
-
-    -g is the name the file will carry on the console, not wherever this
-    happens to be writing to. It feeds the CID_FN hash, and getting it wrong
-    gives a file that is perfectly valid and will not load.
-    """
-    args = []
-    if profile.use_template:
-        args += ["-t", source]
-    args += ["-0", "SELF",
-             "-1", profile.compressed,
-             "-s", profile.skip_sections,
-             "-2", info["key_revision"]]
-    if profile.carry_ids:
-        args += ["-3", info["auth_id"], "-4", info["vendor_id"]]
-    args += ["-5", info["self_type"],
-             "-A", info["app_version"],
-             "-6", info["fw_version"],
-             "-b", info["licence_type"],
-             "-c", info["app_type"],
-             "-f", info["content_id"],
-             "-g", target_name]
-    if klicensee:
-        args += ["-l", klicensee]
-    return args + ["-e", elf_path, destination]
-
-
-# --- the wrapper itself ----------------------------------------------------
-
-class Scetool:
-    """The real thing. Tests inject something with the same three methods.
-
-    runner is the only seam: give it something callable taking a list of
-    arguments and returning scetool's output, and nothing here needs a process.
-    """
-
-    def __init__(self, executable=None, runner=None, timeout=DEFAULT_TIMEOUT):
-        self.executable = executable if executable is not None else bundled()
-        self.timeout = timeout
-        self._runner = runner or self._run
-
-    @property
-    def problem(self):
-        return why_not(self.executable)
-
-    @property
-    def available(self):
-        return not self.problem
-
-    def _run(self, args, what):
-        """scetool resolves its data and keys folder relative to the working
-        directory, so it has to run from its own folder whatever ours is."""
-        try:
-            proc = subprocess.run(
-                [self.executable] + list(args),
-                cwd=os.path.dirname(os.path.abspath(self.executable)),
-                capture_output=True, text=True, errors="replace",
-                timeout=self.timeout, creationflags=NO_WINDOW)
-        except OSError as exc:
-            raise ScetoolError(
-                f"scetool could not be run ({exc}). Check that the copy "
-                f"bundled with this program is built for this machine.")
-        except subprocess.TimeoutExpired:
-            raise ScetoolError(f"{what} did not finish within "
-                               f"{self.timeout} seconds.")
-        output = "\n".join(part.strip() for part in (proc.stdout, proc.stderr)
-                           if part and part.strip())
-        if proc.returncode != 0:
-            raise ScetoolError(f"{what} failed, scetool exited "
-                               f"{proc.returncode}.\n"
-                               f"{output or '(scetool printed nothing)'}")
-        return output
-
-    def info(self, path, klicensee=None):
-        """The signing parameters off one file, as a dict."""
-        name = os.path.basename(path)
-        output = self._runner(info_args(path, klicensee),
-                              f"reading the header of {name}")
-        found, unreadable = read_header(output)
-        missing = [field for field in REQUIRED_FIELDS if field not in found]
-        if missing and not reached_app_info(output):
-            # The output stopped before the part that carries these fields, so
-            # nothing here is a statement about the file. A file this program
-            # could not read is a different thing from one it has read and
-            # rejected, and saying the second sends somebody to look for a
-            # header block that is sitting there in full.
-            lines = [line for line in output.splitlines() if line.strip()]
-            ended = lines[-1].strip() if lines else "nothing at all"
-            raise ScetoolError(
-                f"scetool stopped before it printed the details of {name}. "
-                f"What came back is {len(lines)} line(s), ending at "
-                f"{ended!r}, and it never reached the Application Info block. "
-                f"Nothing here says anything is wrong with the file: this is "
-                f"a read that did not finish. The usual cause is the copy "
-                f"taken off the console being short of the whole file. "
-                f"scetool said:\n{output}")
-        if missing:
-            absent = [field for field in missing if field not in unreadable]
-            strange = [field for field in missing if field in unreadable]
-            parts = []
-            if absent:
-                words = ", ".join(FIELD_TITLES[field] for field in absent)
-                parts.append(f"{name} has no {words} in its header")
-            for field in strange:
-                # Named with the value that was actually printed. This is the
-                # file this program has not been taught about, and the value
-                # is the whole of what anybody needs in order to teach it.
-                parts.append(f"{name} gives its {FIELD_TITLES[field]} as "
-                             f"{unreadable[field]!r}, which this tool does "
-                             f"not recognise")
-            raise ScetoolError(
-                "; ".join(parts) + f". It is not one of the signed binaries "
-                f"this tool knows how to rebuild. scetool said:\n{output}")
-        found["raw"] = output
-        return found
-
-    def decrypt(self, path, destination, klicensee=None):
-        """SELF to ELF. Returns the decrypted bytes."""
-        name = os.path.basename(path)
-        output = self._runner(decrypt_args(path, destination, klicensee),
-                              f"decrypting {name}")
-        if not os.path.isfile(destination) or not os.path.getsize(destination):
-            raise ScetoolError(
-                f"decrypting {name} produced nothing. The usual cause is the "
-                f"wrong klicensee for this title. scetool said:\n"
-                f"{output or '(scetool printed nothing)'}")
-        with open(destination, "rb") as handle:
-            return handle.read()
-
-    def sign(self, profile, info, source, elf_path, destination, target_name,
-             klicensee=None):
-        """ELF back to SELF, under the name it will carry on the console."""
-        output = self._runner(
-            sign_args(profile, info, source, elf_path, destination,
-                      target_name, klicensee),
-            f"signing {target_name}")
-        if not os.path.isfile(destination) or not os.path.getsize(destination):
-            raise ScetoolError(
-                f"signing {target_name} produced no output. scetool said:\n"
-                f"{output or '(scetool printed nothing)'}")
-        return output

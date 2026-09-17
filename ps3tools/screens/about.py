@@ -80,8 +80,12 @@ CREDITS = (
      "not by this project. Everything the diagnostic reads and everything "
      "the patcher writes goes through it."),
     ("scetool, by naehrwert",
-     "Bundled in tools/scetool, with its keyset. It is what decrypts and "
-     "re-signs a game binary; nothing else in this program can do that."),
+     "This program no longer bundles it, and its keyset is the one this "
+     "program reads. The SELF handling here was written against its output "
+     "field for field, and it is the reason any of this was possible."),
+    ("TrueAncestor SELF Resigner",
+     "Its unfself is no longer needed: fake-signed binaries are read and "
+     "written here. Working out what those files look like started with it."),
     ("patch-bo1.py, patch-bo2.py and patch-mw3.py",
      "The three patch scripts in tools/patchers, two of them from the "
      "standalone repositories listed above and the Black Ops one written "

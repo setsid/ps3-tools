@@ -18,7 +18,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Push-Location $root
 
 try {
-    # scetool and the patchers are loaded from disk at run time, so a build
+    # The keyset and the patchers are loaded from disk at run time, so a build
     # missing any of them produces an exe that fails once the user presses the
     # button rather than one that fails to build.
     $required = @(
@@ -28,8 +28,8 @@ try {
         "ps3diag\transport.py",
         "ps3tools\__init__.py",
         "ps3tools\titles.py",
-        "tools\scetool\scetool.exe",
-        "tools\scetool\data\keys",
+        "ps3tools\keysmith\__init__.py",
+        "ps3tools\keysmith\data\keys",
         # Vendored copies of the three fixes. Left out of the exe, every file
         # on a patcher screen comes back "not recognised" on a console that is
         # perfectly fine, because nothing can read the patch site.
@@ -40,43 +40,28 @@ try {
     )
     foreach ($item in $required) {
         if (-not (Test-Path -LiteralPath $item)) {
-            if ($item -like "tools\scetool\*") {
+            if ($item -like "ps3tools\keysmith\*") {
                 throw @"
 Missing $item.
 
-scetool is not in this repository. It is naehrwert's work and is bundled into
-the built exe rather than redistributed here, the same as in the two standalone
-patcher repos. A fresh clone cannot build without it.
-
-Put a copy at:
-
-    tools\scetool\scetool.exe
-    tools\scetool\zlib1.dll
-    tools\scetool\data\keys
-    tools\scetool\data\ldr_curves
-    tools\scetool\data\vsh_curves
-
-The whole data folder is needed, keys included: scetool looks its keys up
-relative to its own folder, so a copy of the exe on its own cannot decrypt
-anything. The keyset must carry key revisions 0019 and 0010, which are what
-Black Ops II and Modern Warfare 3, and Black Ops 1, are signed with; both are
-checked separately below.
+keysmith is this program's own SELF handling and its keyset lives inside the
+package. A checkout missing it cannot decrypt or re-sign anything.
 "@
             }
-            throw "Missing $item. Build from a full checkout."
+            throw "Missing $item."
         }
     }
 
     # Each game is signed with a key revision, and not every keyset carries
     # every one. A build made against a keyset missing one produces an exe that
-    # cannot decrypt that game, and the symptom is a misleading complaint about
-    # the klicensee. 0019 is Black Ops II and Modern Warfare 3; 0010 is Black
-    # Ops 1, read off a stock BLES01031 t5mp_ps3f.self.
-    $revisions = @{ "0019" = "Black Ops II or Modern Warfare 3";
+    # cannot decrypt that game. 0019 is Modern Warfare 3, 001C is Black Ops II
+    # and 0010 is Black Ops 1, each read off a stock retail file.
+    $revisions = @{ "0019" = "Modern Warfare 3";
+                    "001C" = "Black Ops II";
                     "0010" = "Black Ops 1" }
     foreach ($revision in $revisions.Keys) {
-        if (-not (Select-String -LiteralPath "tools\scetool\data\keys" -Pattern "^revision=$revision" -Quiet)) {
-            throw "tools\scetool\data\keys has no revision $revision entry, so it cannot handle $($revisions[$revision])."
+        if (-not (Select-String -LiteralPath "ps3tools\keysmith\data\keys" -Pattern "^revision=$revision" -Quiet)) {
+            throw "ps3tools\keysmith\data\keys has no revision $revision entry, so it cannot handle $($revisions[$revision])."
         }
     }
 
@@ -183,7 +168,7 @@ checked separately below.
         "--add-data", "icon.ico;.",
         "--add-data", "icon.png;.",
         "--add-data", "logo.png;.",
-        "--add-data", "tools\scetool;tools/scetool",
+        "--add-data", "ps3tools\keysmith\data;ps3tools/keysmith/data",
         "--add-data", "tools\patchers;tools/patchers",
         "--add-data", "certs;certs",
         # PyQt5 is on some development machines and PyInstaller will happily
@@ -205,9 +190,8 @@ checked separately below.
 
     Write-Host ""
     Write-Host "Built dist\$name.exe"
-    Write-Host "Run it from a local drive. scetool cannot run from a UNC path,"
-    Write-Host "and the program writes its settings and its output beside"
-    Write-Host "itself, so do not put it in Program Files."
+    Write-Host "The program writes its settings and its output beside itself,"
+    Write-Host "so do not put it in Program Files."
 }
 finally {
     Pop-Location

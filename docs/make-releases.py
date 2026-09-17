@@ -71,12 +71,14 @@ PER_RELEASE = {
         "matters for a fix that finds its own patch site rather than being "
         "given an address."),
     "NPEB00756": (
-        "This release is fake-signed. scetool, which is what the program "
-        "ships to decrypt with, cannot open a fake-signed file at all. The "
-        "program falls back to TrueAncestor's unfself where a copy of it has "
-        "been put in `tools/unfself`, and unfself is not redistributed here, "
-        "so out of the box this release is recognised and then refused with "
-        "a message saying why."),
+        "This release is fake-signed, which scetool could not open at all. "
+        "The program reads and writes fake-signed binaries itself now, so "
+        "nothing extra has to be found on disk. What it cannot do is invent "
+        "an NPDRM block: every fake-signed copy seen carries one that is "
+        "entirely zero, which is what makes a console answer 8001000F, and "
+        "the licence type, application type, content ID and CID_FN hash all "
+        "have to come from the retail file it was built from. A copy in that "
+        "state is reported as such rather than patched."),
 }
 
 #: The games with no fix, said once each so that somebody arriving from the

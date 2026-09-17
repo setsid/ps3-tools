@@ -189,8 +189,21 @@ class WhatTheHeaderReadSaysWhenItCannotRead(unittest.TestCase):
     """
 
     def scetool(self, output):
-        tool = scetool.Scetool.__new__(scetool.Scetool)
-        tool._runner = lambda args, what: output
+        """A signer whose report is this text, with nothing to read it off.
+
+        describe() is the seam the old wrapper's runner was: the messages
+        under test are built from a report, and where the report came from is
+        not what is being checked.
+        """
+        from ps3tools.patching.signer import Signer
+
+        class Canned:
+            text = staticmethod(lambda: output)
+            npdrm_is_zeroed = False
+            fake_signed = False
+
+        tool = Signer()
+        tool.describe = lambda path, klicensee=None: Canned()
         return tool
 
     def test_a_value_it_does_not_know_is_kept_apart_from_a_missing_one(self):
@@ -257,8 +270,21 @@ class OutputThatStopsPartWayThrough(unittest.TestCase):
     """
 
     def scetool(self, output):
-        tool = scetool.Scetool.__new__(scetool.Scetool)
-        tool._runner = lambda args, what: output
+        """A signer whose report is this text, with nothing to read it off.
+
+        describe() is the seam the old wrapper's runner was: the messages
+        under test are built from a report, and where the report came from is
+        not what is being checked.
+        """
+        from ps3tools.patching.signer import Signer
+
+        class Canned:
+            text = staticmethod(lambda: output)
+            npdrm_is_zeroed = False
+            fake_signed = False
+
+        tool = Signer()
+        tool.describe = lambda path, klicensee=None: Canned()
         return tool
 
     def test_a_dump_that_stops_early_is_not_called_a_missing_field(self):
@@ -811,14 +837,24 @@ class TheScan(ConsoleCase):
         self.assertFalse(report.ok)
         self.assertIn("Windows", report.error)
 
-    def test_the_bundled_scetool_refuses_to_pretend_it_can_run_here(self):
-        # It is a Windows binary. Anything that claimed otherwise would fail
-        # halfway through somebody's only copy of a game binary.
-        real = scetool.Scetool()
-        if sys.platform == "win32":
-            self.skipTest("this machine can run it")
-        self.assertTrue(real.problem)
-        self.assertIn("Windows", real.problem)
+    def test_the_signer_runs_on_whatever_this_is(self):
+        """What replaced the bundled Windows binary.
+
+        scetool was an exe, so on anything but Windows the whole patcher was
+        unavailable and every test had to inject a stand-in. The signer is
+        Python and its keyset lives inside the package, so it works here, and
+        the only thing that can be wrong with it is the keys file.
+        """
+        from ps3tools.patching.signer import Signer
+        real = Signer()
+        self.assertEqual(real.problem, "")
+        self.assertTrue(real.available)
+
+    def test_a_keys_file_that_is_not_there_says_which_file(self):
+        from ps3tools.patching.signer import Signer
+        broken = Signer(keys_path="/nowhere/at/all/keys")
+        self.assertIn("/nowhere/at/all/keys", broken.problem)
+        self.assertFalse(broken.available)
 
 
 # --- backup ----------------------------------------------------------------

@@ -18,11 +18,14 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "sce"))
+import corpus as sce_corpus                            # noqa: E402
 from ps3diag import patchstate
 from ps3tools import titles
 from ps3tools.patching import flow, npcache
 from ps3tools.patching.scetool import ScetoolError
-from ps3tools.patching.unfself import Unfself, WithFakeSigned
+from ps3tools.patching.signer import Signer
 
 bo1 = patchstate.patcher_module("bo1")
 
@@ -916,76 +919,49 @@ class WhatTheScreenSaysWhenNoAccountWorks(unittest.TestCase):
 
 # --- the fake-signed digital release ---------------------------------------
 
-class TheFileScetoolWillNotOpen(unittest.TestCase):
-    """unfself is not bundled, so what matters is an honest absence."""
+class TheFileScetoolWouldNotOpen(unittest.TestCase):
+    """The digital release, which used to need a second tool.
 
-    class Refuses:
-        problem = ""
-        available = True
+    scetool cannot open a fake-signed SELF: there is no signature for it to
+    work back from, and it refuses the file for want of a keyset. That is why
+    the Black Ops 1 screen used to put TrueAncestor's unfself behind it and
+    tell people to go and find a copy. keysmith reads and writes them itself,
+    so there is no fallback left to be missing.
+    """
 
-        def decrypt(self, path, destination, klicensee=None):
-            raise ScetoolError("this file is fake-signed.")
+    def sample(self, key):
+        item = sce_corpus.BY_KEY[key]
+        if not item.there:
+            self.skipTest(f"{item.path} is not on this machine")
+        return item
 
-        def info(self, path, klicensee=None):
-            return {"marker": "scetool"}
+    def test_the_signer_opens_one_without_any_fallback(self):
+        item = self.sample("npeb00756-fself")
+        signer = Signer()
+        elf = signer.decrypt(item.path, "", item.klicensee)
+        self.assertEqual(elf[:4], b"\x7fELF")
 
-        def sign(self, *args, **kwargs):
-            return "signed"
+    def test_it_needs_no_klicensee_at_all(self):
+        """Nothing in one is encrypted, so there is no key to get wrong."""
+        item = self.sample("npeb00756-fself")
+        self.assertEqual(Signer().decrypt(item.path, "", None),
+                         Signer().decrypt(item.path, "", item.klicensee))
 
-    class Opens:
-        problem = ""
-        available = True
+    def test_the_screen_no_longer_layers_a_second_tool_behind_it(self):
+        from ps3tools.screens import patcher as patcher_screen
+        self.assertIs(
+            patcher_screen.BlackOpsOnePatcher._scetool,
+            patcher_screen.PatcherScreen._scetool,
+            "the Black Ops 1 screen should use the ordinary signer")
 
-        def __init__(self):
-            self.asked = []
-
-        def decrypt(self, path, destination, klicensee=None):
-            self.asked.append(path)
-            return b"\x7fELFopened"
-
-    def test_without_unfself_the_refusal_says_what_is_missing(self):
-        tool = WithFakeSigned(self.Refuses(), Unfself(executable=""))
+    def test_a_zeroed_npdrm_block_is_reported_as_the_8001000f_cause(self):
+        """Every fake-signed file here carries one, and it is why they fail."""
+        item = self.sample("npeb00756-fself")
         with self.assertRaises(ScetoolError) as caught:
-            tool.decrypt("t5mp_ps3f.self", "out.elf", "KEY")
-        self.assertIn("fake-signed", str(caught.exception))
-        self.assertIn("unfself", str(caught.exception))
-
-    def test_with_unfself_the_refused_file_is_handed_to_it(self):
-        fallback = self.Opens()
-        tool = WithFakeSigned(self.Refuses(), fallback)
-        self.assertEqual(tool.decrypt("t5mp_ps3f.self", "out.elf", "KEY"),
-                         b"\x7fELFopened")
-        self.assertEqual(fallback.asked, ["t5mp_ps3f.self"])
-
-    def test_a_file_that_opens_the_ordinary_way_never_reaches_it(self):
-        class Works(self.Opens):
-            def decrypt(self, path, destination, klicensee=None):
-                return b"\x7fELFscetool"
-
-        fallback = self.Opens()
-        tool = WithFakeSigned(Works(), fallback)
-        self.assertEqual(tool.decrypt("a", "b", "KEY"), b"\x7fELFscetool")
-        self.assertEqual(fallback.asked, [])
-
-    def test_what_it_produces_has_to_look_like_a_binary(self):
-        import tempfile
-        folder = tempfile.mkdtemp()
-        out = os.path.join(folder, "out.elf")
-
-        def runner(args):
-            with open(args[1], "wb") as handle:
-                handle.write(b"unfself: could not open that\n")
-            return ""
-
-        tool = Unfself(executable=__file__, runner=runner)
-        with self.assertRaises(ScetoolError) as caught:
-            tool.decrypt("whatever.self", out)
-        self.assertIn("not an ELF", str(caught.exception))
-
-    def test_everything_but_decrypt_is_still_scetool_s(self):
-        tool = WithFakeSigned(self.Refuses(), Unfself(executable=""))
-        self.assertEqual(tool.info("a")["marker"], "scetool")
-        self.assertEqual(tool.sign(), "signed")
+            Signer().info(item.path, item.klicensee)
+        message = str(caught.exception)
+        self.assertIn("8001000F", message)
+        self.assertIn("stock", message)
 
 
 # --- the whole run, against a console --------------------------------------

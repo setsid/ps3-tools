@@ -11,7 +11,6 @@ The parts:
 
     ftpwrite  RETR, STOR, SIZE, LIST, MKD, DELE against webMANftpd
     scetool   decrypting and re-signing, wrapped so it can be replaced
-    unfself   the one case scetool cannot open: a fake-signed SELF
     backup    pull the originals to the Desktop and prove the copy is good
     npcache   whose account the Black Ops 1 fix is for, and a readable copy
               of the file it reads that account out of

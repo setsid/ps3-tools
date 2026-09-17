@@ -105,7 +105,7 @@ Multiplayer opens at rank 1 every time and nothing you do is kept, on any PSN ac
 
 **BLUS30591.** Confirmed by OpenResty on a console running Evilnat with webMAN and no other VSH plugins, title update 1.13, process ID 01020200. Stats synced at sign-in. This is the second region confirmed for this fix and the first one it was not written against, which is the test that matters for a fix that finds its own patch site rather than being given an address.
 
-**NPEB00756.** This release is fake-signed. scetool, which is what the program ships to decrypt with, cannot open a fake-signed file at all. The program falls back to TrueAncestor's unfself where a copy of it has been put in `tools/unfself`, and unfself is not redistributed here, so out of the box this release is recognised and then refused with a message saying why.
+**NPEB00756.** This release is fake-signed, which scetool could not open at all. The program reads and writes fake-signed binaries itself now, so nothing extra has to be found on disk. What it cannot do is invent an NPDRM block: every fake-signed copy seen carries one that is entirely zero, which is what makes a console answer 8001000F, and the licence type, application type, content ID and CID_FN hash all have to come from the retail file it was built from. A copy in that state is reported as such rather than patched.
 
 > No update package hashes have been read for this title, so the program cannot say which title update is installed and does not check it before patching. That matters less here than it would elsewhere: this fix finds its own patch site in whatever build it is handed rather than trusting an address, so a build it was not written for is refused rather than patched wrongly.
 

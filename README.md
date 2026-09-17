@@ -384,9 +384,14 @@ setsid.research@proton.me
 bundled here. Everything the diagnostic reads and everything the patcher writes
 goes through it.
 
-**scetool**, by naehrwert. Decrypts and re-signs a game binary. Nothing else in
-this program can do that. It is bundled in the built exe. This repository does
-not carry a copy.
+**scetool**, by naehrwert. No longer bundled. The SELF handling here is
+`ps3tools/keysmith`, written in Python against scetool's output field for
+field, and scetool is the reason any of it was possible. Its keyset is the one
+keysmith reads. See [docs/keysmith.md](docs/keysmith.md).
+
+**TrueAncestor SELF Resigner.** No longer needed either. Fake-signed binaries
+are read and written directly, so the digital releases no longer depend on a
+second tool being found on disk.
 
 **PySide6 and Qt** — the window and the widgets, used as a dynamically linked
 LGPL build.
@@ -428,12 +433,13 @@ fall back to an unverified one.
 Both pins are exact, and the build refuses a different PyInstaller version
 rather than producing an exe nobody can reproduce.
 
-**`tools/scetool/` is not in this repository and you have to supply it.** It is
-naehrwert's work, bundled into the built exe rather than redistributed here, the
-same as in the two standalone patcher repos. Put `scetool.exe`, `zlib1.dll` and
-the whole `data` folder at `tools/scetool/`. The keyset must carry key revision
-0019, which is what both games are signed with; the build checks that before it
-starts, and tells you where the files go if they are missing.
+The SELF handling is in the repository under `ps3tools/keysmith`. **Its keyset
+is not**, for the same reason scetool never was: it is naehrwert's work and is
+shipped inside the built exe rather than redistributed here. Put a copy of
+scetool's `data` folder at `ps3tools/keysmith/data/`. It must carry key
+revisions 0010, 0019 and 001C, which are what Black Ops 1, Modern Warfare 3 and
+Black Ops II are signed with; the build checks that before it starts, and
+keysmith says the same thing if it is asked to open a file without one.
 
 ```
 .\build-exe.ps1

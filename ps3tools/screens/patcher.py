@@ -1085,7 +1085,7 @@ class PatcherScreen(Screen):
         firmware it came from without anybody being asked.
         """
         try:
-            page = transport.HttpClient(host).get(FIRMWARE_PAGE)
+            page = transport.HttpProbe(host).get(FIRMWARE_PAGE)
             if not getattr(page, "ok", False):
                 return "", ""
             found = parsers.parse_firmware_line(page.body)

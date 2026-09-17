@@ -317,7 +317,10 @@ TITLES = {
         # patch site is an offset that is only right for one build. This one
         # finds its own site, so a build it was not written for either matches
         # the patterns, in which case it is the same code, or is refused.
-        "skus": {},
+        "skus": {
+            "BLES01031": {"region": "Europe", "updates": {}},
+            "BLUS30591": {"region": "North America", "updates": {}},
+        },
     },
     "bo2": {
         "key": "bo2",

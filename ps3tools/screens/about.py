@@ -79,13 +79,13 @@ CREDITS = (
      "The homebrew this program talks to. It is not bundled here and it is "
      "not by this project. Everything the diagnostic reads and everything "
      "the patcher writes goes through it."),
-    ("scetool, by naehrwert",
-     "This program no longer bundles it, and its keyset is the one this "
-     "program reads. The SELF handling here was written against its output "
-     "field for field, and it is the reason any of this was possible."),
-    ("TrueAncestor SELF Resigner",
-     "Its unfself is no longer needed: fake-signed binaries are read and "
-     "written here. Working out what those files look like started with it."),
+    ("keysmith",
+     "This program's own SELF handling. It decrypts, re-signs and fake-signs "
+     "a game binary in Python, with no external tool involved."),
+    ("The PS3 keyset, by naehrwert",
+     "The keys file this program reads to decrypt and re-sign a game binary. "
+     "It is not this project's work and is not redistributed with the "
+     "source."),
     ("patch-bo1.py, patch-bo2.py and patch-mw3.py",
      "The three patch scripts in tools/patchers, two of them from the "
      "standalone repositories listed above and the Black Ops one written "

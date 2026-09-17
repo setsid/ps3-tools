@@ -1503,14 +1503,29 @@ class TheStateTheScreenReports(ScreenCase):
             self.assertNotIn(forbidden, words.lower() if forbidden.islower()
                              else words)
 
-    def test_an_unknown_sku_is_refused_with_its_own_reason(self):
+    def test_a_folder_that_could_be_two_games_is_the_one_refusal_left(self):
+        # An unfamiliar title ID on its own is no longer refused: it comes
+        # through as an untested release and is warned about. What is left
+        # here is the folder whose files could belong to more than one game,
+        # where nothing on the console says which it is.
         screen = self.screen_with(
             StubLister(), detector_for(installation("unknown_variant")))
         self.assertEqual(screen._panel_token, "warn")
         words = self.words(screen)
-        self.assertIn("not one this tool knows", words)
-        self.assertIn("will not start", words)
+        self.assertIn("cannot tell which game", words)
+        self.assertIn("more than one game", words)
+        self.assertIn("exactly as it was", words)
         self.assertFalse(screen._patch.isEnabled())
+
+    def test_the_refusal_never_puts_another_game_in_front_of_anybody(self):
+        # A Black Ops 1 user was offered Ghosts here, deleted it, was offered
+        # Modern Warfare 2, and deleted game data chasing it. Nothing on this
+        # panel names another game or asks for anything to be removed.
+        screen = self.screen_with(
+            StubLister(), detector_for(installation("unknown_variant")))
+        words = self.words(screen).lower()
+        for forbidden in ("delete", "remove", "uninstall", "ghosts"):
+            self.assertNotIn(forbidden, words)
 
     def test_no_two_states_say_the_same_thing(self):
         said = set()
@@ -2675,6 +2690,210 @@ class AReleaseNobodyHasConfirmed(ScreenCase):
         self.assertNotIn("fault in this program", words)
         self.assertNotIn("not installed", words)
         self.assertEqual(self.server.written, {})
+
+
+# --- a release nobody has tested -------------------------------------------
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class AReleaseNobodyHasTested(ScreenCase):
+    """A folder whose title ID this tool has never written down.
+
+    These were refused outright, in words saying the file would not even be
+    read. The fix finds its own patch site by the code around it and every
+    file is read and checked before a byte goes back, so the refusal was
+    costing people a fix their game would have taken.
+    """
+
+    def screen_for_untested(self):
+        self.start(MW3_ID, {"default_mp.self": self_file("mw3",
+                                                         "default_mp.self"),
+                            "default.self": self_file("mw3", "default.self")})
+        screen, services = self.build(patcher.ModernWarfareThreePatcher)
+        found = installation("ready", MW3_ID, "mw3")
+        # What detect hands over for a folder whose files name one game and
+        # whose title ID is in no table.
+        found.untested = True
+        found.verified = False
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(found))})
+        screen.on_enter()
+        self.settle(services)
+        return screen
+
+    def notice(self, screen):
+        return " ".join([screen._untested_heading.text(),
+                         screen._untested_body.text()])
+
+    def test_an_untested_release_reads_as_a_warning_not_a_refusal(self):
+        screen = self.screen_for_untested()
+        self.assertTrue(screen._untested_notice.isVisibleTo(screen))
+        words = self.notice(screen)
+        self.assertIn("has not been tested", words)
+        self.assertIn("checked before anything is written", words)
+        self.assertIn("finds its own patch site", words)
+        self.assertIn("Desktop", words)
+        # The refusal that is left is the one the files themselves decide.
+        self.assertIn("If the patch site is not in these files", words)
+        for forbidden in ("will not start", "nothing will be read",
+                          "This is a refusal"):
+            self.assertNotIn(forbidden, words)
+
+    def test_the_fix_is_still_offered_on_a_release_nobody_has_tested(self):
+        screen = self.screen_for_untested()
+        self.assertEqual(screen._files.topLevelItemCount(), 2)
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertEqual(self.server.written, {})
+
+    def test_the_release_is_called_untested_where_the_screen_names_it(self):
+        # The panel is read once on the way in. This line sits beside the
+        # button and names the folder about to be written to.
+        screen = self.screen_for_untested()
+        self.assertIn(MW3_ID, screen._where.text())
+        self.assertIn("This release has not been tested.",
+                      screen._where.text())
+
+    def test_the_last_box_before_writing_says_the_release_is_untested(self):
+        screen = self.screen_for_untested()
+        said = []
+
+        def capture(parent, title, text, *rest):
+            said.append(text)
+            return patcher.QMessageBox.No
+
+        with mock.patch.object(patcher.QMessageBox, "question", capture):
+            screen._on_patch()
+        self.assertEqual(len(said), 1)
+        self.assertIn("This release has not been tested.", said[0])
+        self.assertIn("the patch site was found", said[0])
+        self.assertEqual(self.server.written, {})
+
+    def test_the_same_point_is_not_made_twice_under_the_table(self):
+        # The panel above the table already says this release is untested,
+        # and the caveat for an unverified release says it again in other
+        # words, which reads as two separate problems.
+        screen = self.screen_for_untested()
+        self.assertNotIn("nobody has confirmed", screen._detail.text())
+
+
+# --- being told where the game is ------------------------------------------
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class TypingWhereTheGameIs(ScreenCase):
+    """The search found no folder for this game and the user knows better.
+
+    The screen stopped at "not installed", and a user reading that went
+    looking for the reason their console would not show the game and deleted
+    game data over it. The way out offered here is the user saying where the
+    game is, and nothing on this screen asks anybody to remove anything.
+    """
+
+    FILES = ("default_mp.self", "default.self")
+
+    def screen_with_nothing_found(self, screen_class=None):
+        self.start(MW3_ID, {name: self_file("mw3", name)
+                            for name in self.FILES})
+        screen, services = self.build(
+            screen_class or patcher.ModernWarfareThreePatcher)
+        # The game is in /dev_hdd0/game and the search does not come back with
+        # it, which is the console this way out exists for.
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations":
+                                           staticmethod(detector_for())})
+        screen.on_enter()
+        self.settle(services)
+        return screen, services
+
+    def words(self, screen):
+        return " ".join([screen._panel_heading.text(),
+                         screen._panel_body.text(),
+                         screen._panel_reason.text()])
+
+    def answer(self, screen, path):
+        """Stand in for the box that asks for the folder."""
+        screen.ask_for_folder = lambda: path
+
+    def test_a_game_that_was_not_found_offers_to_be_told_where_it_is(self):
+        screen, _services = self.screen_with_nothing_found()
+        self.assertIn("not installed", screen._panel_heading.text())
+        self.assertTrue(screen._folder_button.isVisibleTo(screen))
+        self.assertIn("the button below takes the folder it is in",
+                      screen._panel_body.text())
+
+    def test_nothing_here_suggests_removing_a_game_to_make_a_scan_work(self):
+        screen, _services = self.screen_with_nothing_found()
+        words = (self.words(screen) + " " + screen._detail.text()).lower()
+        for forbidden in ("delete", "remove", "uninstall"):
+            self.assertNotIn(forbidden, words)
+
+    def test_the_folder_the_user_types_is_read_and_called_untested(self):
+        screen, services = self.screen_with_nothing_found()
+        self.answer(screen, f"/dev_hdd0/game/{MW3_ID}")
+        screen._folder_button.click()
+        self.settle(services)
+        self.assertEqual(screen._files.topLevelItemCount(), len(self.FILES))
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertTrue(screen._untested_notice.isVisibleTo(screen))
+        self.assertIn("This release has not been tested.",
+                      screen._where.text())
+        self.assertEqual(self.server.written, {})
+
+    def test_declining_to_type_one_reads_nothing(self):
+        screen, services = self.screen_with_nothing_found()
+        self.answer(screen, "")
+        screen._folder_button.click()
+        self.settle(services)
+        self.assertIsNone(screen._scan)
+        self.assertIn("not installed", screen._panel_heading.text())
+
+    def test_a_path_outside_the_game_folder_is_answered_before_any_read(self):
+        screen, services = self.screen_with_nothing_found()
+        self.answer(screen, "C:/Games/BLES01428")
+        screen._folder_button.click()
+        self.settle(services)
+        self.assertIsNone(screen._scan)
+        self.assertIn("does not look like a folder",
+                      screen._panel_heading.text())
+        self.assertIn("/dev_hdd0/game", screen._panel_body.text())
+        self.assertTrue(screen._folder_button.isVisibleTo(screen))
+
+    def test_a_folder_that_is_not_on_the_console_says_so_and_asks_again(self):
+        screen, services = self.screen_with_nothing_found()
+        self.answer(screen, "/dev_hdd0/game/BLES09999")
+        screen._folder_button.click()
+        self.settle(services)
+        self.assertIsNone(screen._scan)
+        self.assertEqual(screen._panel_token, "warn")
+        self.assertIn("not on the console", screen._panel_heading.text())
+        # Quoted back as it was typed, so a slip is visible.
+        self.assertIn("/dev_hdd0/game/BLES09999", screen._panel_body.text())
+        self.assertTrue(screen._folder_button.isVisibleTo(screen))
+        self.assertEqual(self.server.written, {})
+
+    def test_the_path_may_name_the_folder_or_its_usrdir(self):
+        self.assertEqual(patcher._folder_title_id(f"/dev_hdd0/game/{MW3_ID}"),
+                         MW3_ID)
+        self.assertEqual(
+            patcher._folder_title_id(f"/dev_hdd0/game/{MW3_ID}/USRDIR/"),
+            MW3_ID)
+        self.assertEqual(patcher._folder_title_id("/dev_hdd0/GAME/bles01428"),
+                         MW3_ID)
+        # A title ID on its own says nothing about where the folder is.
+        self.assertEqual(patcher._folder_title_id(MW3_ID), "")
+        self.assertEqual(patcher._folder_title_id(""), "")
+
+    def test_all_three_screens_take_a_folder_the_user_types(self):
+        # One seam on the shared class rather than a special case on the one
+        # screen somebody reported it from.
+        for screen_class in (patcher.BlackOpsOnePatcher,
+                             patcher.BlackOpsTwoPatcher,
+                             patcher.ModernWarfareThreePatcher):
+            self.assertIs(screen_class.ask_for_folder,
+                          patcher.PatcherScreen.ask_for_folder)
+            screen, _services = self.screen_with_nothing_found(screen_class)
+            self.assertTrue(screen._folder_button.isVisibleTo(screen))
 
 
 # --- the backup manifest ---------------------------------------------------

@@ -201,7 +201,7 @@ class ContentTests(AboutCase):
 
     def test_credits_name_what_is_bundled(self):
         text = self.text_of(self.build())
-        for name in ("webMAN MOD", "scetool", "naehrwert", "PySide6",
+        for name in ("webMAN MOD", "keysmith", "naehrwert", "PySide6",
                      "patch-bo1.py", "patch-bo2.py", "patch-mw3.py"):
             self.assertIn(name, text)
 
@@ -247,9 +247,9 @@ class ContentTests(AboutCase):
         # and the screen must not put words in their authors' mouths.
         text = self.text_of(self.build())
         self.assertIn("MIT licensed", text)
-        for name in ("webMAN MOD", "scetool", "PySide6"):
+        for name in ("webMAN MOD", "naehrwert", "PySide6"):
             self.assertIn(name, text)
-        for claim in ("scetool is MIT", "webMAN MOD is MIT",
+        for claim in ("the keyset is MIT", "webMAN MOD is MIT",
                       "GPL compliant", "fully compliant"):
             self.assertNotIn(claim, text)
 

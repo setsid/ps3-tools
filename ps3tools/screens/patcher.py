@@ -45,6 +45,20 @@ the installed title update is compared against the one somebody watched the fix
 work on before Apply comes alive. That is a different question from whether the
 update is the newest one, and a release nobody has verified has no answer to it
 at all rather than a bad one.
+
+A release this tool has never seen reads as a warning here. The files are read
+and checked before a byte is written and the fix finds its own patch site by
+the code around it, so an unfamiliar title ID costs the user a sentence saying
+so. The screen says it again on the line naming the folder it is about to write
+to and in the box that asks for the last word, because those are what somebody
+reads on the way to pressing Apply.
+
+What is still refused is a folder whose files could belong to more than one
+game, where nothing on the console says which of them it is. A screen that
+guessed there offered a Black Ops 1 user Ghosts, then Modern Warfare 2, and
+they deleted game data chasing it. Nothing on this screen suggests deleting
+anything, and where the search finds no folder for this game the way out
+offered is the user saying where it is.
 """
 
 import os
@@ -102,6 +116,48 @@ RESTART_AFTER_RESTORE = (
     "Restart your PlayStation 3 before launching the game. The original files "
     "will not take effect until you do, and the game will hang on launch if "
     "you try it first.")
+
+# A release the title table does not name, said as the warning it is. The
+# table decides which releases somebody has watched the fix work on, and it
+# decides nothing else: the binaries and the key come from the game, and the
+# patch site is found by the code around it, so a title ID this tool has not
+# written down is a reason to say so and nothing more. This used to be a
+# refusal, and it refused people whose game the fix would have suited.
+UNTESTED_HEADING = "This release has not been tested"
+
+UNTESTED_BODY = (
+    "{title_id} is not one of the releases this fix has been tested on.\n\n"
+    "The files are read and checked before anything is written, and the fix "
+    "finds its own patch site by the code around it rather than at a fixed "
+    "address, so a release this tool has not seen before is usually fine.\n\n"
+    "Your original files are copied to the Desktop first, exactly as they are "
+    "on every other release.\n\n"
+    "If the patch site is not in these files the fix is refused, and this "
+    "screen names the file it was missing from.")
+
+#: The same fact in one line, for the places the screen names the release it
+#: is about to write to. The panel is read once on the way in; this is what is
+#: in front of somebody at the moment they decide.
+UNTESTED_LINE = "This release has not been tested."
+
+#: What the box asking for the folder says. The example is a real title ID
+#: shape, because a person who has never typed a console path needs to see one
+#: before they can produce one.
+FOLDER_PROMPT = (
+    "Type the folder this game is installed in on the console, for example "
+    "/dev_hdd0/game/BLES01032.\n\n"
+    "The files in it are read and checked before anything is written, and the "
+    "fix is refused if they are not the ones it expects. Your originals are "
+    "copied to the Desktop first, the same as on any other release.")
+
+#: A folder somebody typed that the console does not have. Kept apart from
+#: flow's own states, which are answers to where this game is; this is an
+#: answer to whether that is the path they meant.
+TYPED_MISSING = "typed_folder_missing"
+
+#: Where the console keeps installed games, and the only place a typed folder
+#: can be. The fix reads the files out of that folder's USRDIR afterwards.
+GAME_FOLDER = "/dev_hdd0/game"
 
 SUCCESS_HEADING = "The fix is on the console"
 SUCCESS_BODY = (
@@ -195,7 +251,20 @@ def _state_message(location, name):
             f"drive, no disc copy, and no title update.\n\n"
             f"This fix changes files that arrive with the game's title update, "
             f"so the game has to be installed and played once with the console "
-            f"online before there is anything here to fix."))
+            f"online before there is anything here to fix.\n\n"
+            f"If the game is on the console and this search has missed "
+            f"it, the button below takes the folder it is in. The files in "
+            f"it are checked before anything is written."))
+
+    if state == TYPED_MISSING:
+        typed = getattr(location, "typed_path", "") or "That folder"
+        return ("warn", "That folder is not on the console", (
+            f"{typed} was not there when the console was asked for it, so "
+            f"nothing has been read and nothing has been changed.\n\n"
+            f"Check the path against what webMAN or an FTP client shows, and "
+            f"give the folder the game is installed in under {GAME_FOLDER}, "
+            f"for example {GAME_FOLDER}/BLES01032. The button below asks "
+            f"again."))
 
     if state == flow.NO_UPDATE:
         return ("info", "The title update has not been downloaded yet", (
@@ -212,18 +281,20 @@ def _state_message(location, name):
             f"usually takes a few minutes. Either way, come back here and "
             f"press Scan again afterwards."))
 
+    # All that is left of what used to be the refusal for every title ID this
+    # tool had not written down. A folder whose files name one game is now
+    # offered as an untested release of it; this is the folder whose files
+    # could belong to several, where the honest answer is that it cannot tell.
     if state == flow.UNKNOWN_VARIANT:
-        return ("warn", "This version of the game is not one this tool knows", (
-            f"{title_id or 'The copy on the console'} is a Call of Duty "
-            f"installation, but it is not one of the releases of the two "
-            f"games this tool fixes. Every release of those two is known to "
-            f"this tool by its title ID, and this is not one of them.\n\n"
-            f"There is nothing here that could say what this game is, and the "
-            f"settings needed to rebuild a file it knows nothing about are a "
-            f"guess that produces a game that will not start at all. So "
-            f"nothing will be read and nothing will be changed.\n\n"
-            f"This is a refusal. The copy on your console is exactly as it "
-            f"was."))
+        return ("warn", "This tool cannot tell which game this folder holds", (
+            f"{title_id or 'The folder on the console'} holds files that "
+            f"could belong to more than one game, and its title ID is not one "
+            f"this tool has written down, so there is nothing here that says "
+            f"which game this is.\n\n"
+            f"A fix meant for one game and applied to another is a game that "
+            f"stops starting, so nothing has been read out of these files and "
+            f"nothing on the console has been changed. The copy on your "
+            f"console is exactly as it was."))
 
     return ("text_dim", "Nothing to report", "")
 
@@ -388,6 +459,9 @@ class PatcherScreen(Screen):
         #: Which installed release the user picked, when more than one of them
         #: is on the console. Empty until they have been asked.
         self._release = ""
+        #: The folder on the console the user typed, for a game the search did
+        #: not find. Empty for every scan that found the game itself.
+        self._folder = ""
         self._build()
         if self.theme is not None:
             try:
@@ -537,6 +611,30 @@ class PatcherScreen(Screen):
         self._update.hide()
         layout.addWidget(self._update)
 
+        # A release nobody has tested the fix on, above the table rather than
+        # in place of it. The scan read those files and their state is exactly
+        # what the table says; the only thing this adds is that nobody has
+        # watched the fix work on this particular release, which is a warning
+        # and never a reason to stop.
+        self._untested_notice = QFrame()
+        self._untested_notice.setObjectName("untestednotice")
+        untested = QVBoxLayout(self._untested_notice)
+        untested.setContentsMargins(16, 14, 16, 14)
+        untested.setSpacing(6)
+        self._untested_heading = QLabel(UNTESTED_HEADING)
+        self._untested_heading.setWordWrap(True)
+        untested_font = self._untested_heading.font()
+        untested_font.setPointSize(untested_font.pointSize() + 2)
+        untested_font.setBold(True)
+        self._untested_heading.setFont(untested_font)
+        untested.addWidget(self._untested_heading)
+        self._untested_body = QLabel("")
+        self._untested_body.setWordWrap(True)
+        self._untested_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        untested.addWidget(self._untested_body)
+        self._untested_notice.hide()
+        layout.addWidget(self._untested_notice)
+
         # The state of the console, said once and said loudly. It is the whole
         # answer in every case except a successful scan, so it sits above the
         # file table rather than below it, and the table is hidden when there
@@ -571,6 +669,13 @@ class PatcherScreen(Screen):
         self._panel_button.clicked.connect(self._on_open_updates)
         self._panel_button.hide()
         panel_row.addWidget(self._panel_button)
+        # Shown where the search came back with no folder for this game. The
+        # user may well know where it is, and what was offered before this
+        # existed was nothing at all.
+        self._folder_button = QPushButton("Enter the folder myself")
+        self._folder_button.clicked.connect(self._on_type_folder)
+        self._folder_button.hide()
+        panel_row.addWidget(self._folder_button)
         panel_row.addStretch(1)
         panel.addLayout(panel_row)
         self._panel.hide()
@@ -737,6 +842,7 @@ class PatcherScreen(Screen):
         self._scan_text = ""
         self._detail.setText(self._compose(""))
         self._hide_update()
+        self._hide_untested()
         self._clear_state()
         self._patch.setEnabled(False)
         self._rescan.setEnabled(False)
@@ -751,10 +857,12 @@ class PatcherScreen(Screen):
 
         extras = self.scan_extras
         wanted = self._release
+        folder = self._folder
 
         def work(control):
             return _scan_console(host, title_key, tool, lister, writer,
-                                 control.progress, control, extras, wanted)
+                                 control.progress, control, extras, wanted,
+                                 folder)
 
         task = self.submit(work)
         task.progress.connect(self._on_progress)
@@ -766,6 +874,12 @@ class PatcherScreen(Screen):
 
     def _on_rescan(self):
         self._release = ""
+        # And the folder somebody typed, for the same reason: this button is
+        # the way back to the question, and a folder that stayed put would
+        # leave them no way to point somewhere else. The read-back that
+        # follows a patch does not come through here, so it keeps the folder
+        # it has just written to.
+        self._folder = ""
         self.start_scan()
 
     def _scan_done(self):
@@ -821,6 +935,20 @@ class PatcherScreen(Screen):
             and not (self._update_state is not None
                      and self._update_state.blocks)
             and self.patch_allowed())
+
+    def ask_for_folder(self):
+        """Where the game is, from the user, or "" if they would rather not.
+
+        A seam like the others here, so that all three screens ask the same
+        question in the same words and a test can answer it without a dialogue
+        box on a machine with no display. Nothing is done with the answer
+        until it has been checked: it has to name a folder, the console is
+        asked for that folder, and the files in it are read against what this
+        fix expects before a byte is written.
+        """
+        typed, said_yes = QInputDialog.getText(
+            self, "Where is the game?", FOLDER_PROMPT)
+        return typed.strip() if said_yes else ""
 
     def patch_context(self):
         """What the fix needs that is not in the binary. See flow.apply_fix."""
@@ -900,6 +1028,34 @@ class PatcherScreen(Screen):
             return ""
         return title_ids[listing.currentRow()]
 
+    def _on_type_folder(self):
+        """The user knows where the game is, so nothing is searched for.
+
+        Whatever they give is treated as a release nobody has tested: the
+        files in that folder are read and checked against what this fix
+        expects, the screen says the release is untested, and the fix is
+        refused if the patch site is not there. Nothing else on the console is
+        looked at, and nothing on this screen asks anybody to remove a game to
+        make a search work.
+        """
+        if self._writing or self._reading_back:
+            return
+        typed = self.ask_for_folder()
+        if not typed:
+            return
+        if not _folder_title_id(typed):
+            self._show_state(
+                "warn", "That does not look like a folder on the console",
+                f"Nothing has been read and nothing has been changed.\n\n"
+                f"The console keeps installed games in {GAME_FOLDER}, one "
+                f"folder each, and the path typed was {typed}. Give that "
+                f"folder, for example {GAME_FOLDER}/BLES01032. The button "
+                f"below asks again.",
+                offer_folder=True)
+            return
+        self._folder = typed
+        self.start_scan()
+
     def _on_scanned(self, result):
         # Three or four. A test that drives this screen builds the three the
         # screen has always taken, and a title with nothing extra to read
@@ -910,7 +1066,7 @@ class PatcherScreen(Screen):
         self._location = location
         self._task = None
         self._rescan.setEnabled(True)
-        self._where.setText(where)
+        self._where.setText(self._where_words(where))
         self._files.clear()
         self._refresh_restore(
             (report.title_id if report is not None else "")
@@ -939,6 +1095,7 @@ class PatcherScreen(Screen):
         if report is None:
             self._patch.setEnabled(False)
             self._hide_update()
+            self._hide_untested()
             if self._reading_back:
                 # The usual panel for this says nothing has been changed on the
                 # console, and a moment ago something was. Say what happened
@@ -992,6 +1149,13 @@ class PatcherScreen(Screen):
         self._update_state = flow.update_check(report.title_id,
                                                self._installed_version())
         self._show_update(self._update_state)
+        # A warning beside the table rather than in place of it, and it never
+        # touches the button below: the files have been read, and what is in
+        # them is what decides whether the fix is offered.
+        if self._untested():
+            self._show_untested(report.title_id)
+        else:
+            self._hide_untested()
         self._patch.setEnabled(report.can_patch
                                and not self._update_state.blocks
                                and self.patch_allowed())
@@ -1089,13 +1253,15 @@ class PatcherScreen(Screen):
         if notes and location.state in (flow.LIST_FAILED, flow.UNREACHABLE):
             reason = "\n\n".join([reason] + notes) if reason else "\n\n".join(notes)
         self._show_state(token, heading, body, reason,
-                         offer_updates=location.state == flow.NO_UPDATE)
+                         offer_updates=location.state == flow.NO_UPDATE,
+                         offer_folder=location.state in (flow.NOT_INSTALLED,
+                                                         TYPED_MISSING))
         self._detail.setText(self._compose(""))
         self._show_next_step(None)
         self.status_message.emit(heading)
 
     def _show_state(self, token, heading, body, reason="",
-                    offer_updates=False):
+                    offer_updates=False, offer_folder=False):
         self._panel_token = token
         self._panel_heading.setText(heading)
         self._panel_body.setText(body)
@@ -1103,6 +1269,7 @@ class PatcherScreen(Screen):
         self._panel_reason.setText(reason)
         self._panel_reason.setVisible(bool(reason))
         self._panel_button.setVisible(bool(offer_updates))
+        self._folder_button.setVisible(bool(offer_folder))
         self._paint_state()
         self._panel.show()
         # Nothing was read, so there are no rows. An empty table beside the
@@ -1114,6 +1281,7 @@ class PatcherScreen(Screen):
     def _clear_state(self):
         self._panel_token = ""
         self._panel_button.hide()
+        self._folder_button.hide()
         self._panel.hide()
         self._files.setVisible(True)
         self._filler.setVisible(False)
@@ -1134,6 +1302,58 @@ class PatcherScreen(Screen):
         self._panel_heading.setStyleSheet(f"color: {accent}; border: none;")
         self._panel_body.setStyleSheet(f"color: {text}; border: none;")
         self._panel_reason.setStyleSheet(f"color: {dim}; border: none;")
+
+    def _untested(self):
+        """Whether nobody has watched this fix work on the release on screen.
+
+        True for a folder whose title ID the table does not name and whose
+        game was worked out from the files in it, and true for a folder the
+        user typed. Both are the same thing to a user: the fix is being tried
+        on a release nobody has reported back on.
+        """
+        installation = getattr(self._location, "installation", None)
+        return bool(getattr(installation, "untested", False))
+
+    def _where_words(self, where):
+        """The folder being worked on, and whether its release is tested.
+
+        The warning is on this line as well as in the panel because this is
+        the line that names what is about to be written to, and it stays on
+        screen beside the button while the panel above is read once.
+        """
+        if not where or not self._untested():
+            return where
+        return f"{where}. {UNTESTED_LINE}"
+
+    def _show_untested(self, title_id):
+        self._untested_body.setText(UNTESTED_BODY.format(
+            title_id=title_id or "This copy of the game"))
+        self._paint_untested()
+        self._untested_notice.show()
+
+    def _hide_untested(self):
+        self._untested_notice.hide()
+
+    def _paint_untested(self):
+        """The theme's warning colour, in the shape of the update notice.
+
+        Drawn like the other panel that stands between a user and the button,
+        because it carries the same weight: something about this run is worth
+        knowing before it starts.
+        """
+        accent = self._colour_name("warn") or self._colour_name("text")
+        surface = self._colour_name("surface_alt") \
+            or self._colour_name("surface")
+        text = self._colour_name("text")
+        if not (accent and surface and text):
+            return
+        self._untested_notice.setStyleSheet(
+            f"QFrame#untestednotice {{ background-color: {surface};"
+            f" border: 1px solid {accent};"
+            f" border-left: 6px solid {accent};"
+            f" border-radius: 6px; }}")
+        self._untested_heading.setStyleSheet(f"color: {accent}; border: none;")
+        self._untested_body.setStyleSheet(f"color: {text}; border: none;")
 
     def _paint_success(self):
         """Green, in the theme's own ok, with the check mark drawn in it."""
@@ -1338,12 +1558,17 @@ class PatcherScreen(Screen):
                     f"files opened, but what is inside them is not the build "
                     f"the fix was written for. Quote {report.title_id} if you "
                     f"report this.")
-            elif not report.not_examined:
+            elif not report.not_examined and not self._untested():
                 # The honest caveat, and it belongs under the plan rather than
                 # over it: the scan has already opened the files and found
                 # what it expected, so the fix suits this release as far as
                 # anything can be checked from here. Nobody has simply watched
                 # it work on this one yet.
+                #
+                # Left out for a release the title table does not name at all,
+                # which has the panel above the table saying this already. The
+                # same point made twice in different words reads as two
+                # separate problems.
                 lines.append(
                     f"{report.title_id} is a release nobody has confirmed "
                     f"this fix on yet. Its files opened and their contents "
@@ -1382,9 +1607,19 @@ class PatcherScreen(Screen):
                 QMessageBox.information(self, "Not yet", why)
             return
         names = _and_list([item.name for item in self._scan.chosen])
+        # Said again here for a release nobody has tested. This box is the
+        # last word before anything is written and it is the one thing on
+        # screen somebody has to read to get past, so it is where the warning
+        # is worth most.
+        untested = ""
+        if self._untested():
+            untested = (f"{UNTESTED_LINE} The files were read and the patch "
+                        f"site was found in them, which is the check that "
+                        f"decides whether the fix fits.\n\n")
         answer = QMessageBox.question(
             self, "Apply the fix",
             f"{names} on the console will be replaced.\n\n"
+            f"{untested}"
             f"Your original files are copied to the Desktop first and are put "
             f"back automatically if anything goes wrong. Close the game "
             f"completely before continuing: it is the running binary.\n\n"
@@ -1532,6 +1767,7 @@ class PatcherScreen(Screen):
         # that read can make.
         self._hide_success()
         self._hide_update()
+        self._hide_untested()
         self._files.clear()
         self._files.setVisible(False)
         self._filler.setVisible(True)
@@ -1950,6 +2186,8 @@ class PatcherScreen(Screen):
             self._paint_restart()
         if not self._update.isHidden():
             self._paint_update()
+        if not self._untested_notice.isHidden():
+            self._paint_untested()
         if self._writing:
             return
         if self._panel_token:
@@ -1963,8 +2201,74 @@ def _release_label(title_id):
     return f"{title_id} in {titles.usrdir_for(title_id)}"
 
 
+def _folder_title_id(typed):
+    """The title ID in a path somebody typed, or "" if there is not one.
+
+    The game's own folder and its USRDIR are both accepted, with or without a
+    trailing slash, because both are what a person copies out of an FTP client
+    or off webMAN's file manager.
+
+    Anywhere other than /dev_hdd0/game comes back empty. The fix reads and
+    writes the files in that folder's USRDIR, so a path pointing somewhere
+    else is one this screen would quietly ignore in favour of a folder it
+    worked out for itself, and being told so is better than being ignored.
+    """
+    parts = [part for part in str(typed or "").replace("\\", "/").split("/")
+             if part]
+    if parts and parts[-1].upper() == "USRDIR":
+        parts = parts[:-1]
+    if not parts:
+        return ""
+    if [part.lower() for part in parts[:-1]] != \
+            GAME_FOLDER.strip("/").split("/"):
+        return ""
+    return titles.normalise(parts[-1])
+
+
+class _TypedRelease:
+    """The installation record for a folder the user pointed this screen at.
+
+    The screen reads two things off an installation: which title update is on
+    it, which nothing has read here, and whether anybody has tested the fix on
+    this release, which a folder somebody typed never is. Standing in for the
+    record rather than going without one keeps the typed folder on exactly the
+    same path through this screen as a folder the search found.
+    """
+
+    untested = True
+    verified = False
+    tu_version = None
+
+    def __init__(self, title_id):
+        self.title_id = title_id
+
+
+def _typed_location(lister, folder):
+    """The folder the user typed, as a Location the screen already reads.
+
+    Nothing is searched for and nothing else on the console is looked at. The
+    user has said where the game is; the only question left is whether that
+    folder is there, and it is put to the console before a report is built on
+    it so that a mistyped path is answered as a mistyped path.
+    """
+    title_id = _folder_title_id(folder)
+    try:
+        lister.list_dir(titles.usrdir_for(title_id) + "/")
+    except Exception as exc:                                # noqa: BLE001
+        location = flow.Location(
+            TYPED_MISSING, [title_id],
+            reason=f"{exc.__class__.__name__}: {exc}")
+    else:
+        location = flow.Location(flow.READY, [title_id],
+                                 installation=_TypedRelease(title_id))
+    # Carried on the location so that the wording can quote what was typed
+    # rather than the folder it was turned into.
+    location.typed_path = folder
+    return location
+
+
 def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
-                  control, extras=None, wanted=""):
+                  control, extras=None, wanted="", folder=""):
     """Find the installation and scan it. Runs on a worker, never on the GUI.
 
     Detection is a read, so it goes through the read-only transport. The write
@@ -1977,14 +2281,23 @@ def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
     this can end, and none of that can be recovered once the answer has become
     a boolean. extras is whatever the screen's own scan_extras read while the
     console was open, and is empty for a title that needs nothing.
+
+    folder is a path the user typed. Where there is one the search is set
+    aside altogether and that folder is what is read, which is the whole point
+    of having asked them.
     """
-    progress({"stage": "find", "message": "looking for the game on the console",
+    progress({"stage": "find",
+              "message": ("reading the folder you gave" if folder
+                          else "looking for the game on the console"),
               "done": 0, "total": 1})
     detector = detect.find_installations if detect is not None else None
     extra = {}
     with open_lister(host) as lister:
-        location = flow.locate(lister, title_key, detector=detector,
-                               wanted=wanted)
+        if folder:
+            location = _typed_location(lister, folder)
+        else:
+            location = flow.locate(lister, title_key, detector=detector,
+                                   wanted=wanted)
         if extras is not None:
             extra = extras(lister) or {}
 
@@ -2001,7 +2314,8 @@ def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
         return location, None, "", extra
     title_id = location.title_id
     with open_writer(host) as writer:
-        report = flow.scan(writer, tool, title_id, progress=progress)
+        report = flow.scan(writer, tool, title_id, progress=progress,
+                           title_key=title_key)
     return location, report, _release_label(title_id), extra
 
 

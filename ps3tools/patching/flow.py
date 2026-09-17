@@ -385,6 +385,9 @@ class ScanReport:
         # is not a refusal and must never be shown as one: it is the reason the
         # screen says the fix is being attempted rather than applied.
         self.verified = titles.is_verified(self.title_id)
+        #: True when the title ID is not one the table names. The scan is
+        #: done anyway and the screen says the release has not been tested.
+        self.untested = False
 
     @property
     def ok(self):
@@ -501,25 +504,33 @@ def _listing(writer, usrdir):
     return {entry["name"]: entry for entry in entries}, unparsed
 
 
-def scan(writer, tool, title_id, progress=None, workdir=None):
+def scan(writer, tool, title_id, progress=None, workdir=None, title_key=""):
     """What is in USRDIR and what state each file is in. Never raises.
 
     Entering a patcher screen runs this with no user action, so it has to come
     back with something to show whatever the console does.
+
+    title_key is the game the calling screen fixes. It is what lets a release
+    the title table has never named be read at all: the binaries and the
+    klicensee belong to the game rather than to the title ID, and the patch
+    site is what decides whether the fix fits. Without it a user's Spanish
+    copy of Black Ops was turned away while holding the same binaries as the
+    English disc byte for byte.
     """
     title_id = titles.normalise(title_id)
     config = titles.config_for(title_id)
+    if config is None and title_key:
+        config = titles.TITLES.get(title_key)
     if config is None:
         report = ScanReport(title_id)
         report.error = (
-            f"{title_id} is not one of the games this tool fixes. It is not a "
-            f"published release of Black Ops II or of Modern Warfare 3, so "
-            f"there is nothing here for it. Nothing has been read and nothing "
-            f"will be written.")
+            f"{title_id} is not one of the games this tool fixes. Nothing has "
+            f"been read and nothing will be written.")
         return report
 
     usrdir = titles.usrdir_for(title_id)
     report = ScanReport(title_id, config, usrdir)
+    report.untested = not titles.is_recognised(title_id)
 
     problem = getattr(tool, "problem", "")
     if problem:

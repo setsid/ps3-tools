@@ -5,15 +5,20 @@ stderr, resolves its keys relative to the working directory, cannot read or
 write a fake-signed SELF at all, and gets flagged as malware because it is an
 unsigned executable of that age.
 
-Three calls cover everything:
+Four calls cover everything:
 
     inspect(file, klicensee="")           describe a file
     decrypt(file, klicensee="")           SELF or fself to ELF
     sign(elf, template, klicensee="")     ELF back to the form it came from
+    fake_sign(elf, template)              ELF into a fake-signed SELF
 
-All three take a path or bytes. All three raise on failure, with the file, the
+All four take a path or bytes. All four raise on failure, with the file, the
 field and what was expected in the message, rather than printing a warning and
 carrying on.
+
+sign() gives back the form the template came in, which for a retail file means
+a retail re-sign. fake_sign() always gives a fake-signed file, whatever the
+template was, because that is the form PS3HEN loads.
 
 The public sign() takes the name of the module it is implemented in, so
 keysmith.sign is the function and the module is reached through sys.modules
@@ -34,7 +39,7 @@ from .errors import (DecryptionFailed, KeyNotFound, NotAnSce, SceError,
 from .self import SelfFile
 
 __all__ = [
-    "inspect", "decrypt", "sign", "read", "Description",
+    "inspect", "decrypt", "sign", "fake_sign", "read", "Description",
     "SceError", "NotAnSce", "UnsupportedSce", "TruncatedFile", "KeyNotFound",
     "DecryptionFailed", "SigningFailed", "SelfFile", "VERSION",
 ]
@@ -161,3 +166,37 @@ def sign(elf, template, klicensee="", keys_path="", filename=""):
     store = _keys.load(keys_path) if keys_path else None
     return _sign.rebuild(parsed, elf, _klic(klicensee), store,
                          filename=filename)
+
+
+def fake_sign(elf, template, klicensee="", keys_path="", filename=""):
+    """An ELF put into a fake-signed container, built from any template.
+
+    This is the form PS3HEN loads. A retail re-sign carries Sony's signature,
+    which cannot be regenerated once the file's bytes have moved, and HEN
+    appears to check it: three consoles black screened at the moment the
+    patched multiplayer binary loaded.
+
+    The template is the user's own retail file and everything that identifies
+    the file is taken from it, the whole NPDRM control block included. That is
+    the difference from every fake-signed release in the corpus, which carries
+    a block of zeros and therefore answers 8001000F on a console that checks
+    licences.
+
+    A template that is already fake signed is rebuilt through its own header
+    instead, so passing one here does the sensible thing rather than building
+    a second container around it.
+
+    filename is the name the file will carry on the console. It feeds the
+    CID_FN hash, so only a file being renamed needs to give it, and only that
+    case needs a keyset.
+    """
+    parsed = template if isinstance(template, SelfFile) else read(template)
+    if isinstance(elf, (str, os.PathLike)):
+        with open(os.fspath(elf), "rb") as handle:
+            elf = handle.read()
+    elf = bytes(elf)
+    if _fself.is_fake_signed(parsed):
+        return _fself.rebuild(parsed, elf)
+    store = _keys.load(keys_path) if keys_path else None
+    return _fself.from_retail(parsed, elf, filename=filename,
+                              klicensee=_klic(klicensee), store=store)

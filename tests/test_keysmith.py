@@ -533,6 +533,297 @@ class TheFakeSigned(unittest.TestCase):
             signing.rebuild(parsed, b"\x7fELF" + b"\x00" * 100)
 
 
+class TheFakeSignedFromRetail(unittest.TestCase):
+    """Building a fake-signed SELF out of a retail one.
+
+    This is the form PS3HEN loads. A retail re-sign carries a signature that
+    cannot be regenerated once a file's bytes have moved, and HEN appears to
+    check it: three consoles black screened at the moment the patched
+    multiplayer binary loaded.
+
+    rebuild() cannot do this, because it keeps an existing fake-signed
+    header whole and only Modern Warfare 3 has such a file on disk. Both
+    Black Ops titles have to have the container built for them.
+    """
+
+    def built(self, key):
+        """A sample, the ELF out of it, and that ELF fake signed."""
+        item = sample(key)
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        return item, elf, keysmith.fake_sign(elf, item.path, item.klicensee)
+
+    def digest_block(self, parsed):
+        from ps3tools.keysmith.structs import CONTROL_DIGEST
+        return [c for c in parsed.control_infos
+                if c.info_type == CONTROL_DIGEST][0]
+
+    def npdrm_block(self, parsed):
+        from ps3tools.keysmith.structs import CONTROL_NPDRM
+        return [c for c in parsed.control_infos
+                if c.info_type == CONTROL_NPDRM][0]
+
+    def test_every_retail_sample_gives_back_the_elf_that_went_in(self):
+        need_keys()
+        ran = 0
+        for item in chosen():
+            if item.kind != "self":
+                continue
+            with self.subTest(sample=item.key):
+                elf = keysmith.decrypt(item.path, item.klicensee)
+                out = keysmith.fake_sign(elf, item.path, item.klicensee)
+                self.assertEqual(keysmith.decrypt(out), elf)
+                ran += 1
+        if not ran:
+            self.skipTest("none of the corpus is on this machine")
+
+    def test_the_header_is_the_shape_every_real_fself_has(self):
+        item, elf, out = self.built("mw3-eboot")
+        parsed = keysmith.read(out)
+        self.assertEqual(parsed.sce.key_revision, fself.FAKE_KEY_REVISION)
+        self.assertEqual(parsed.sce.metadata_offset, 0x480)
+        self.assertEqual(parsed.sce.header_length, 0x980)
+        self.assertEqual(parsed.sce.data_length, len(elf))
+        self.assertTrue(keysmith.inspect(out).fake_signed)
+
+    def test_nothing_is_compressed_and_nothing_is_encrypted(self):
+        from ps3tools.keysmith.structs import SECTION_INFO_ENCRYPTED
+        item, elf, out = self.built("mw3-eboot")
+        for index, info in enumerate(keysmith.read(out).section_infos):
+            with self.subTest(section=index):
+                self.assertEqual(info.compressed, 1)
+                self.assertNotEqual(info.encrypted, SECTION_INFO_ENCRYPTED)
+
+    def test_the_body_is_the_elf_laid_down_whole_after_the_header(self):
+        """Which is what all three fselfs in the corpus are."""
+        item, elf, out = self.built("mw3-eboot")
+        head = keysmith.read(out).sce.header_length
+        self.assertEqual(out[head:], elf)
+        self.assertEqual(len(out), head + len(elf))
+
+    def test_the_npdrm_block_is_the_retail_one_rather_than_zeros(self):
+        """The whole reason this exists rather than TrueAncestor's resigner.
+
+        Every fake-signed release in the corpus carries a block that is
+        entirely zero, and that is why those files answer 8001000F on a
+        console that checks licences.
+        """
+        item, elf, out = self.built("mw3-eboot")
+        source = keysmith.read(item.path).npdrm
+        described = keysmith.inspect(out)
+        self.assertFalse(described.npdrm_is_zeroed)
+        self.assertEqual(described.npdrm.pack(), source.pack())
+
+    def test_the_file_digest_is_the_sha1_of_the_elf_inside_it(self):
+        item, elf, out = self.built("mw3-eboot")
+        payload = self.digest_block(keysmith.read(out)).payload
+        at = fself.DIGEST_ELF_SHA1_AT
+        self.assertEqual(payload[at:at + 20], hashlib.sha1(elf).digest())
+
+    def test_a_real_fself_carries_the_digest_this_computes(self):
+        """The gate for that digest is a real file, not this package.
+
+        The Modern Warfare 3 fake-signed release carries exactly the SHA1 of
+        the ELF inside it, which is what makes recomputing it here right
+        rather than merely plausible.
+        """
+        item = sample("mw3-bles01428")
+        elf = keysmith.decrypt(item.path)
+        payload = self.digest_block(keysmith.read(item.path)).payload
+        at = fself.DIGEST_ELF_SHA1_AT
+        self.assertEqual(payload[at:at + 20], hashlib.sha1(elf).digest())
+
+    def test_it_matches_the_real_modern_warfare_three_fself(self):
+        """The strongest gate to hand: a real fself of the same binary.
+
+        Every structural field agrees. The file is not byte identical and is
+        not meant to be, and the three things that differ are each
+        deliberate: the NPDRM block, the minimum firmware version and the
+        filler in the metadata region. The next test covers those.
+        """
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        retail = sample("mw3-mp")
+        elf = keysmith.decrypt(retail.path, retail.klicensee)
+        mine = keysmith.read(keysmith.fake_sign(elf, retail.path,
+                                                retail.klicensee))
+        real = keysmith.read(sample("mw3-bles01428").path)
+        for field in ("magic", "version", "key_revision", "header_type",
+                      "metadata_offset", "header_length", "data_length"):
+            self.assertEqual(getattr(mine.sce, field),
+                             getattr(real.sce, field), field)
+        for field in ("header_type", "app_info_offset", "elf_offset",
+                      "phdr_offset", "shdr_offset", "section_info_offset",
+                      "sce_version_offset", "control_info_offset",
+                      "control_info_size", "padding"):
+            self.assertEqual(getattr(mine.self_header, field),
+                             getattr(real.self_header, field), field)
+        self.assertEqual(mine.app_info.pack(), real.app_info.pack())
+        self.assertEqual(mine.sce_version.pack(), real.sce_version.pack())
+        self.assertEqual([i.pack() for i in mine.section_infos],
+                         [i.pack() for i in real.section_infos])
+        self.assertEqual(mine.elf_header.pack(), real.elf_header.pack())
+        self.assertEqual([p.pack() for p in mine.program_headers],
+                         [p.pack() for p in real.program_headers])
+        self.assertEqual([s.pack() for s in mine.section_headers],
+                         [s.pack() for s in real.section_headers])
+        self.assertEqual([(b.info_type, b.size) for b in mine.control_infos],
+                         [(b.info_type, b.size) for b in real.control_infos])
+        self.assertEqual(mine.raw[mine.sce.header_length:],
+                         real.raw[real.sce.header_length:])
+        self.assertEqual(len(mine.raw), len(real.raw))
+
+    def test_it_differs_from_the_real_fself_only_where_it_means_to(self):
+        """Three fields, and each difference is the point of the exercise.
+
+        The real file zeroes the NPDRM block, which is why it answers
+        8001000F. It also zeroes the minimum firmware version, which is a
+        field that identifies the title and that nothing here can derive, so
+        it is carried over instead. The metadata region is filler that
+        nothing reads.
+        """
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        retail = sample("mw3-mp")
+        elf = keysmith.decrypt(retail.path, retail.klicensee)
+        mine = keysmith.read(keysmith.fake_sign(elf, retail.path,
+                                                retail.klicensee))
+        real = keysmith.read(sample("mw3-bles01428").path)
+        stock = keysmith.read(retail.path)
+
+        self.assertFalse(any(self.npdrm_block(real).payload))
+        self.assertEqual(self.npdrm_block(mine).payload,
+                         self.npdrm_block(stock).payload)
+
+        at = fself.DIGEST_FIRMWARE_AT
+        self.assertEqual(self.digest_block(real).payload[at:at + 8],
+                         b"\x00" * 8)
+        self.assertEqual(self.digest_block(mine).payload[at:at + 8],
+                         self.digest_block(stock).payload[at:at + 8])
+
+        start = (mine.self_header.control_info_offset
+                 + mine.self_header.control_info_size)
+        self.assertNotEqual(mine.raw[start:mine.sce.header_length],
+                            real.raw[start:real.sce.header_length])
+
+    def test_building_the_same_binary_twice_gives_the_same_file(self):
+        """The filler is derived from the ELF rather than drawn at random.
+
+        A user comparing two builds of the same patch should see no
+        difference, and a difference that means nothing is the worst kind to
+        have to account for.
+        """
+        item, elf, first = self.built("mw3-eboot")
+        second = keysmith.fake_sign(elf, item.path, item.klicensee)
+        self.assertEqual(first, second)
+
+    def test_giving_the_name_it_already_has_reproduces_its_own_hashes(self):
+        """A hash recomputed and agreeing is checked; a copied one is not."""
+        item, elf, plain = self.built("mw3-eboot")
+        named = keysmith.fake_sign(elf, item.path, item.klicensee,
+                                   filename="EBOOT.BIN")
+        self.assertEqual(keysmith.inspect(named).npdrm.pack(),
+                         keysmith.inspect(plain).npdrm.pack())
+
+    def test_a_new_name_moves_the_cid_fn_hash_and_the_ci_hash_with_it(self):
+        """The CI hash covers the CID_FN hash, so one cannot move alone."""
+        item, elf, plain = self.built("mw3-eboot")
+        renamed = keysmith.fake_sign(elf, item.path, item.klicensee,
+                                     filename="default_mp.self")
+        before = keysmith.inspect(plain).npdrm
+        after = keysmith.inspect(renamed).npdrm
+        self.assertNotEqual(after.cid_fn_hash, before.cid_fn_hash)
+        self.assertNotEqual(after.header_hash, before.header_hash)
+        self.assertEqual(after.content_id, before.content_id)
+        self.assertEqual(after.app_type, before.app_type)
+        self.assertEqual(after.licence_type, before.licence_type)
+
+    def test_an_elf_that_has_moved_is_refused_rather_than_signed(self):
+        item, elf, out = self.built("mw3-eboot")
+        moved = bytearray(elf)
+        moved[0x18:0x20] = (0x1234).to_bytes(8, "big")
+        with self.assertRaises(keysmith.SigningFailed) as caught:
+            keysmith.fake_sign(bytes(moved), item.path, item.klicensee)
+        self.assertIn("entry", str(caught.exception))
+
+    def test_a_short_elf_is_refused(self):
+        item, elf, out = self.built("mw3-eboot")
+        with self.assertRaises(keysmith.SigningFailed) as caught:
+            keysmith.fake_sign(elf[:len(elf) // 2], item.path,
+                               item.klicensee)
+        self.assertIn("too short", str(caught.exception))
+
+    def test_a_fake_signed_template_is_rebuilt_through_its_own_header(self):
+        item = sample("npub30787-fself")
+        original = open(item.path, "rb").read()
+        elf = keysmith.decrypt(item.path)
+        self.assertEqual(keysmith.fake_sign(elf, item.path), original)
+
+    def test_a_container_is_not_built_around_a_fake_signed_file(self):
+        item = sample("npub30787-fself")
+        parsed = keysmith.read(item.path)
+        with self.assertRaises(keysmith.SigningFailed) as caught:
+            fself.from_retail(parsed, b"\x7fELF" + b"\x00" * 200)
+        self.assertIn("already fake signed", str(caught.exception))
+
+    def test_a_patched_black_ops_one_binary_goes_in_and_comes_out(self):
+        """The case this was written for, on a real patched file."""
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        need_keys()
+        stock = os.path.join(corpus.HOME, "bo1-BLES01031/t5mp_ps3f.self")
+        patched = os.path.join(corpus.HOME,
+                               "bo1-BLES01031/t5mp_ps3f.xuid.self")
+        for path in (stock, patched):
+            if not os.path.isfile(path):
+                self.skipTest(f"{path} is not on this machine")
+        elf = keysmith.decrypt(patched, corpus.BO1_KLIC)
+        out = keysmith.fake_sign(elf, stock, corpus.BO1_KLIC)
+        self.assertEqual(keysmith.decrypt(out), elf)
+        described = keysmith.inspect(out)
+        self.assertTrue(described.fake_signed)
+        self.assertFalse(described.npdrm_is_zeroed)
+
+    def test_true_ancestors_unfself_reads_what_this_writes(self):
+        """An external gate, by a tool that knows nothing of this package.
+
+        unfself.exe is a Windows process and cannot open a /home path, so it
+        and the file both go into one scratch directory and it is run from
+        inside that with plain relative names.
+        """
+        import shutil
+        import subprocess
+        import tempfile
+
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        exe = os.path.join(corpus.HOME, "bo1-regions", "unfself.exe")
+        if not os.path.isfile(exe):
+            self.skipTest(f"{exe} is not on this machine")
+        item, elf, out = self.built("bo1-bles01031")
+        work = tempfile.mkdtemp(prefix="keysmith-unfself-")
+        try:
+            shutil.copy2(exe, work)
+            for name in ("msvcr100.dll", "zlib1.dll"):
+                beside = os.path.join(os.path.dirname(exe), name)
+                if os.path.isfile(beside):
+                    shutil.copy2(beside, work)
+            with open(os.path.join(work, "in.self"), "wb") as handle:
+                handle.write(out)
+            try:
+                result = subprocess.run(
+                    [os.path.join(work, "unfself.exe"), "in.self", "out.elf"],
+                    cwd=work, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, timeout=600)
+            except OSError as exc:
+                self.skipTest(f"unfself.exe cannot be run here: {exc}")
+            self.assertEqual(result.returncode, 0,
+                             result.stdout.decode("utf-8", "replace"))
+            with open(os.path.join(work, "out.elf"), "rb") as handle:
+                self.assertEqual(handle.read(), elf)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+
 class TheErrors(unittest.TestCase):
     """Every failure names the file, the field and what was expected."""
 

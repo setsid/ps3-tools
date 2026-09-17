@@ -384,14 +384,12 @@ setsid.research@proton.me
 bundled here. Everything the diagnostic reads and everything the patcher writes
 goes through it.
 
-**scetool**, by naehrwert. No longer bundled. The SELF handling here is
-`ps3tools/keysmith`, written in Python against scetool's output field for
-field, and scetool is the reason any of it was possible. Its keyset is the one
-keysmith reads. See [docs/keysmith.md](docs/keysmith.md).
+**keysmith**, this program's own. Decrypts, re-signs and fake-signs a game
+binary, in Python, with no external tool involved. See
+[docs/keysmith.md](docs/keysmith.md).
 
-**TrueAncestor SELF Resigner.** No longer needed either. Fake-signed binaries
-are read and written directly, so the digital releases no longer depend on a
-second tool being found on disk.
+**The PS3 keyset**, naehrwert's. keysmith reads the same keys file scetool
+used, and that file is not this project's work and is not redistributed here.
 
 **PySide6 and Qt** — the window and the widgets, used as a dynamically linked
 LGPL build.
@@ -434,9 +432,9 @@ Both pins are exact, and the build refuses a different PyInstaller version
 rather than producing an exe nobody can reproduce.
 
 The SELF handling is in the repository under `ps3tools/keysmith`. **Its keyset
-is not**, for the same reason scetool never was: it is naehrwert's work and is
-shipped inside the built exe rather than redistributed here. Put a copy of
-scetool's `data` folder at `ps3tools/keysmith/data/`. It must carry key
+is not**: it is naehrwert's work, shipped inside the built exe rather than
+redistributed here. Put a copy of that `data` folder at
+`ps3tools/keysmith/data/`. It must carry key
 revisions 0010, 0019 and 001C, which are what Black Ops 1, Modern Warfare 3 and
 Black Ops II are signed with; the build checks that before it starts, and
 keysmith says the same thing if it is asked to open a file without one.

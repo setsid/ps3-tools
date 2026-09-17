@@ -558,6 +558,24 @@ class CobraDisabledTests(RuleTestCase):
     COBRA = {"system": {"firmware": "4.93", "webman_version": "1.47.48",
                         "cfw_markers": ["Evilnat", "Cobra"],
                         "cobra_version": "8.5"}}
+    CFW_NO_COBRA = {"system": {"firmware": "4.91",
+                               "webman_version": "1.47.44",
+                               "firmware_kind": "cfw",
+                               "cfw_markers": ["Rogero"],
+                               "cfw_name": "Rogero"}}
+    HEN_NO_COBRA = {"system": {"firmware": "4.91",
+                               "webman_version": "1.47.44",
+                               "firmware_kind": "hen",
+                               "hen_version": "3.5.0",
+                               "cfw_markers": ["HEN", "HFW"]}}
+    PS2_ISOS = games(folder("dev_hdd0", "PS2ISO",
+                            [entry("Also Fine [SLES00008].iso",
+                                   size=4 * GIB)]))
+    BOTH_ISOS = games(folder("dev_hdd0", "PS3ISO",
+                             [entry("Fine [BLES00007].iso", size=20 * GIB)]),
+                      folder("dev_hdd0", "PS2ISO",
+                             [entry("Also Fine [SLES00008].iso",
+                                    size=4 * GIB)]))
 
     def test_isos_present_and_no_cobra_reported(self):
         produced = self.fire(builtin.cobra_disabled_with_isos,
@@ -590,6 +608,38 @@ class CobraDisabledTests(RuleTestCase):
             builtin.cobra_disabled_with_isos,
             merge(self.COBRA, self.ISOS),
             files={"system/root.html": "boot_plugins_nocobra.txt"})
+
+    def test_a_hen_console_is_not_told_to_fit_cobra(self):
+        self.quiet(builtin.cobra_disabled_with_isos,
+                   merge(self.HEN_NO_COBRA, self.ISOS))
+
+    def test_ps2_games_on_hen_still_need_cobra(self):
+        produced = self.fire(builtin.cobra_disabled_with_isos,
+                             merge(self.HEN_NO_COBRA, self.PS2_ISOS),
+                             severity="warn")
+        self.assertIn("Cobra", produced[0].explanation)
+
+    def test_only_the_ps2_games_are_counted_on_hen(self):
+        produced = self.fire(
+            builtin.cobra_disabled_with_isos,
+            merge(self.HEN_NO_COBRA, self.BOTH_ISOS),
+            severity="warn")
+        self.assertIn("one game", produced[0].explanation)
+
+    def test_hen_saying_cobra_is_off_says_nothing_about_ps3_games(self):
+        self.quiet(builtin.cobra_disabled_with_isos,
+                   merge(self.HEN_NO_COBRA, self.ISOS),
+                   files={"system/root.html": "<b>Cobra:</b> OFF<br>"})
+
+    def test_custom_firmware_without_cobra_is_still_reported(self):
+        produced = self.fire(builtin.cobra_disabled_with_isos,
+                             merge(self.CFW_NO_COBRA, self.ISOS),
+                             severity="warn")
+        self.assertIn("Cobra", produced[0].explanation)
+
+    def test_a_console_that_did_not_say_its_firmware_is_not_guessed_at(self):
+        self.fire(builtin.cobra_disabled_with_isos,
+                  merge(self.NO_COBRA, self.ISOS), severity="warn")
 
 
 class TemperatureHighTests(RuleTestCase):

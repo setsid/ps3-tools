@@ -204,6 +204,155 @@ def parse_identity(text):
     return out
 
 
+# --- what the console says it is running -----------------------------------
+
+# webMAN prints one line naming the firmware and then appends whatever is
+# running on top of it: "4.93 CEX", "4.93 CEX Cobra 8.5", "4.93 CEX PS3HEN
+# 3.5.0". That line is the console's own answer to the question this tool is
+# most often asked, so it is read whole and kept verbatim as the evidence for
+# whatever is concluded from it.
+#
+# The anchor is the version sitting next to the CEX/DEX/DECR/HFW token,
+# because every layout seen prints those two together and in that order. A
+# couple of words are tolerated between them for the builds that print their
+# own name there, and an intervening word has to begin with a letter so that
+# the "1.47.48" of a webMAN version on the same line can never be paired with
+# a region token further along it.
+FW_LINE = re.compile(r"(?i)\b(\d\.\d{2}(?:\.\d+)?)(?![\w.])"
+                     r"(?:\s+[A-Za-z][\w.-]*){0,2}?\s*"
+                     r"\b(?:CEX|DEX|DECR|HFW)\b")
+REGION_ON_LINE = re.compile(r"(?i)\b(CEX|DEX|DECR)\b")
+HFW_ON_LINE = re.compile(r"(?i)\bHFW\b")
+HEN_ON_LINE = re.compile(r"(?i)\b(?:PS3)?HEN\b\s*v?\.?\s*(\d+(?:\.\d+)*)?")
+COBRA_ON_LINE = re.compile(r"(?i)\bcobra\b\s*v?\.?\s*(\d+(?:\.\d+)*)?")
+MAMBA_ON_LINE = re.compile(r"(?i)\bmamba\b")
+CFW_WORD = re.compile(r"(?i)\bCFW\b")
+# Cobra, Mamba, HEN and HFW name the payload or the repack rather than the
+# build, so the names that identify a replaced firmware are all the others.
+BUILD_NAMES = tuple(name for name in CFW_NAMES
+                    if name.lower() not in ("cobra", "mamba", "hen", "hfw"))
+BUILD_NAME = re.compile(r"(?i)\b(" + "|".join(BUILD_NAMES) + r")\b")
+
+
+def _names_a_payload(line):
+    """Whether a line names something running on top of the firmware."""
+    return bool(BUILD_NAME.search(line) or HEN_ON_LINE.search(line)
+                or COBRA_ON_LINE.search(line) or MAMBA_ON_LINE.search(line))
+
+
+def _kind_from_line(line):
+    """Which kind one line names: "cfw", "hen", or "" for neither.
+
+    A named build beats HEN because a replaced firmware is the stronger fact
+    and PS3HEN only ever runs on an official or hybrid one. HEN beats Cobra
+    because HEN carries a Cobra of its own, so a HEN console prints both and
+    the Cobra version there describes HEN rather than a custom firmware.
+    """
+    if BUILD_NAME.search(line):
+        return "cfw"
+    if HEN_ON_LINE.search(line):
+        return "hen"
+    if (COBRA_ON_LINE.search(line) or MAMBA_ON_LINE.search(line)
+            or CFW_WORD.search(line)):
+        return "cfw"
+    return ""
+
+
+def _kind_from_page(text):
+    """The same question put to the whole page, for a line that named nothing.
+
+    Only a marker carrying a version number counts here, along with the build
+    names, because a menu entry reading "Install HEN" is a label on a button
+    and not a report of what the console is running. This runs at all because
+    a console with its Cobra payload switched off prints a bare firmware line
+    while the rest of the page still says which build it is.
+    """
+    if BUILD_NAME.search(text):
+        return "cfw"
+    if HEN_VER.search(text):
+        return "hen"
+    if COBRA.search(text):
+        return "cfw"
+    return ""
+
+
+def _firmware_line(text):
+    """The line the firmware is printed on, preferring the one that says most.
+
+    Several pages are flattened together before this runs and more than one of
+    them can carry a firmware string, so a line that also names Cobra, HEN or
+    a build is taken over a bare one. The loose "Firmware: 4.90" form is only
+    looked at when no line carries a region token at all: that layout is one
+    this tool has not seen on a console, and its silence about a payload
+    proves nothing about what is running.
+    """
+    first_line, first_match = None, None
+    lines = (text or "").splitlines()
+    for line in lines:
+        match = FW_LINE.search(line)
+        if match is None:
+            continue
+        if _names_a_payload(line):
+            return line, match
+        if first_match is None:
+            first_line, first_match = line, match
+    if first_match is not None:
+        return first_line, first_match
+    for line in lines:
+        match = FIRMWARE_LOOSE.search(line)
+        if match:
+            return line, match
+    return None, None
+
+
+def parse_firmware_line(text):
+    """What the console says it is running, from its own firmware line.
+
+    firmware_kind is "" whenever the page did not say, and a reader must be
+    able to tell that from a confident "ofw": the difference is a console this
+    tool could not read against one it read as stock. So no kind is ever
+    inferred from missing evidence. The single positive case is webMAN's stock
+    string, a version and a region with no payload named on the line and none
+    named anywhere else on the page, which is a console reporting official
+    firmware outright.
+
+    firmware_line is the line exactly as the console printed it, prefix and
+    all. It is the evidence behind every other field here, and trimming it to
+    the part that was understood would throw away the part that explains a
+    field this tool got wrong.
+
+    All six fields always come back, empty where the page said nothing, which
+    is the one place in this module where a blank is reported rather than left
+    out: an empty firmware_kind is itself the answer and a field that vanished
+    could not carry it. parse_cpursx drops the blanks the merge would spoil.
+    """
+    facts = {"firmware_line": "", "firmware_version": "",
+             "firmware_region": "", "firmware_kind": "",
+             "cobra_version": "", "hen_version": ""}
+    line, match = _firmware_line(text)
+    if match is None:
+        return facts
+    facts["firmware_line"] = line
+    facts["firmware_version"] = match.group(1)
+    region = REGION_ON_LINE.search(line)
+    if region:
+        facts["firmware_region"] = region.group(1).upper()
+    hen = HEN_ON_LINE.search(line)
+    if hen and hen.group(1):
+        facts["hen_version"] = hen.group(1)
+    cobra = COBRA_ON_LINE.search(line)
+    if cobra and cobra.group(1):
+        facts["cobra_version"] = cobra.group(1)
+    kind = _kind_from_line(line) or _kind_from_page(text)
+    # HFW is official firmware that has been repacked, which is a third thing
+    # alongside stock and custom, so on its own it has no honest answer among
+    # the four. It stays unknown and firmware_line keeps the word for whoever
+    # reads the evidence.
+    if not kind and facts["firmware_region"] and not HFW_ON_LINE.search(line):
+        kind = "ofw"
+    facts["firmware_kind"] = kind
+    return facts
+
 # --- temperatures, clocks, fan --------------------------------------------
 
 TEMP_C = r"([\d.]+)\s*(?:°|&deg;)?\s*C\b"
@@ -229,11 +378,15 @@ def _mhz(number, unit):
 
 
 def parse_cpursx(text):
-    """Temperatures, clock speeds and fan state.
+    """Temperatures, clock speeds, fan state and the firmware line.
 
     Celsius is what the console reports and Fahrenheit is only taken when it is
     printed; it is never converted, so a helper can tell which figure the
     console actually gave.
+
+    The firmware fields come from parse_firmware_line, because this is the page
+    that names the firmware and the tool is to work it out for itself rather
+    than ask whoever is running it.
     """
     out = {}
     for key, pattern in (("cpu_temp_c", CPU_TEMP), ("rsx_temp_c", RSX_TEMP)):
@@ -258,6 +411,14 @@ def parse_cpursx(text):
     match = FAN_MODE.search(text)
     if match:
         out["fan_mode"] = match.group(1).lower()
+    firmware = parse_firmware_line(text)
+    # parse_identity reads Cobra and HEN from the whole page and every caller
+    # merges that dict with this one, so a blank from the firmware line is
+    # dropped here rather than allowed to erase the version the page gave
+    # somewhere else. The other four fields are always reported, empty or not.
+    for key, value in firmware.items():
+        if value or key not in ("cobra_version", "hen_version"):
+            out[key] = value
     return out
 
 

@@ -338,6 +338,14 @@ def collect_system(ctx):
 
     result.facts = {key: value for key, value in facts.items()
                     if value not in (None, "", [])}
+    if result.facts:
+        # An unknown firmware kind is kept as an empty string where every
+        # other blank is dropped, because a reader of facts.json has to be
+        # able to tell a console whose firmware line could not be read from
+        # one this tool read as stock official firmware. The key is only
+        # added once the page gave something, so that a console that answered
+        # nothing at all still settles as a failed collection.
+        result.facts.setdefault("firmware_kind", "")
     return result.settle(bool(result.facts))
 
 

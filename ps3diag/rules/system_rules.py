@@ -81,6 +81,16 @@ def cobra_disabled_with_isos(artefact_set):
 
     isos = [entry for entry in title_rows(artefact_set)
             if entry.get("kind") == "file" and is_iso_name(entry.get("name"))]
+    # HEN consoles were being sent away to have custom firmware with Cobra
+    # fitted over games that were already starting: webMAN mounts PS3 ISOs
+    # without Cobra on HEN, so the .iso files this was counting were fine.
+    # PS2 images are the one kind that genuinely will not start without
+    # Cobra whatever the firmware, so on HEN the finding speaks only for
+    # those. Anything other than a reported "hen" keeps the old behaviour,
+    # including a console that did not say what it runs, because a guess
+    # either way is worse than the warning people already know how to read.
+    if _firmware_kind(facts) == "hen":
+        isos = [entry for entry in isos if _is_ps2_iso(entry)]
     if not isos:
         return None
 
@@ -129,6 +139,21 @@ def cobra_disabled_with_isos(artefact_set):
                   "no Cobra or Mamba version was reported",
                   f"{counted(count, 'game')} saved as .iso files"],
         category="system")
+
+
+def _firmware_kind(facts):
+    """"cfw", "hen", "ofw", or "" when the console did not say.
+
+    Older artefact sets predate the fact altogether and land on "" here,
+    which reads the same as a console that stayed silent about it.
+    """
+    return str(facts.get("firmware_kind") or "").strip().lower()
+
+
+def _is_ps2_iso(entry):
+    """PS2ISO is where webMAN itself decides an image is a PS2 game, so it
+    is the only place a PS2 image can be sitting and be playable."""
+    return str(entry.get("folder") or "").upper() == "PS2ISO"
 
 
 def _cobra_switched_off(artefact_set):

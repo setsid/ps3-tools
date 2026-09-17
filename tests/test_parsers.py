@@ -89,6 +89,193 @@ class Cpursx(FixtureCase):
         facts = parsers.parse_cpursx("CPU: 61 C")
         self.assertNotIn("cpu_temp_f", facts)
 
+    def test_the_firmware_line_is_read_alongside_the_temperatures(self):
+        facts = parsers.parse_cpursx(
+            parsers.html_to_text(self.fixture("http", "cpursx_147.html")))
+        self.assertEqual(facts["cpu_temp_c"], 61.0)
+        self.assertEqual(facts["firmware_line"], "SYS: 4.93 CEX")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["firmware_region"], "CEX")
+        self.assertEqual(facts["firmware_kind"], "ofw")
+
+    def test_a_blank_cobra_version_never_reaches_the_caller(self):
+        # parse_identity supplies these from the whole page and callers merge
+        # the two dicts, so an empty one here would wipe a real answer.
+        facts = parsers.parse_cpursx("SYS: 4.93 CEX")
+        self.assertNotIn("cobra_version", facts)
+        self.assertNotIn("hen_version", facts)
+
+
+class FirmwareLine(FixtureCase):
+    """The firmware kind is worked out from the page and never asked for."""
+
+    def read(self, text):
+        return parsers.parse_firmware_line(text)
+
+    def test_a_hen_console_is_read_as_hen(self):
+        facts = self.read("4.93 CEX PS3HEN 3.5.0")
+        self.assertEqual(facts["firmware_kind"], "hen")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["firmware_region"], "CEX")
+        self.assertEqual(facts["hen_version"], "3.5.0")
+        self.assertEqual(facts["cobra_version"], "")
+
+    def test_a_cobra_console_is_read_as_cfw(self):
+        facts = self.read("4.93 CEX Cobra 8.5")
+        self.assertEqual(facts["firmware_kind"], "cfw")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["firmware_region"], "CEX")
+        self.assertEqual(facts["cobra_version"], "8.5")
+        self.assertEqual(facts["hen_version"], "")
+
+    def test_a_plain_line_is_read_as_official_firmware(self):
+        facts = self.read("4.93 CEX")
+        self.assertEqual(facts["firmware_kind"], "ofw")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["firmware_region"], "CEX")
+        self.assertEqual(facts["cobra_version"], "")
+        self.assertEqual(facts["hen_version"], "")
+
+    def test_the_raw_line_is_kept_exactly_as_the_console_printed_it(self):
+        for line in ("4.93 CEX PS3HEN 3.5.0", "4.93 CEX Cobra 8.5",
+                     "SYS: 4.93 CEX", "Firmware: 4.93 CEX (Evilnat Cobra 8.5)",
+                     "4.91 DEX | Mamba | HEN 3.3.0"):
+            self.assertEqual(self.read(line)["firmware_line"], line)
+
+    def test_the_raw_line_keeps_the_spacing_around_it(self):
+        line = "  SYS:   4.93   CEX   Cobra 8.5  "
+        facts = self.read("CPU: 61 C\n" + line + "\nRSX: 54 C")
+        self.assertEqual(facts["firmware_line"], line)
+        self.assertEqual(facts["firmware_kind"], "cfw")
+
+    def test_unexpected_extra_words_still_leave_the_line_readable(self):
+        facts = self.read(
+            "SYS: 4.93 CEX PS3HEN 3.5.0 [DEBUG] Toolbox 2.02 webMAN 1.47.44")
+        self.assertEqual(facts["firmware_kind"], "hen")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["hen_version"], "3.5.0")
+
+    def test_a_webman_version_on_the_line_is_never_read_as_the_firmware(self):
+        facts = self.read("webMAN MOD 1.47.48q | 4.93 CEX | Cobra 8.5")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["cobra_version"], "8.5")
+
+    def test_an_empty_page_leaves_the_kind_empty(self):
+        facts = self.read("")
+        self.assertEqual(facts["firmware_kind"], "")
+        self.assertEqual(facts["firmware_line"], "")
+        self.assertEqual(facts["firmware_version"], "")
+        self.assertEqual(facts["firmware_region"], "")
+
+    def test_a_page_without_a_firmware_line_leaves_the_kind_empty(self):
+        facts = self.read(parsers.html_to_text(
+            self.fixture("http", "root_minimal.html")))
+        self.assertEqual(facts["firmware_kind"], "")
+        self.assertEqual(facts["firmware_line"], "")
+
+    def test_a_malformed_line_leaves_the_kind_empty(self):
+        for text in ("SYS: CEX 4.93", "SYS: 4.9 CEX", "SYS: ??? ???",
+                     "\x00\x01", "<<<>>>", "SYS:"):
+            facts = self.read(text)
+            self.assertEqual(facts["firmware_kind"], "", text)
+            self.assertEqual(facts["firmware_version"], "", text)
+
+    def test_an_unknown_kind_is_told_apart_from_official_firmware(self):
+        unknown = self.read("SYS: something the page never explained")
+        stock = self.read("4.93 CEX")
+        self.assertEqual(unknown["firmware_kind"], "")
+        self.assertEqual(stock["firmware_kind"], "ofw")
+        self.assertNotEqual(unknown["firmware_kind"], stock["firmware_kind"])
+
+    def test_hybrid_firmware_on_its_own_is_left_unknown(self):
+        # HFW is repacked official firmware, so it is neither of the two and
+        # there is no honest answer for it among the four.
+        facts = self.read("4.90 HFW")
+        self.assertEqual(facts["firmware_kind"], "")
+        self.assertEqual(facts["firmware_version"], "4.90")
+        self.assertEqual(facts["firmware_region"], "")
+        self.assertEqual(facts["firmware_line"], "4.90 HFW")
+
+    def test_hen_on_hybrid_firmware_is_read_as_hen(self):
+        facts = self.read("4.90 HFW PS3HEN 3.0.3")
+        self.assertEqual(facts["firmware_kind"], "hen")
+        self.assertEqual(facts["hen_version"], "3.0.3")
+
+    def test_hen_is_reported_even_when_it_brings_its_own_cobra(self):
+        # HEN carries a Cobra of its own, so a HEN console names both and the
+        # Cobra version there describes HEN.
+        facts = self.read("4.91 CEX PS3HEN 3.5.0 Cobra 8.2")
+        self.assertEqual(facts["firmware_kind"], "hen")
+        self.assertEqual(facts["hen_version"], "3.5.0")
+        self.assertEqual(facts["cobra_version"], "8.2")
+
+    def test_a_named_build_is_read_as_cfw(self):
+        for line, region in (("4.93 CEX (Evilnat Cobra 8.5)", "CEX"),
+                             ("4.84.2 Rebug REX CEX", "CEX"),
+                             ("4.88 DEX Ferrox", "DEX"),
+                             ("4.87 CEX Habib", "CEX")):
+            facts = self.read(line)
+            self.assertEqual(facts["firmware_kind"], "cfw", line)
+            self.assertEqual(facts["firmware_region"], region, line)
+
+    def test_a_three_part_version_is_kept_whole(self):
+        facts = self.read("4.91.2 CEX Cobra 8.4")
+        self.assertEqual(facts["firmware_version"], "4.91.2")
+
+    def test_a_debug_console_keeps_its_region(self):
+        facts = self.read("4.91 DEX | Mamba | HEN 3.3.0")
+        self.assertEqual(facts["firmware_region"], "DEX")
+        self.assertEqual(facts["firmware_kind"], "hen")
+        self.assertEqual(facts["hen_version"], "3.3.0")
+        facts = self.read("4.86 DECR")
+        self.assertEqual(facts["firmware_region"], "DECR")
+
+    def test_the_line_that_names_a_payload_is_the_one_kept(self):
+        # The root page and the cpursx page are flattened together and both
+        # carry a firmware string, so the fuller of the two is the evidence.
+        facts = self.read("Firmware: 4.93 CEX (Evilnat Cobra 8.5)\n"
+                          "SYS: 4.93 CEX")
+        self.assertEqual(facts["firmware_line"],
+                         "Firmware: 4.93 CEX (Evilnat Cobra 8.5)")
+        self.assertEqual(facts["firmware_kind"], "cfw")
+        self.assertEqual(facts["cobra_version"], "8.5")
+
+    def test_a_bare_line_on_a_page_that_names_a_build_is_read_as_cfw(self):
+        # A console with its Cobra payload switched off prints a bare line
+        # while the rest of the page still says which build it is running.
+        facts = self.read("SYS: 4.93 CEX\nEvilnat 1.02\nsyscall8: enabled")
+        self.assertEqual(facts["firmware_line"], "SYS: 4.93 CEX")
+        self.assertEqual(facts["firmware_kind"], "cfw")
+
+    def test_a_menu_label_is_never_taken_for_what_is_running(self):
+        facts = self.read("SYS: 4.93 CEX\nInstall HEN\nCobra: OFF")
+        self.assertEqual(facts["firmware_kind"], "ofw")
+        self.assertEqual(facts["hen_version"], "")
+
+    def test_the_fixture_pages_are_read_the_same_way(self):
+        text = parsers.html_to_text(self.fixture("http", "root_147.html"))
+        facts = self.read(text)
+        self.assertEqual(facts["firmware_line"],
+                         "Firmware: 4.93 CEX (Evilnat Cobra 8.5)")
+        self.assertEqual(facts["firmware_kind"], "cfw")
+        self.assertEqual(facts["cobra_version"], "8.5")
+        text = parsers.html_to_text(self.fixture("http", "root_180.html"))
+        facts = self.read(text)
+        self.assertEqual(facts["firmware_kind"], "hen")
+        self.assertEqual(facts["hen_version"], "3.3.0")
+        self.assertEqual(facts["firmware_region"], "DEX")
+
+    def test_every_field_comes_back_whatever_the_page_said(self):
+        keys = {"firmware_line", "firmware_version", "firmware_region",
+                "firmware_kind", "cobra_version", "hen_version"}
+        for text in ("", "4.93 CEX PS3HEN 3.5.0", "rubbish", "\x00"):
+            self.assertEqual(set(self.read(text)), keys, text)
+
+    def test_never_raises_on_rubbish(self):
+        for value in ("", None, "\x00\x01", "<<<>>>", "firmware:",
+                      "4.93", "CEX", "4.93.4.93.4.93 CEX CEX"):
+            self.assertIsInstance(self.read(value), dict)
+
 
 class Storage(FixtureCase):
     def test_free_and_total_with_used_derived(self):

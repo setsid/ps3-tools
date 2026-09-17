@@ -82,6 +82,14 @@ class FullRun(Harness):
         self.assertEqual(facts["model_sales_region"],
                          "United Kingdom and Ireland")
 
+    def test_the_firmware_kind_was_worked_out_without_asking(self):
+        facts = self.artefacts.facts("system")
+        self.assertEqual(facts["firmware_line"],
+                         "Firmware: 4.93 CEX (Evilnat Cobra 8.5)")
+        self.assertEqual(facts["firmware_version"], "4.93")
+        self.assertEqual(facts["firmware_region"], "CEX")
+        self.assertEqual(facts["firmware_kind"], "cfw")
+
     def test_the_exact_firmware_build_came_off_dev_flash(self):
         self.assertEqual(self.artefacts.facts("system")["firmware_build"],
                          "92009")
@@ -526,6 +534,15 @@ class UnknownWebmanVersion(Harness):
         by_key = {outcome.key: outcome for outcome in result.results}
         self.assertNotEqual(by_key["system"].status, "failed")
         self.assertTrue(by_key["system"].artefacts)
+
+    def test_an_unreadable_firmware_line_is_recorded_as_unknown(self):
+        # The empty string is kept where every other blank fact is dropped,
+        # so that this console reads as one the tool could not tell about
+        # instead of one it read as stock official firmware.
+        artefacts = ArtefactSet.from_run(self.collect(["system"]))
+        facts = artefacts.facts("system")
+        self.assertIn("firmware_kind", facts)
+        self.assertEqual(facts["firmware_kind"], "")
 
     def test_a_404_is_explained_rather_than_reported_as_a_fault(self):
         result = self.collect(["webman_config"])

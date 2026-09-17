@@ -189,7 +189,7 @@ class FetchTests(NoNetworkCase):
         obstacle to it. It exists so a version change is always a decision
         somebody made rather than something noticed later on a screenshot.
         """
-        self.assertEqual(update.VERSION, "1.4.0")
+        self.assertEqual(update.VERSION, "1.4.1")
         # Plain dotted numbers, or the tag comparison silently stops working.
         self.assertIsNotNone(update.parse_version(update.VERSION))
 
@@ -674,3 +674,61 @@ class WhereTheDownloadLands(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheCheckRunsOnEveryLaunch(unittest.TestCase):
+    """Asked for since 1.0.1 and never actually happening.
+
+    The path from start-up to the request was there, but update.check
+    answered from its cache instead of asking. The timestamp is written even
+    when a fetch failed, so a machine that was offline once did not ask again
+    until the next day, and a machine that had already looked that day never
+    asked twice. Forcing the check at launch is what makes it fire.
+
+    The gate here is the request itself: the fetcher is counted, so the test
+    fails if start-up stops asking, however the plumbing above it is written.
+    """
+
+    def fetcher(self, calls, payload=None):
+        def fetch(*args, **kwargs):
+            calls.append(kwargs.get("url") or (args[0] if args else "release"))
+            return payload
+        return fetch
+
+    def test_a_cold_start_asks_github(self):
+        """No settings, no cache, nothing saved. It must still ask."""
+        calls = []
+        settings = {}
+        update.check(settings, fetcher=self.fetcher(calls), force=True)
+        self.assertEqual(len(calls), 1, "start-up did not ask")
+
+    def test_it_asks_again_on_the_next_launch_the_same_day(self):
+        """The cache is what stopped this happening."""
+        calls = []
+        settings = {}
+        fetch = self.fetcher(calls)
+        for _ in range(3):
+            update.check(settings, fetcher=fetch, force=True)
+        self.assertEqual(len(calls), 3)
+
+    def test_a_failed_check_does_not_stop_the_next_one(self):
+        """A machine that was offline once used to stay silent for a day."""
+        calls = []
+        settings = {}
+        update.check(settings, fetcher=self.fetcher(calls, None), force=True)
+        update.check(settings, fetcher=self.fetcher(calls, None), force=True)
+        self.assertEqual(len(calls), 2)
+
+    def test_start_up_forces_it(self):
+        """The launch path itself, read from the source, so the two cannot
+        drift apart from each other."""
+        import inspect
+        from ps3tools.shell import app as shell_app
+        source = inspect.getsource(shell_app.MainWindow.start_launch)
+        self.assertIn("start_check(force=True)", source)
+
+    def test_nothing_about_it_can_raise_into_start_up(self):
+        """No network, no banner, no error, and start-up carries on."""
+        def explode(*args, **kwargs):
+            raise OSError("no network")
+        self.assertIsNone(update.check({}, fetcher=explode, force=True))

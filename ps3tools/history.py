@@ -29,6 +29,32 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.4.1",
+        date="2026-09-17",
+        summary="The update check runs at every launch, and the window has "
+                "been given some polish.",
+        changes=(
+            "The program checks for a new version every time it starts. It "
+            "always meant to: the check was there, and a cache in front of it "
+            "answered instead, so a machine that had looked once that day "
+            "never looked again and a machine that was offline once stayed "
+            "quiet until the next day. A check that cannot run is still "
+            "silent and still never delays start-up.",
+            "The console selector has a thin border rather than a drop-down "
+            "arrow, so it reads as something to press rather than a form "
+            "control.",
+            "The right-hand end of the telemetry bar now carries the free "
+            "space on the console's drive, the firmware it is running, and "
+            "the last thing this program did with the time it happened.",
+            "The window animates where it used to jump: the connected dot "
+            "breathes, telemetry figures fade as they change, the connection "
+            "panel changes shape rather than snapping, cards lift under the "
+            "pointer, and the status panel sweeps once when a connection "
+            "succeeds and once when an upload finishes. None of it delays "
+            "anything.",
+        ),
+    ),
+    Release(
         version="1.4.0",
         date="2026-09-17",
         summary="The program does its own decrypting and re-signing, and "

@@ -344,6 +344,19 @@ QPushButton#bigFind { border-radius: 10px; padding: 12px 20px; }
 QPushButton#themeButton::menu-indicator { image: none; width: 0px; }
 QPushButton#themeButton { padding: 6px 9px; }
 
+/* The console selector, for the same reason and one more. The arrow made it
+   read as a form control, and without a border it then read as plain text
+   that happened to be clickable. A thin border at rest says it can be
+   pressed, and the bolder state it already had on hover is kept. */
+QPushButton#consoleButton::menu-indicator { image: none; width: 0px; }
+QPushButton#consoleButton {
+    border: 1px solid %(border)s;
+}
+QPushButton#consoleButton:hover {
+    background: %(surface_alt)s;
+    border-color: %(accent)s;
+}
+
 QPushButton[flat="true"] {
     background: transparent;
     border: 1px solid transparent;

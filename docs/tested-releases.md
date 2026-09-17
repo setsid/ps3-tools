@@ -95,13 +95,21 @@ You reach a multiplayer lobby and are dropped back to the menu about a second la
 
 Multiplayer opens at rank 1 every time and nothing you do is kept, on any PSN account made after late 2018. The game asks the server about an identity the server has never held, so there is nothing to send back.
 
-3 releases of this game are recognised. 2 confirmed on hardware, 1 recognised, not reported on.
+11 releases of this game are recognised. 2 confirmed on hardware, 9 recognised, not reported on.
 
 | Title ID | Region | Media | Status | Update hashes |
 | --- | --- | --- | --- | --- |
 | **BLES01031** | Europe | disc | Confirmed on hardware | none |
+| BLES01032 | Europe | disc | Recognised, not reported on | none |
+| BLES01033 | Europe | disc | Recognised, not reported on | none |
+| BLES01034 | Europe | disc | Recognised, not reported on | none |
+| BLES01035 | Europe | disc | Recognised, not reported on | none |
+| BLES01105 | Europe | disc | Recognised, not reported on | none |
+| BLJM60286 | Japan | disc | Recognised, not reported on | none |
+| BLJM60287 | Japan | disc | Recognised, not reported on | none |
 | **BLUS30591** | North America | disc | Confirmed on hardware | none |
 | NPEB00756 | Europe | download | Recognised, not reported on | none |
+| NPUB30584 | North America | download | Recognised, not reported on | none |
 
 **BLUS30591.** Confirmed by OpenResty on a console running Evilnat with webMAN and no other VSH plugins, title update 1.13, process ID 01020200. Stats synced at sign-in. This is the second region confirmed for this fix and the first one it was not written against, which is the test that matters for a fix that finds its own patch site rather than being given an address.
 

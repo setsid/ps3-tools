@@ -1291,8 +1291,13 @@ def locate(lister, title_key, detector=None, wanted=""):
     # and it cannot be ignored either: it is the one case where the answer is a
     # refusal, and a user told "not installed" while the game sits in
     # /dev_hdd0/game learns nothing.
+    # Only releases of the game this screen fixes. An unnamed folder carries
+    # the games its file names could belong to, and a screen that ignored that
+    # offered whatever else was installed: Black Ops 1 offered Ghosts, and then
+    # Modern Warfare 2, and the user deleted game data chasing it.
     strangers = [item for item in report.installations
-                 if item.state == UNKNOWN_VARIANT]
+                 if item.state == UNKNOWN_VARIANT
+                 and title_key in (item.candidate_keys or ())]
     if strangers:
         return Location(UNKNOWN_VARIANT,
                         [item.title_id for item in strangers],

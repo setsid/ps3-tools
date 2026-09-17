@@ -61,6 +61,11 @@ UNKNOWN_VARIANT = "unknown_variant"
 # EBOOT.BIN is deliberately not here, because every PS3 title has one.
 # default.self is not here either: it is common enough elsewhere that treating
 # it as proof would refuse innocent titles.
+# Kept because other code imports it. Which game a folder holds is decided by
+# titles.keys_for_files, which reads the binaries table per game: this set said
+# only "some Call of Duty", and every Call of Duty on the same engine ships a
+# default_mp.self, so it matched Ghosts and Modern Warfare 2 as readily as the
+# three games with a fix.
 COD_MARKERS = frozenset({"t6_ps3f.self", "t6mp_ps3f.self", "default_mp.self"})
 
 # Where the title update version comes from, and where it does not.
@@ -103,6 +108,10 @@ class Installation:
     # means the release is recognised and will be attempted, which is a
     # different thing from being refused and must not be shown as one.
     verified: bool = False
+    #: Which games this folder could be a release of, worked out from the file
+    #: names in it. Set only for a title ID the table does not name, and it is
+    #: what keeps a screen from offering somebody another game entirely.
+    candidate_keys: tuple = ()
 
     @property
     def ready(self):
@@ -129,6 +138,12 @@ class Report:
         if key is None:
             return []
         found = [item for item in self.installations if item.title_key == key]
+        # A folder whose title ID is not in the table has no title key, so it
+        # is matched on the file names it holds instead. Without this a screen
+        # saw every unnamed Call of Duty on the console, which is how the
+        # Black Ops 1 screen came to offer somebody Ghosts.
+        found += [item for item in self.installations
+                  if item.title_key is None and key in item.candidate_keys]
         return found or [_absent(key)]
 
 
@@ -211,25 +226,34 @@ def _examine(lister, folder, param_sfo_reader):
     path = f"{GAME_ROOT}/{folder}"
     usrdir = f"{path}/USRDIR"
     config = titles.config_for(title_id)
-    if title_id in titles.NOT_A_TITLE:
-        # Listed in the table as explicitly not one of ours. config_for already
-        # returns None for it; this is here so that an edit which puts it back
-        # in the SKU table by accident still cannot make it a Black Ops II.
-        config = None
+    barred = title_id in titles.NOT_A_TITLE
 
     files = _list_usrdir(lister, usrdir)
 
     if config is None:
-        if not _looks_like_cod(files):
+        # Which game this could be a release of, decided by the file names in
+        # the folder rather than by "is this a Call of Duty". Every Call of
+        # Duty built on the same engine ships a default_mp.self, so the old
+        # test matched Ghosts and Modern Warfare 2 and handed them to whichever
+        # screen happened to ask.
+        candidates = titles.keys_for_files(
+            item["name"] for item in (files or []))
+        if barred:
+            # Listed in the table as explicitly not one of ours. It is still
+            # recorded, so a scan says it was seen, but it is a candidate for
+            # nothing and cannot reach a screen. Clearing the candidates here
+            # rather than the config is what matters now that an unnamed
+            # folder is attributed by the files inside it: a folder full of
+            # Black Ops II looking files would otherwise be attributed anyway.
+            candidates = ()
+        elif not candidates:
             return None
-        # A Call of Duty this tool cannot name. It is either a game with no
-        # fix here or a build nobody has opened, and in both cases there is no
-        # klicensee to try. It is surfaced in order to be refused.
         return Installation(
             title_id=title_id, path=path, usrdir=usrdir,
             state=UNKNOWN_VARIANT, files=files or [],
-            tu_detail=("This is not a release this tool has a fix for, so "
-                       "nothing about it was read."))
+            candidate_keys=candidates,
+            tu_detail=("This release is not in this tool's table, so nothing "
+                       "is known about it in advance."))
 
     sku = titles.sku_for(title_id) or {}
     expected = [record["name"] for record in titles.binaries_for(title_id)]
@@ -275,7 +299,14 @@ def _list_usrdir(lister, usrdir):
 
 
 def _looks_like_cod(files):
-    return any(item["name"] in COD_MARKERS for item in (files or []))
+    """Kept for callers outside this module. Prefer titles.keys_for_files.
+
+    Which game a folder holds is the question worth asking; whether it is some
+    Call of Duty is not, and answering only the second is what let one screen
+    offer another game.
+    """
+    return bool(titles.keys_for_files(
+        item["name"] for item in (files or [])))
 
 
 def _title_update(param_sfo_reader, path):

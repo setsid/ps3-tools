@@ -170,7 +170,7 @@ class States(FixtureCase):
         self.assertTrue(any("No Call of Duty installation" in note
                             for note in report.notes), report.notes)
 
-    def test_an_unknown_call_of_duty_variant_is_refused_not_patched(self):
+    def test_another_game_never_reaches_a_screen_that_does_not_fix_it(self):
         report = self.report({
             GAME: listing("list_game_unknown_variant.txt"),
             usrdir("BLJS10032"): listing("list_usrdir_bo2.txt"),
@@ -182,9 +182,13 @@ class States(FixtureCase):
         self.assertIsNone(variant.title_key)
         self.assertIsNone(variant.config)
         self.assertIsNone(variant.tu_version)
-        # It must not reach the patcher by being counted as one of the SKUs
-        # whose signing parameters are known.
-        self.assertEqual(report.for_title("bo2")[0].state, detect.NOT_FOUND)
+        # Its files are Black Ops II's, so that is the only screen it may
+        # reach. Turning up anywhere else is the fault that had the Black Ops 1
+        # screen offering somebody Ghosts.
+        self.assertEqual(variant.candidate_keys, ("bo2",))
+        self.assertEqual(report.for_title("bo2")[0].title_id, "BLJS10032")
+        self.assertEqual(report.for_title("bo1")[0].state, detect.NOT_FOUND)
+        self.assertEqual(report.for_title("mw3")[0].state, detect.NOT_FOUND)
         self.assertTrue(any("left alone" in note for note in report.notes),
                         report.notes)
 
@@ -285,10 +289,16 @@ class States(FixtureCase):
         self.assertFalse(any("nobody has confirmed" in note
                              for note in report.notes), report.notes)
 
-    def test_a_title_id_in_neither_list_is_still_not_either_game(self):
-        # The lists grew; they did not become everything. A Call of Duty
-        # looking folder with an unheard-of title ID is still refused, and is
-        # still not attributed to either game.
+    def test_a_title_id_in_neither_list_reaches_only_its_own_game(self):
+        """An unheard-of title ID is a release nobody has tested, not a
+        release of some other game.
+
+        The lists grew; they did not become everything. A folder full of
+        Black Ops II binaries with a title ID the table has never seen is
+        offered on the Black Ops II screen, because the patch site is what
+        decides whether it can be fixed. What it must never do is turn up on
+        the Modern Warfare 3 screen.
+        """
         report = self.report({
             GAME: folders("BLJS10032"),
             usrdir("BLJS10032"): listing("list_usrdir_bo2.txt")})
@@ -296,8 +306,10 @@ class States(FixtureCase):
         self.assertEqual(row.state, detect.UNKNOWN_VARIANT)
         self.assertIsNone(row.title_key)
         self.assertFalse(row.verified)
-        self.assertEqual(report.for_title("bo2")[0].state, detect.NOT_FOUND)
+        self.assertEqual(row.candidate_keys, ("bo2",))
+        self.assertEqual(report.for_title("bo2")[0].title_id, "BLJS10032")
         self.assertEqual(report.for_title("mw3")[0].state, detect.NOT_FOUND)
+        self.assertEqual(report.for_title("bo1")[0].state, detect.NOT_FOUND)
 
     def test_bljm61034_is_never_treated_as_black_ops_two(self):
         # It was in an earlier draft of the table and Sony's manifest returns

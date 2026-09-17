@@ -201,6 +201,16 @@ BO2_TITLE_IDS = (
     "NPUB31054", "NPUB31055", "NPUB31056",
 )
 
+# The same checks were run over these two and neither had the gap Black Ops
+# had: the European language spread is complete in both, and every disc and
+# digital release confirmed by Sony's manifest was already here.
+#
+# Three entries here could not be confirmed in any source, including Sony's
+# own manifest: BLUS30872, NPEB90450 and NPEB90451, where only NPEB90449
+# exists as the European demo. They are left in place rather than removed,
+# because a title ID that matches nothing costs nothing and taking one out on
+# a negative result is how a real release stops being recognised. They are
+# recorded here so the next person knows they were looked at.
 MW3_TITLE_IDS = (
     "BCKS10195",
     "BLES01428", "BLES01429", "BLES01430", "BLES01431", "BLES01432",
@@ -214,13 +224,49 @@ MW3_TITLE_IDS = (
     "NPUB30787", "NPUB30788",
 )
 
-# Only what has actually been looked at. Three builds were compared byte for
-# byte and these are those three. A release that is not in here is not
-# recognised, which means the tool says so and reads nothing, and that is the
-# right way for this list to be wrong: adding a title ID from memory would
-# have the tool attempt a build nobody has opened.
+# Every release this tool will name. Being here does not mean anybody has
+# watched the fix work on it: that is the skus table, and the two are kept
+# apart on purpose. A release that is not here is still offered when its
+# folder holds the right binaries and the patch site is found, and is reported
+# as untested rather than refused.
+#
+# Europe was issued as six discs, one per language group, and the tool knew
+# only the first. A user's Spanish and Italian copy, BLES01032, was refused as
+# an unknown release while holding the BLES01031 binaries byte for byte:
+# t5mp_ps3f.self at 6831584 and t5_ps3f.self at 6300560, read off his console.
+#
+# Each of these was confirmed in three or more independent sources, and each
+# can be checked again in one line, which returns the content ID for a real
+# title ID and nothing for an invented one:
+#
+#     curl -s https://a0.ww.np.dl.playstation.net/tpl/np/BLES01032/BLES01032-ver.xml
+#
+# Deliberately not included, because one source carried them and no other did:
+# BLES00356 and BLES01013, whose numbers fall two years before the game came
+# out, BLUS30625, and BLKS20228. A title ID invented here would have the tool
+# name somebody's game wrongly, which is worse than not knowing it.
+#
+# There is no separate Hardened Edition title ID on PS3: BLUS30638 and the
+# Platinum and ANZ pressings all boot as the ID they are grouped under.
 BO1_TITLE_IDS = (
-    "BLES01031", "BLUS30591", "NPEB00756",
+    # Europe and Australia, English and French.
+    "BLES01031",
+    # Europe, Italian and Spanish.
+    "BLES01032",
+    # Germany.
+    "BLES01033",
+    # Poland.
+    "BLES01034",
+    # Russia.
+    "BLES01035",
+    # Austria and Switzerland, German.
+    "BLES01105",
+    # United States.
+    "BLUS30591",
+    # Japan, subtitled and dubbed.
+    "BLJM60286", "BLJM60287",
+    # Digital.
+    "NPEB00756", "NPUB30584",
 )
 
 # BLJM61034 was in an earlier draft of this table. Sony's manifest returns
@@ -475,6 +521,43 @@ def site_for(binary_record):
 def binaries_for(title_id):
     config = config_for(title_id)
     return config["binaries"] if config else ()
+
+
+# A file name that says nothing about which game a folder holds. Every PS3
+# game has an EBOOT.BIN, so it can never be the thing that decides.
+GENERIC_BINARY_NAMES = frozenset({"EBOOT.BIN"})
+
+
+def naming_files(key):
+    """The file names that identify a folder as a release of this game.
+
+    Taken from the binaries table so the two cannot drift apart, with the
+    generic names dropped. These are names, not evidence that the fix will
+    work: the patch site decides that, and it is checked separately.
+    """
+    config = TITLES.get(key)
+    if not config:
+        return frozenset()
+    return frozenset(record["name"] for record in config["binaries"]
+                     if record["name"] not in GENERIC_BINARY_NAMES)
+
+
+def keys_for_files(names):
+    """Which games a folder holding these files could be a release of.
+
+    This is what stops a patch screen offering somebody another game. The
+    Black Ops 1 screen was offering Ghosts, and then Modern Warfare 2, because
+    the only test applied was "does this look like a Call of Duty" and both of
+    those ship a default_mp.self. One user deleted game data chasing it.
+
+    Black Ops 1 and Black Ops II are decided outright by their t5 and t6 file
+    names. The Modern Warfare 3 names are shared with other games built on the
+    same engine, so a match here means candidate and nothing more, and the
+    patch site is what settles it.
+    """
+    present = {str(name) for name in (names or ())}
+    return tuple(key for key in TITLES
+                 if naming_files(key) & present)
 
 
 def usrdir_for(title_id):

@@ -3590,35 +3590,47 @@ class TheUpdateGateOnScreen(ScreenCase):
 
 
 class SigningForTheFirmwareThatIsThere(unittest.TestCase):
-    """Which form a rebuilt file takes, decided by the console.
+    """Which keyset a rebuilt file is signed against, decided by the console.
 
-    A retail re-sign carries a signature that cannot be regenerated for a
-    file that has been changed. Custom firmware has that check patched out
-    and loads it anyway. PS3HEN appears to keep it, which is what three HEN
-    consoles black-screening at the moment the patched multiplayer binary
-    loads points at, while the campaign, which runs from a binary the fix
-    never touches, was fine on the same consoles.
+    PS3HEN loads a SELF through the 3.55-era keyset whatever firmware the
+    console is running, so a HEN console wants key revision 0x000A. Jacob
+    Schroeder ships a CFW build and a HEN build of Modern Warfare 2 for all
+    seven regions, and a matched pair decrypts to the same ELF, carries a
+    byte-identical NPDRM block, and differs in the SCE key revision, 0x0010
+    against 0x000A. Neither of them is fake signed.
+
+    Custom firmware keeps the revision the file already carries, which is the
+    keyset its own retail copy was built against.
     """
 
     def signer(self, kind):
         from ps3tools.patching.signer import Signer
         return Signer(firmware_kind=kind)
 
-    def test_a_hen_console_gets_a_fake_signed_file(self):
-        self.assertTrue(self.signer("hen").fake_signs)
+    def test_a_hen_console_is_re_signed_against_the_3_55_keyset(self):
+        from ps3tools.patching import signer as signer_module
+        self.assertEqual(self.signer("hen").key_revision, 0x000A)
+        self.assertEqual(signer_module.HEN_KEY_REVISION, 0x000A)
 
-    def test_custom_firmware_keeps_the_retail_re_sign(self):
-        self.assertFalse(self.signer("cfw").fake_signs)
+    def test_custom_firmware_keeps_the_revision_the_file_carries(self):
+        self.assertIsNone(self.signer("cfw").key_revision)
 
-    def test_stock_firmware_keeps_the_retail_re_sign(self):
-        self.assertFalse(self.signer("ofw").fake_signs)
+    def test_stock_firmware_keeps_the_revision_the_file_carries(self):
+        self.assertIsNone(self.signer("ofw").key_revision)
+
+    def test_nothing_is_fake_signed_for_the_firmware_it_is_going_to(self):
+        """Fake signing is for a template that arrives already fake signed,
+        and the firmware has no say in it."""
+        for kind in ("hen", "cfw", "ofw", ""):
+            with self.subTest(firmware=kind):
+                self.assertFalse(hasattr(self.signer(kind), "fake_signs"))
 
     def test_a_console_that_did_not_say_keeps_what_has_shipped(self):
         """Guessing wrong in either direction is a game that will not start,
         so silence must never become a guess."""
         for unknown in ("", None, "   "):
             with self.subTest(firmware=unknown):
-                self.assertFalse(self.signer(unknown).fake_signs)
+                self.assertIsNone(self.signer(unknown).key_revision)
 
     def test_the_firmware_is_read_off_the_console_and_never_asked(self):
         """The screen reads webMAN's own page once per host."""
@@ -3635,8 +3647,8 @@ class SigningForTheFirmwareThatIsThere(unittest.TestCase):
         HEN has been enabled, so a reachable console that does not name itself
         as custom firmware is more likely HEN. Every custom firmware fork
         names itself, so silence is unusual. Defaulting to custom firmware
-        would get it wrong for exactly the people the fake-signed form is
-        meant to help.
+        would get it wrong for exactly the people the 3.55 re-sign is meant to
+        help.
         """
         from ps3tools.screens import patcher as patcher_module
         screen = patcher_module.PatcherScreen
@@ -3645,9 +3657,9 @@ class SigningForTheFirmwareThatIsThere(unittest.TestCase):
             self.assertTrue(hasattr(screen, name), name)
 
     def test_the_signer_is_given_nothing_it_was_not_told(self):
-        """The signer still treats empty as "do not fake sign", because the
-        screen never lets a run start without an answer."""
-        self.assertFalse(self.signer("").fake_signs)
+        """The signer still treats empty as "keep the file's own revision",
+        because the screen never lets a run start without an answer."""
+        self.assertIsNone(self.signer("").key_revision)
 
 
 class FirmwareTheConsoleDidNotName(ScreenCase):
@@ -3657,7 +3669,7 @@ class FirmwareTheConsoleDidNotName(ScreenCase):
     not run on stock firmware, and on HEN it only runs once HEN is enabled. So
     a reachable console that does not name itself as custom firmware is more
     likely HEN, and defaulting to custom firmware would get it wrong for
-    exactly the people the fake-signed form is meant to help. Every custom
+    exactly the people the 3.55 re-sign is meant to help. Every custom
     firmware fork names itself, so silence is genuinely unusual.
     """
 
@@ -3682,12 +3694,12 @@ class FirmwareTheConsoleDidNotName(ScreenCase):
         screen.set_firmware_choice("hen")
         self.assertEqual(screen.effective_firmware(), "hen")
         self.assertTrue(screen.firmware_is_settled())
-        self.assertTrue(screen._scetool().fake_signs)
+        self.assertEqual(screen._scetool().key_revision, 0x000A)
 
     def test_answering_custom_firmware_settles_it(self):
         screen = self.screen()
         screen.set_firmware_choice("cfw")
-        self.assertFalse(screen._scetool().fake_signs)
+        self.assertIsNone(screen._scetool().key_revision)
 
     def test_the_line_the_console_gave_is_shown(self):
         """A bug report names the firmware without anybody being asked."""
@@ -3723,7 +3735,7 @@ class FirmwareTheConsoleNamed(ScreenCase):
         screen, _services = self.build(patcher.BlackOpsTwoPatcher)
         self.assertEqual(screen.effective_firmware(), "hen")
         self.assertTrue(screen.firmware_is_settled())
-        self.assertTrue(screen._scetool().fake_signs)
+        self.assertEqual(screen._scetool().key_revision, 0x000A)
 
     def test_the_firmware_is_shown_as_read(self):
         screen, _services = self.build(patcher.BlackOpsTwoPatcher)

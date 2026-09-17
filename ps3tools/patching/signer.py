@@ -32,6 +32,20 @@ from ps3tools import keysmith
 from .scetool import (FIELD_TITLES, REQUIRED_FIELDS, ScetoolError,
                       read_header, reached_app_info)
 
+#: The keyset a PS3HEN console loads a SELF through. HEN runs on 4.8x
+#: firmware, but the loader it uses is the 3.55-era one, which is what the
+#: community advice to "resign to 3.55" is about.
+#:
+#: The evidence is Jacob Schroeder's IW4 binaries, which ship a CFW build and
+#: a HEN build of Modern Warfare 2 for all seven regions. Reading the
+#: BLUS30377 pair against each other: neither is fake signed, both are
+#: ordinary retail re-signs, and the whole NPDRM block is byte-identical
+#: between them, content ID, CID_FN hash, header hash, licence type 3,
+#: application type 0x20 and the pad at 0x40 included. The SCE key revision is
+#: the only field that differs, 0x0010 on the CFW build and 0x000A on the HEN
+#: one.
+HEN_KEY_REVISION = 0x000A
+
 
 class Signer:
     """Drop-in for Scetool. Always available, because there is nothing to find.
@@ -44,26 +58,29 @@ class Signer:
     def __init__(self, keys_path="", firmware_kind=""):
         self.keys_path = keys_path
         # "cfw", "hen", "ofw", or "" when the console did not say. It decides
-        # which form the rebuilt file takes, and "" keeps the retail re-sign
-        # that every release so far has shipped with.
+        # which keyset the rebuilt file is signed against, and "" keeps the
+        # file's own, which is what every release so far has shipped with.
         self.firmware_kind = str(firmware_kind or "").strip().lower()
 
     @property
-    def fake_signs(self):
-        """Whether output should be fake signed rather than re-signed.
+    def key_revision(self):
+        """The key revision to re-sign at, or None to keep the file's own.
 
-        A retail re-sign carries a signature that cannot be regenerated for a
-        file that has been changed. Custom firmware has that check patched out
-        and loads it anyway. PS3HEN appears to keep it, which is what three
-        HEN consoles black-screening at the moment the patched multiplayer
-        binary loads points at, while the campaign, which runs from a binary
-        this never touches, was fine on the same consoles.
+        A PS3HEN console gets 0x000A, because HEN loads a SELF through the
+        3.55-era keyset whatever firmware the console is on. Jacob Schroeder
+        ships a CFW and a HEN build of Modern Warfare 2 for all seven regions,
+        and the pair for one region differ in this field and in nothing else
+        that identifies the file: both are ordinary retail re-signs and the
+        NPDRM block is byte-identical between them. See HEN_KEY_REVISION.
 
-        Only a console that said it is running HEN gets the fake-signed form.
-        A console that did not say keeps today's behaviour, because guessing
+        Custom firmware keeps the file's own revision, which is the keyset its
+        own retail copy was built against and the one its patched loader
+        accepts. A console that did not say keeps the same, because guessing
         wrong in either direction produces a game that will not start.
         """
-        return self.firmware_kind == "hen"
+        if self.firmware_kind == "hen":
+            return HEN_KEY_REVISION
+        return None
 
     @property
     def problem(self):
@@ -175,15 +192,36 @@ class Signer:
         try:
             with open(elf_path, "rb") as handle:
                 elf = handle.read()
-            rebuild = keysmith.fake_sign if self.fake_signs else keysmith.sign
-            out = rebuild(elf, source, klicensee or "", self.keys_path,
-                          filename=target_name or "")
-        except keysmith.SceError as exc:
-            raise ScetoolError(str(exc)) from None
         except OSError as exc:
             raise ScetoolError(f"the patched ELF could not be read: "
                                f"{exc}") from None
+        try:
+            template = keysmith.read(source)
+            if template.is_fake_signed:
+                # A template that arrives already fake signed is the one case
+                # fake signing is right for: it carries no keyset and no
+                # metadata, so there is no revision to choose and no retail
+                # container to put anything back into. It goes back out in the
+                # form it came in, on every firmware.
+                out = keysmith.fake_sign(elf, template, klicensee or "",
+                                         self.keys_path,
+                                         filename=target_name or "")
+            else:
+                out = keysmith.sign(elf, template, klicensee or "",
+                                    self.keys_path,
+                                    filename=target_name or "",
+                                    key_revision=self.key_revision)
+        except keysmith.SceError as exc:
+            raise ScetoolError(str(exc)) from None
+        except OSError as exc:
+            raise ScetoolError(f"the file being rebuilt could not be read: "
+                               f"{exc}") from None
         with open(destination, "wb") as handle:
             handle.write(out)
-        how = "fake signed" if self.fake_signs else "re-signed"
+        if template.is_fake_signed:
+            how = "fake signed"
+        elif self.key_revision is None:
+            how = "re-signed"
+        else:
+            how = f"re-signed at key revision 0x{self.key_revision:04X}"
         return (f"{how} {os.path.basename(destination)}, {len(out)} bytes")

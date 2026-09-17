@@ -36,13 +36,17 @@ rebuilt   = keysmith.sign(elf, path, klicensee) # ELF back into its container
 faked     = keysmith.fake_sign(elf, path, klicensee)   # the fake-signed form
 ```
 
-`fake_sign` builds a fake-signed SELF from a retail one, which is the form
-PS3HEN loads. A retail re-sign carries a signature that cannot be regenerated
-for a file that has been changed; custom firmware has that check patched out,
-and HEN appears to keep it. A fake-signed SELF turns out to be its header
-followed by the ELF verbatim, and the header offsets are computed from the
-program header count rather than written down, so a binary with a different
-count does not get overlapping tables.
+`sign` also takes `key_revision`, which rebuilds the file against another
+keyset instead of the template's own. That is the PS3HEN case and it is
+covered below.
+
+`fake_sign` builds a fake-signed SELF. A fake-signed SELF turns out to be its
+header followed by the ELF verbatim, and the header offsets are computed from
+the program header count rather than written down, so a binary with a
+different count does not get overlapping tables. The case it is right for is a
+template that arrives already fake signed, which is how the digital releases
+ship: such a file has no keyset and no metadata, so it goes back out in the
+form it came in.
 
 Every fake-signed file in the corpus is zero across the whole NPDRM block,
 which is why those files answer 8001000F. `fake_sign` carries the retail block
@@ -55,6 +59,40 @@ found. Nothing prints a warning and carries on.
 `keysmith.sign` is the public function, so it takes the name of the module it
 is implemented in. The module is reached through `sys.modules` where anything
 needs it, which only the tests do.
+
+## What PS3HEN wants, and it is not a fake-signed file
+
+HEN runs on 4.8x firmware and loads a SELF through the 3.55-era appldr keyset.
+So a HEN console wants the same retail re-sign a CFW console wants, built
+against key revision 0x000A. That is what the community advice to "resign to
+3.55" means in this format, and it is `keysmith.sign(..., key_revision=0x000A)`
+rather than `fake_sign`.
+
+The evidence is Jacob Schroeder's IW4 binaries, which ship a CFW build and a
+HEN build of Modern Warfare 2 for all seven regions. Reading a matched pair
+against each other:
+
+- Neither is fake signed. Both are ordinary retail re-signs, both scetool
+  built.
+- The whole NPDRM block is byte-identical between them: content ID, CID_FN
+  hash, header hash, licence type 3, application type 0x20, and the pad at
+  0x40 as well.
+- The only header field that differs is the SCE key revision, 0x0010 on the
+  CFW build and 0x000A on the HEN one.
+
+Writing a revision does two things at once: the number goes into the SCE
+header, and the metadata info is wrapped under that revision's `erk` and
+`riv`. The console reads the first to choose the second, so setting either
+without the other gives a file whose header will not decrypt at all. Where
+more than one keyset in the file carries the wanted revision the first in file
+order is used; reading a file can tell which keyset was right, because a wrong
+one leaves padding that is not zero, and writing one has no such check.
+Revision 0x000A has exactly one NPDRM keyset, so that does not arise here.
+
+An earlier version of this program fake-signed for HEN, on the reasoning that
+a retail re-sign carries a signature that cannot be regenerated and that HEN
+checks it. The paired binaries say otherwise, and that reasoning is not in the
+tree any more.
 
 ## Layout
 
@@ -107,7 +145,8 @@ Recomputed, because it depends on the payload:
 
 Carried through unchanged, because it identifies the file:
 
-- key revision, authentication ID, vendor ID, SELF type, application version
+- key revision unless the caller asks for another, authentication ID, vendor
+  ID, SELF type, application version
 - the whole NPDRM block: licence type, application type, content ID, CID_FN
   hash
 

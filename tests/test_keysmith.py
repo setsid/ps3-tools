@@ -41,6 +41,11 @@ HAVE_KEYS = os.path.isfile(keys.default_path())
 #: Small enough to round trip in a tenth of a second, so they run every time.
 QUICK = ("mw3-eboot", "mw2-eboot")
 
+#: Jacob Schroeder's IW4 binaries, cloned beside the rest of the user's files.
+#: He ships a CFW build and a HEN build of the same Modern Warfare 2 ELF for
+#: all seven regions, which is the external gate for what a HEN console wants.
+IW4 = os.path.join(corpus.HOME, "IW4-Binaries")
+
 
 def need_keys():
     if not HAVE_KEYS:
@@ -824,6 +829,134 @@ class TheFakeSignedFromRetail(unittest.TestCase):
             shutil.rmtree(work, ignore_errors=True)
 
 
+class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
+    """Re-signing against a keyset that is not the template's own.
+
+    PS3HEN runs on 4.8x firmware and loads a SELF through the 3.55-era
+    keyset, so a HEN console wants key revision 0x000A. The gate is Jacob
+    Schroeder's IW4 binaries: a CFW build and a HEN build of the same Modern
+    Warfare 2 ELF, shipped side by side for all seven regions.
+    """
+
+    def jacob(self, build, region="bles00683", name="default_mp.self",
+              folder="release"):
+        need_keys()
+        path = os.path.join(IW4, folder, region, build, name)
+        if not os.path.isfile(path):
+            self.skipTest(f"{path} is not on this machine")
+        return path
+
+    def test_the_paired_builds_are_one_elf_signed_at_two_key_revisions(self):
+        """Neither is fake signed and the payload is the same file."""
+        cfw = keysmith.read(self.jacob("cfw"))
+        hen = keysmith.read(self.jacob("hen"))
+        self.assertFalse(cfw.is_fake_signed)
+        self.assertFalse(hen.is_fake_signed)
+        self.assertEqual(cfw.sce.key_revision, 0x0010)
+        self.assertEqual(hen.sce.key_revision, 0x000A)
+        self.assertEqual(keysmith.decrypt(self.jacob("hen"), corpus.IW_KLIC),
+                         keysmith.decrypt(self.jacob("cfw"), corpus.IW_KLIC))
+
+    def test_the_npdrm_block_is_the_same_on_both_of_the_paired_builds(self):
+        """Every byte of it, the pad at 0x40 included, so the HEN form is not
+        a differently identified file."""
+        from ps3tools.keysmith.structs import CONTROL_NPDRM
+        blocks = []
+        for build in ("cfw", "hen"):
+            parsed = keysmith.read(self.jacob(build))
+            blocks.append([b.payload for b in parsed.control_infos
+                           if b.info_type == CONTROL_NPDRM][0])
+        self.assertTrue(blocks[0])
+        self.assertEqual(blocks[0], blocks[1])
+
+    def test_a_file_asked_for_0x000A_opens_with_the_3_55_keyset(self):
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        rebuilt = keysmith.read(keysmith.sign(elf, item.path, item.klicensee,
+                                              key_revision=0x000A))
+        self.assertEqual(rebuilt.sce.key_revision, 0x000A)
+        rebuilt.decrypt_metadata(bytes.fromhex(item.klicensee))
+        self.assertEqual(rebuilt.keyset.revision, 0x000A)
+        self.assertEqual(rebuilt.keyset.self_type, "NPDRM")
+
+    def test_the_revision_a_hen_console_wants_is_the_one_jacob_ships(self):
+        """The number is read off his binary rather than written down here."""
+        item = sample("mw2-mp")
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        theirs = keysmith.read(self.jacob("hen"))
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        mine = keysmith.read(keysmith.sign(
+            elf, item.path, item.klicensee, filename="default_mp.self",
+            key_revision=theirs.sce.key_revision))
+        self.assertEqual(mine.sce.key_revision, theirs.sce.key_revision)
+        self.assertEqual(mine.npdrm.content_id, theirs.npdrm.content_id)
+        self.assertEqual(mine.npdrm.cid_fn_hash, theirs.npdrm.cid_fn_hash)
+        self.assertEqual(mine.npdrm.app_type, theirs.npdrm.app_type)
+        self.assertEqual(mine.npdrm.licence_type, theirs.npdrm.licence_type)
+
+    def test_the_elf_comes_back_out_of_a_file_at_another_revision(self):
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        rebuilt = keysmith.sign(elf, item.path, item.klicensee,
+                                key_revision=0x000A)
+        self.assertEqual(keysmith.decrypt(rebuilt, item.klicensee), elf)
+
+    def test_only_the_wrapping_changes_and_the_file_goes_back(self):
+        """Signing the 0x000A file's ELF back through the retail template
+        gives the retail bytes, so nothing under the wrapping moved."""
+        item = sample("mw2-eboot")
+        original = open(item.path, "rb").read()
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        moved = keysmith.sign(elf, item.path, item.klicensee,
+                              key_revision=0x000A)
+        self.assertNotEqual(moved, original)
+        back = keysmith.sign(keysmith.decrypt(moved, item.klicensee),
+                             item.path, item.klicensee)
+        self.assertEqual(back, original)
+
+    def test_the_metadata_key_the_file_carries_is_the_one_it_had(self):
+        """Only the block wrapped around it is re-encrypted, so the section
+        data does not have to be touched at all."""
+        item = sample("mw2-eboot")
+        klic = bytes.fromhex(item.klicensee)
+        before = keysmith.read(item.path)
+        first = before.decrypt_metadata(klic)
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        after = keysmith.read(keysmith.sign(elf, item.path, item.klicensee,
+                                            key_revision=0x000A))
+        second = after.decrypt_metadata(klic)
+        self.assertEqual(first.info.key, second.info.key)
+        self.assertEqual(first.start_iv, second.start_iv)
+        self.assertEqual(first.keys, second.keys)
+
+    def test_asking_for_the_revision_it_already_has_changes_nothing(self):
+        item = sample("mw2-eboot")
+        original = open(item.path, "rb").read()
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        parsed = keysmith.read(item.path)
+        rebuilt = keysmith.sign(elf, item.path, item.klicensee,
+                                key_revision=parsed.sce.key_revision)
+        self.assertEqual(rebuilt, original)
+
+    def test_a_revision_the_keys_file_has_none_of_is_named(self):
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        with self.assertRaises(keysmith.KeyNotFound) as caught:
+            keysmith.sign(elf, item.path, item.klicensee, key_revision=0x0099)
+        self.assertIn("0x0099", str(caught.exception))
+
+    def test_the_fake_signed_marker_is_refused_as_a_key_revision(self):
+        """0x8000 is what a fake-signed SELF carries where a revision goes,
+        and there is no keyset behind it."""
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        with self.assertRaises(keysmith.SigningFailed) as caught:
+            keysmith.sign(elf, item.path, item.klicensee,
+                          key_revision=signing.FAKE_KEY_REVISION)
+        self.assertIn("fake", str(caught.exception).lower())
+
+
 class TheErrors(unittest.TestCase):
     """Every failure names the file, the field and what was expected."""
 
@@ -846,3 +979,64 @@ class TheErrors(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheMinimumFirmwareMovesWithTheKeyRevision(unittest.TestCase):
+    """Re-signing to another keyset moves the firmware field with it.
+
+    The field tracks the keyset across every retail file here: 0x0010 carries
+    36000, which is 3.60, 0x0019 carries 40000 and 0x001C carries 42000.
+    Jacob Schroeder's PS3HEN builds of Modern Warfare 2 carry 35500, which is
+    3.55 and belongs with 0x000A, and he set it deliberately, because his own
+    custom firmware builds of the same binary leave it at zero.
+
+    Leaving 3.60 in a file signed against the 3.55 keyset says two different
+    things about one file, and this is the field that says which firmware will
+    load it.
+    """
+
+    def firmware_of(self, blob):
+        from ps3tools.keysmith.structs import CONTROL_DIGEST
+        parsed = keysmith.read(blob)
+        block = [item for item in parsed.control_infos
+                 if item.info_type == CONTROL_DIGEST][0]
+        return int.from_bytes(block.payload[40:48], "big")
+
+    def test_re_signing_to_the_3_55_keyset_writes_3_55(self):
+        item = sample("mw2-mp")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        rebuilt = keysmith.sign(elf, item.path, item.klicensee,
+                                key_revision=0x000A)
+        self.assertEqual(self.firmware_of(rebuilt), 35500)
+
+    def test_leaving_the_revision_alone_leaves_the_field_alone(self):
+        item = sample("mw2-mp")
+        original = open(item.path, "rb").read()
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        self.assertEqual(keysmith.sign(elf, item.path, item.klicensee),
+                         original)
+
+    def test_a_revision_nobody_has_measured_leaves_the_field_alone(self):
+        """A wrong minimum firmware is a file the console refuses for a
+        reason nothing on screen would explain, so it is never guessed."""
+        from ps3tools.keysmith import sign as _unused                # noqa
+        import ps3tools.keysmith.sign
+        signing = sys.modules["ps3tools.keysmith.sign"]
+        self.assertNotIn(0x0004, signing.FIRMWARE_FOR_REVISION)
+        payload = bytearray(48)
+        signing._set_firmware(payload, 0x0010, 0x0004)
+        self.assertEqual(int.from_bytes(payload[40:48], "big"), 0)
+
+    def test_the_figures_come_off_the_real_files(self):
+        signing = sys.modules["ps3tools.keysmith.sign"]
+        for item in chosen():
+            if item.kind != "self":
+                continue
+            with self.subTest(sample=item.key):
+                parsed = keysmith.read(item.path)
+                want = signing.FIRMWARE_FOR_REVISION.get(
+                    parsed.sce.key_revision)
+                if want is None:
+                    continue
+                self.assertEqual(
+                    self.firmware_of(open(item.path, "rb").read()), want)

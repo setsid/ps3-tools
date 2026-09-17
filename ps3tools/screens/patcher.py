@@ -997,8 +997,8 @@ class PatcherScreen(Screen):
         That is why this never falls back to custom firmware on its own.
         Signing for the wrong one produces a game that will not start, and
         guessing custom firmware gets it wrong for exactly the people the
-        fake-signed form exists to help. Where the console did not say, the
-        user is asked and Apply waits for the answer.
+        3.55 re-sign exists to help. Where the console did not say, the user
+        is asked and Apply waits for the answer.
         """
         read = self.firmware_kind()
         if read in ("cfw", "hen"):

@@ -17,8 +17,11 @@ field and what was expected in the message, rather than printing a warning and
 carrying on.
 
 sign() gives back the form the template came in, which for a retail file means
-a retail re-sign. fake_sign() always gives a fake-signed file, whatever the
-template was, because that is the form PS3HEN loads.
+a retail re-sign. Its key_revision argument rebuilds against a different
+keyset, which is what a PS3HEN console needs: HEN runs on 4.8x firmware and
+loads a SELF through the 3.55-era keyset, key revision 0x000A. fake_sign()
+gives a fake-signed file whatever the template was, and the case that calls
+for it is a template that is already fake signed.
 
 The public sign() takes the name of the module it is implemented in, so
 keysmith.sign is the function and the module is reached through sys.modules
@@ -143,7 +146,8 @@ def decrypt(file, klicensee="", keys_path=""):
     return parsed.to_elf(_klic(klicensee), store)
 
 
-def sign(elf, template, klicensee="", keys_path="", filename=""):
+def sign(elf, template, klicensee="", keys_path="", filename="",
+         key_revision=None):
     """An ELF put back into the container its template came from.
 
     The template is the user's own original file. Everything that identifies
@@ -155,6 +159,16 @@ def sign(elf, template, klicensee="", keys_path="", filename=""):
     CID_FN hash, so a file that will be written under a different name has to
     say so or it will be perfectly valid and refuse to load. Left empty, the
     name is taken to be unchanged.
+
+    key_revision rebuilds against a different keyset rather than the
+    template's own, writing the number into the SCE header and wrapping the
+    metadata info under that revision's erk and riv. None keeps the
+    template's. PS3HEN wants 0x000A; sign.py's docstring has the evidence,
+    which is Jacob Schroeder's paired CFW and HEN builds of the same title
+    differing in that field and in nothing else.
+
+    A fake-signed template is rebuilt through its own header, which carries no
+    keyset at all, so key_revision does not apply to one and is ignored.
     """
     parsed = template if isinstance(template, SelfFile) else read(template)
     if isinstance(elf, (str, os.PathLike)):
@@ -165,16 +179,22 @@ def sign(elf, template, klicensee="", keys_path="", filename=""):
         return _fself.rebuild(parsed, elf)
     store = _keys.load(keys_path) if keys_path else None
     return _sign.rebuild(parsed, elf, _klic(klicensee), store,
-                         filename=filename)
+                         filename=filename, key_revision=key_revision)
 
 
 def fake_sign(elf, template, klicensee="", keys_path="", filename=""):
     """An ELF put into a fake-signed container, built from any template.
 
-    This is the form PS3HEN loads. A retail re-sign carries Sony's signature,
-    which cannot be regenerated once the file's bytes have moved, and HEN
-    appears to check it: three consoles black screened at the moment the
-    patched multiplayer binary loaded.
+    The case this is right for is a template that arrives already fake signed,
+    which is how the digital releases ship. Such a file has no keyset and no
+    metadata, so it goes back out in the form it came in.
+
+    It is not what a PS3HEN console needs. HEN loads an ordinary retail
+    re-sign, as long as it is built against the 3.55-era keyset: Jacob
+    Schroeder's paired CFW and HEN builds of Modern Warfare 2 are both retail
+    re-signs, and the only header field that differs between them is the SCE
+    key revision, 0x0010 against 0x000A. That is what sign(key_revision=...)
+    is for.
 
     The template is the user's own retail file and everything that identifies
     the file is taken from it, the whole NPDRM control block included. That is

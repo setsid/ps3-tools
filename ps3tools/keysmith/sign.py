@@ -1,13 +1,13 @@
 """Rebuilding a SELF from a template and an ELF.
 
 The template is the user's own original file. Everything that identifies the
-file and cannot be worked out from an ELF is taken from it: key revision,
-authentication and vendor IDs, SELF type, application version, the control
-flags, and the whole NPDRM block including the licence type, the application
-type, the content ID and the CID_FN hash. Those are the fields that cost
-people days. TrueAncestor drops the NPDRM block and the Black Ops 2
-Eboot-Self Builder writes application type 0, and both give 8001000F on a
-console that checks licences.
+file and cannot be worked out from an ELF is taken from it: the key revision
+unless the caller asks for another one, the authentication and vendor IDs, the
+SELF type, the application version, the control flags, and the whole NPDRM
+block including the licence type, the application type, the content ID and the
+CID_FN hash. Those are the fields that cost people days. TrueAncestor drops
+the NPDRM block and the Black Ops 2 Eboot-Self Builder writes application type
+0, and both give 8001000F on a console that checks licences.
 
 What is recomputed is what genuinely depends on the payload: section sizes and
 offsets, the per-section HMACs, the ELF digest, the lengths in the headers, and
@@ -26,6 +26,27 @@ Compression follows the template section by section. Turning it off is what
 makes an output roughly twice the size of stock, and turning it on for a title
 whose sections were never compressed would be just as wrong: the Modern
 Warfare binaries in the corpus carry no compressed sections at all.
+
+The one identifying field a caller may override is the key revision, and the
+reason is PS3HEN. HEN runs on 4.8x firmware but loads a SELF through the
+3.55-era appldr keyset, so a file built at the key revision a 4.8x retail copy
+carries is not one it can open. That is what the community advice to "resign
+to 3.55" means in this format: key revision 0x000A.
+
+The evidence is Jacob Schroeder's IW4 binaries, which ship a CFW build and a
+HEN build for all seven Modern Warfare 2 regions. Reading the BLUS30377 pair
+against each other: neither is fake signed, both are ordinary retail re-signs
+scetool built, and the whole NPDRM control block is byte-identical between
+them, content ID, CID_FN hash, header hash, licence type 3, application type
+0x20 and the pad at 0x40 included. The only header field that differs is the
+SCE key revision, 0x0010 on the CFW build and 0x000A on the HEN one. So the
+HEN form is the same re-sign against a different keyset rather than a
+different kind of file, and fake signing is not part of it.
+
+Writing a revision therefore has to do two things at once: put the number in
+the SCE header, and wrap the metadata info under that revision's erk and riv.
+The console reads the first to choose the second, so setting either without
+the other gives a file whose header will not decrypt at all.
 """
 
 import hashlib
@@ -57,6 +78,27 @@ SECTION_ALIGN = 0x10
 # The first of the two digests in the file digest control block is the same
 # constant in every SELF anybody has seen, including all eighteen here.
 DIGEST_CONSTANT = bytes.fromhex("627CB1808AB938E32C8C091708726A579E2586E4")
+
+#: Where the minimum firmware version sits in the file digest block, and what
+#: belongs with each key revision.
+#:
+#: The field tracks the keyset across every retail file in the corpus: key
+#: revision 0x0010 carries 36000, which is 3.60, 0x0019 carries 40000 and
+#: 0x001C carries 42000. Jacob Schroeder's PS3HEN builds of Modern Warfare 2
+#: carry 35500, which is 3.55 and is the value that belongs with 0x000A, and
+#: he set it deliberately: his own custom firmware builds of the same binary
+#: leave it at zero. Confirmed on both the European and American releases.
+#:
+#: So re-signing to another key revision moves this with it. Leaving 3.60 in a
+#: file signed against the 3.55 keyset says two different things about the
+#: same file, and this is the field that says which firmware will load it.
+DIGEST_FIRMWARE_AT = 40
+FIRMWARE_FOR_REVISION = {
+    0x000A: 35500,
+    0x0010: 36000,
+    0x0019: 40000,
+    0x001C: 42000,
+}
 
 
 def _hmac_key(metadata, section):
@@ -119,7 +161,7 @@ def section_payloads(template, elf, metadata):
 
 
 def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
-            filename=""):
+            filename="", key_revision=None):
     """A SELF built from this template and this ELF.
 
     keep_layout reuses the template's own section offsets when the payload
@@ -131,6 +173,12 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     CID_FN hash, so a file written under a different name needs it given here
     or it will be valid and refuse to load. Left empty, the template's hash is
     kept, which is right whenever the name has not changed.
+
+    key_revision rebuilds the file against a different keyset: the number goes
+    into the SCE header and the metadata info is wrapped under that revision's
+    erk and riv. None keeps the template's own, which is what a custom
+    firmware console wants. PS3HEN wants 0x000A; the module docstring has the
+    evidence for that.
     """
     # Checked before anything else: a fake-signed template has no keys and no
     # metadata, so every message from further down would be about the wrong
@@ -143,7 +191,12 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
             found=template.sce.key_revision)
     store = store or keymod.load()
     _check_geometry(template, elf)
+    # The template is always opened with its own keyset. Only the keyset it is
+    # written back out under is a choice, and decrypt_metadata has to have run
+    # before that choice can be made, because it is what records which of the
+    # candidate keysets actually opened this file.
     metadata = template.decrypt_metadata(klicensee, store)
+    revision, keyset = _signing_keyset(template, store, key_revision)
     payloads = section_payloads(template, elf, metadata)
 
     unchanged = all(
@@ -222,11 +275,15 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     # different one for a file nobody has touched.
     control_infos = []
     for block in template.control_infos:
+        moved = (key_revision is not None
+                 and key_revision != template.sce.key_revision)
         if (block.info_type == CONTROL_DIGEST and len(block.payload) >= 0x30
-                and not unchanged):
+                and (not unchanged or moved)):
             payload = bytearray(block.payload)
-            payload[0:20] = DIGEST_CONSTANT
-            payload[20:40] = hashlib.sha1(elf).digest()
+            if not unchanged:
+                payload[0:20] = DIGEST_CONSTANT
+                payload[20:40] = hashlib.sha1(elf).digest()
+            _set_firmware(payload, template.sce.key_revision, key_revision)
             control_infos.append(ControlInfo(block.info_type, block.size,
                                              block.next, bytes(payload)))
         elif block.info_type == CONTROL_NPDRM:
@@ -237,7 +294,8 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
 
     blob = _metadata_blob(metadata, new_sections, key_table)
     header = _header(template, control_infos, section_infos, metadata, blob,
-                     klicensee, store, elf_length=len(elf))
+                     klicensee, store, elf_length=len(elf),
+                     key_revision=revision, keyset=keyset)
 
     # Where the layout is kept, the rebuild starts from the original file so
     # that whatever sits in the gaps between sections survives. A retail SELF
@@ -259,6 +317,57 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     if keep_layout and unchanged and len(out) < len(template.raw):
         out.extend(template.raw[len(out):])
     return bytes(out)
+
+
+def _signing_keyset(template, store, key_revision):
+    """(the revision to write, the keyset to write it under).
+
+    key_revision None, or the revision the template already carries, keeps the
+    keyset that opened the file, so nothing about a plain rebuild changes.
+
+    Where more than one keyset in the file carries the wanted revision the
+    first in file order is used. Reading a file can do better than that, since
+    a wrong keyset shows up as padding that is not zero, but writing one has
+    no such check available: only a console can say. Revision 0x000A, the one
+    PS3HEN wants, has exactly one NPDRM keyset in naehrwert's file, so this
+    does not arise for the case it was written for.
+    """
+    if key_revision is None:
+        return template.sce.key_revision, template.keyset
+    revision = int(key_revision)
+    if revision == template.sce.key_revision:
+        return revision, template.keyset
+    if revision == FAKE_KEY_REVISION:
+        raise SigningFailed(
+            "0x8000 is what a fake-signed SELF carries rather than a keyset "
+            "revision, and a fake-signed file is built by the fself path "
+            "rather than this one", path=template.path, field="key revision",
+            expected="a retail key revision", found=revision)
+    self_type = template.keyset_self_type
+    if not self_type:
+        raise SigningFailed(
+            "this SELF type has no keysets, so it cannot be rebuilt against "
+            "another key revision", path=template.path, field="SELF type",
+            found=template.app_info.self_type)
+    return revision, store.require_candidates(self_type, revision,
+                                              template.path)[0]
+
+
+def _set_firmware(payload, was, now):
+    """Move the minimum firmware version with the key revision.
+
+    Only when the revision has actually changed, and only to a value read off
+    real files. A revision this has not seen leaves the field alone rather
+    than guessing at it: a wrong minimum firmware is a file the console
+    refuses for a reason nothing on screen would explain.
+    """
+    if now is None or now == was:
+        return
+    version = FIRMWARE_FOR_REVISION.get(now)
+    if version is None:
+        return
+    payload[DIGEST_FIRMWARE_AT:DIGEST_FIRMWARE_AT + 8] = (
+        version.to_bytes(8, "big"))
 
 
 def _npdrm_block(block, store, klicensee, filename):
@@ -353,16 +462,21 @@ def _metadata_blob(metadata, sections, key_table):
 
 
 def _header(template, control_infos, section_infos, metadata, blob, klicensee,
-            store, elf_length=None):
+            store, elf_length=None, key_revision=None, keyset=None):
     """Everything up to the first section's bytes."""
     sce = template.sce
+    keyset = keyset or template.keyset
+    revision = sce.key_revision if key_revision is None else int(key_revision)
     head = bytearray(template.raw[:int(sce.header_length)])
-    if elf_length is not None and elf_length != sce.data_length:
+    length = sce.data_length if elf_length is None else elf_length
+    if length != sce.data_length or revision != sce.key_revision:
         # data_length is the length of the ELF inside, which changes when a
-        # patch changes a segment.
-        updated = SceHeader(sce.magic, sce.version, sce.key_revision,
+        # patch changes a segment. The key revision is what the console reads
+        # to pick the keyset that opens the metadata info below, so the two
+        # are written together or the file does not decrypt at all.
+        updated = SceHeader(sce.magic, sce.version, revision,
                             sce.header_type, sce.metadata_offset,
-                            sce.header_length, elf_length)
+                            sce.header_length, length)
         head[0:SceHeader.SIZE] = updated.pack()
 
     at = template.self_header.control_info_offset
@@ -378,10 +492,15 @@ def _header(template, control_infos, section_infos, metadata, blob, klicensee,
         at += len(packed)
 
     # The metadata info block, wrapped back up the way it was unwrapped.
+    #
+    # The keyset here is the one being written for, which is the template's
+    # own unless a revision was asked for. The per-file metadata key and IV
+    # inside the block are the template's either way: they are what the
+    # section data is already encrypted under, and only the wrapping around
+    # them changes.
     info = MetadataInfo(metadata.info.key, b"\x00" * 16, metadata.start_iv,
                         b"\x00" * 16)
-    wrapped = aes.cbc_encrypt(template.keyset.erk, template.keyset.riv,
-                              info.pack())
+    wrapped = aes.cbc_encrypt(keyset.erk, keyset.riv, info.pack())
     if template.is_npdrm:
         klic = bytes(klicensee) or store.named_key("NP_klic_free")
         per_title = aes.ecb_decrypt(store.named_key("NP_klic_key"), klic)

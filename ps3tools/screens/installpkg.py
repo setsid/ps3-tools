@@ -100,6 +100,10 @@ class InstallPackagesScreen(Screen):
         #: True while the panel is showing the folder listing's own notice.
         #: It is the only thing the listing is allowed to clear.
         self._listing_owns_panel = False
+        #: The last thing a run put in the panel, so that a notice from the
+        #: folder listing can be taken down without taking the run's result
+        #: with it.
+        self._run_panel = None
         # Seams, so a test does not sit through a real install timeout. The
         # defaults are what runs against a console: None means each package
         # is allowed a wait worked out from its own size.
@@ -358,14 +362,19 @@ class InstallPackagesScreen(Screen):
         trouble = problem or (folder.reason if folder.unknown else "")
         if trouble:
             self._show_panel("warn", "The console's packages folder could not "
-                                     "be read", trouble)
-            self._listing_owns_panel = True
+                                     "be read", trouble, owner="listing")
             return
         # This runs again straight after an install, so it may only clear a
-        # notice it put up itself. Anything the run reported stays.
+        # notice it put up itself, and clearing it puts back whatever the run
+        # had said. Two listings in flight, one failing and one not, used to
+        # leave the panel blank: the first replaced "Installed" with its own
+        # warning, and the second took that warning down and revealed nothing.
         if self._listing_owns_panel:
             self._listing_owns_panel = False
-            self._hide_panel()
+            if self._run_panel is not None:
+                self._show_panel(*self._run_panel)
+            else:
+                self._hide_panel()
 
     # -- what is already on the console
 
@@ -866,12 +875,14 @@ class InstallPackagesScreen(Screen):
 
     # -- panel, colours and chrome
 
-    def _show_panel(self, token, heading, body):
+    def _show_panel(self, token, heading, body, owner="run"):
         # Whoever writes the panel last owns it. The listing runs again after
         # every install, and it used to be able to clear a panel a failed run
         # had put up moments earlier: the listing result was still in flight
         # when the run finished, and the refusal vanished before it was read.
-        self._listing_owns_panel = False
+        self._listing_owns_panel = owner == "listing"
+        if owner == "run":
+            self._run_panel = (token, heading, body)
         self._panel_token = token
         self._panel_heading.setText(heading)
         self._panel_body.setText(body)
@@ -879,6 +890,7 @@ class InstallPackagesScreen(Screen):
         self._paint_panel()
 
     def _hide_panel(self):
+        self._run_panel = None
         self._panel.hide()
         self._panel_heading.setText("")
         self._panel_body.setText("")

@@ -623,6 +623,28 @@ class TheRun(ScreenCase):
         APP.processEvents()
         self.assertIn("not enough room", screen._panel_body.text())
 
+    def test_two_listings_in_flight_do_not_blank_the_run_s_result(self):
+        """The panel-wipe again, one step along.
+
+        A failing listing puts its own warning up over the run's result, and
+        the next listing takes that warning down. Taking it down used to
+        reveal nothing at all, so an install that had said "Installed" ended
+        as an empty panel. Clearing a listing notice puts the run's message
+        back.
+        """
+        screen = self.build(writer=ExplodingWriter(),
+                            actions=ExplodingActions())
+        # build() starts a scan of the console. Draining it here keeps this
+        # test from leaving work in flight for whichever test runs next.
+        self.settle()
+        screen._show_panel("info", "Installed", "one package installed")
+        screen._on_folder((SimpleNamespace(unknown=True, reason="530 denied"),
+                           [], "530 denied"))
+        self.assertIn("could not be read", screen._panel_heading.text())
+        screen._on_folder((SimpleNamespace(unknown=False, reason=""), [], ""))
+        APP.processEvents()
+        self.assertEqual(screen._panel_heading.text(), "Installed")
+
     def test_a_console_that_disappears_mid_upload(self):
         screen = self.build(
             writer=RecordingWriter(fault=ftplib.error_temp("421 goodbye")),

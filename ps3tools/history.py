@@ -29,11 +29,45 @@ class Release:
 
 RELEASES = (
     Release(
-        version="1.3.3",
-        date="2026-09-16",
-        summary="A file is checked for being the binary it claims to be "
-                "before anything is written to it.",
+        version="1.4.0",
+        date="2026-09-17",
+        summary="The program does its own decrypting and re-signing, and "
+                "signs for the firmware your console is running.",
         changes=(
+            "PS3 Tools no longer uses scetool. The decrypting, re-signing "
+            "and fake signing are this program's own, written in Python, so "
+            "there is no separate program to find, nothing for antivirus to "
+            "object to, and the keys are looked up inside the program rather "
+            "than beside whatever folder it was started from.",
+            "Fake-signed binaries are read and written, so the digital "
+            "releases patch the same way the disc ones do and no second tool "
+            "has to be found. The cards no longer say digital releases are "
+            "unsupported, because they are.",
+            "The program reads which firmware your console is running off "
+            "webMAN's own page and signs for it. A HEN console gets the file "
+            "re-signed against the 3.55-era keyset, which is what the advice "
+            "to resign to 3.55 means. A custom firmware console keeps its "
+            "own key revision as before.",
+            "Where the console does not say which firmware it is, the "
+            "program asks rather than choosing. Signing for the wrong one "
+            "gives a game that will not start.",
+            "The two NPDRM hashes are worked out rather than copied, so a "
+            "file rebuilt under a different name on the console carries the "
+            "hash that name needs.",
+            "A patch screen only ever offers releases of the game it fixes. "
+            "The Black Ops 1 screen was offering Ghosts, and then Modern "
+            "Warfare 2, to somebody who had Black Ops 1 installed.",
+            "A release this program has not been tested on is offered with a "
+            "warning rather than refused. The fix finds its own patch site, "
+            "so an unfamiliar title ID is a reason to be careful and nothing "
+            "more, and the site is what decides whether it fits.",
+            "Where no copy of the game is found, the folder can be typed in "
+            "rather than the search simply failing.",
+            "Black Ops 1 knows eleven releases rather than four. Europe was "
+            "issued as six discs, one for each language group, and only the "
+            "English and French one was recognised.",
+            "Black Ops 1 no longer carries a Beta badge on its card.",
+            "Modern Warfare 3's card no longer says it is failing on HEN.",
             "Every file a patcher is about to change is checked for actually "
             "being that binary. A mod menu commonly puts a re-signed copy of "
             "the multiplayer binary in place of EBOOT.BIN, set to load an "
@@ -163,17 +197,12 @@ RELEASES = (
             "The Black Ops 1 screen says that the map packs, not this fix, "
             "are what stops public matches being found, and what to do about "
             "it in the meantime.",
-            "Black Ops 1 is marked Beta on its card.",
             "A card can carry a short warning about what is known to be "
             "wrong with a tool, in a box of its own beside the Open link.",
             "A file the patchers do not recognise no longer points somebody "
             "with a modified game at a page that will patch it anyway. Black "
             "Ops 1 says to put the stock files back, run this fix on those, "
             "and apply their own changes again afterwards.",
-            "Black Ops II and Modern Warfare 3 say on their cards that "
-            "digital releases are not supported yet. Modern Warfare 3 also "
-            "says it has been reported failing on HEN consoles and that this "
-            "is being looked into.",
             "A long title on one of those cards wraps rather than being cut "
             "short with a full stop.",
         ),

@@ -3680,10 +3680,13 @@ class FirmwareTheConsoleDidNotName(ScreenCase):
         screen.firmware_kind()
         return screen
 
-    def test_apply_waits_until_the_user_says_which_it_is(self):
+    def test_apply_asks_which_it_is_rather_than_staying_disabled(self):
+        """Gating the button on this disabled it with nothing on screen to
+        answer with, so the fix could not be applied at all. It is asked for
+        when Apply is pressed instead."""
         screen = self.screen()
         self.assertFalse(screen.firmware_is_settled())
-        self.assertFalse(screen.patch_allowed())
+        self.assertTrue(hasattr(screen, "ask_firmware"))
 
     def test_nothing_is_chosen_for_the_user(self):
         screen = self.screen()
@@ -3742,3 +3745,60 @@ class FirmwareTheConsoleNamed(ScreenCase):
         words = screen.firmware_words()
         self.assertIn("4.93 CEX PS3HEN 3.5.0", words)
         self.assertIn("HEN", words)
+
+
+class ApplyBecomesAvailableWhenTheBoxIsTicked(ScreenCase):
+    """The Black Ops 1 confirmation must enable the button.
+
+    It did not. Apply was gated on the firmware being settled as well as on
+    the tick box, and a console that did not name its firmware left the button
+    disabled with nothing on screen to answer with, so the fix could not be
+    applied at all. Which firmware it is is asked when Apply is pressed now.
+    """
+
+    def ready_screen(self):
+        screen, _services = self.build(patcher.BlackOpsOnePatcher)
+        screen._scan = _ScanStub()
+        screen._update_state = None
+        screen._writing = False
+        return screen
+
+    def test_ticking_the_box_enables_apply(self):
+        screen = self.ready_screen()
+        self.assertFalse(screen.patch_allowed())
+        screen._confirm.setChecked(True)
+        self.assertTrue(screen.patch_allowed())
+        self.assertTrue(screen._patch.isEnabled())
+
+    def test_unticking_it_disables_apply_again(self):
+        screen = self.ready_screen()
+        screen._confirm.setChecked(True)
+        screen._confirm.setChecked(False)
+        self.assertFalse(screen.patch_allowed())
+        self.assertFalse(screen._patch.isEnabled())
+
+    def test_an_unknown_firmware_no_longer_disables_the_button(self):
+        """It is asked for at Apply instead, so the screen cannot deadlock."""
+        screen = self.ready_screen()
+        screen._firmware_host = screen.connection.host
+        screen._firmware_kind = ""
+        screen._firmware_choice = ""
+        screen._confirm.setChecked(True)
+        self.assertFalse(screen.firmware_is_settled())
+        self.assertTrue(screen.patch_allowed())
+
+    def test_the_three_screens_share_the_firmware_question(self):
+        for screen_class in (patcher.BlackOpsOnePatcher,
+                             patcher.BlackOpsTwoPatcher,
+                             patcher.ModernWarfareThreePatcher):
+            with self.subTest(screen=screen_class.__name__):
+                self.assertIs(screen_class.ask_firmware,
+                              patcher.PatcherScreen.ask_firmware)
+
+
+class _ScanStub:
+    """Enough of a scan report for the button logic to run."""
+
+    can_patch = True
+    chosen = ()
+    untested = False

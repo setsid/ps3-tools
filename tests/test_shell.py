@@ -1807,20 +1807,25 @@ class WhatTheRealCardsSay(unittest.TestCase):
                   if screen.badge}
         self.assertEqual(badged, {})
 
-    def test_both_shipping_fixes_say_digital_releases_are_not_done_yet(self):
-        # The reference values were read off disc releases. A digital install
-        # comes back unrecognised, which is the safe way round, and somebody
-        # holding one should learn that from the card and not from the scan.
-        from ps3tools.screens.patcher import NO_DIGITAL, PatcherScreen
+    def test_no_fix_still_says_digital_releases_are_unsupported(self):
+        """They are supported. Fake-signed binaries are read and written, so
+        a digital release patches the way a disc one does."""
+        from ps3tools.screens.patcher import PatcherScreen
         fixes = [screen for screen in self.screens()
                  if issubclass(screen, PatcherScreen)]
         self.assertTrue(fixes)
         for screen in fixes:
-            self.assertIn(NO_DIGITAL, screen.note, screen.key)
+            note = getattr(screen, "note", "") or ""
+            self.assertNotIn("igital", note, screen.key)
 
-    def test_modern_warfare_3_also_says_what_is_happening_on_hen(self):
-        from ps3tools.screens.patcher import ModernWarfareThreePatcher
-        self.assertIn("HEN", ModernWarfareThreePatcher.note)
+    def test_no_fix_still_says_it_is_failing_on_hen(self):
+        """The program signs for HEN now, so the warning is out of date."""
+        from ps3tools.screens.patcher import PatcherScreen
+        for screen in self.screens():
+            if not issubclass(screen, PatcherScreen):
+                continue
+            note = getattr(screen, "note", "") or ""
+            self.assertNotIn("HEN", note, screen.key)
 
 class ClosingTheWindowEndsTheProgram(unittest.TestCase):
     """Pressing the X left it running with nothing on screen.

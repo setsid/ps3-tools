@@ -213,11 +213,11 @@ def from_retail(template, elf, filename="", klicensee=b"", store=None):
     only Modern Warfare 3 has one on disk. This builds the container instead,
     so the Black Ops titles can be fake signed from their own retail files.
 
-    Why fake signed rather than re-signed. A retail re-sign carries Sony's
-    signature, which cannot be regenerated once the file's bytes have moved,
-    and PS3HEN appears to check it: three consoles black screened at the
-    moment the patched multiplayer binary loaded. A fake-signed binary is the
-    form HEN loads.
+    This is for a file that arrives fake signed already, which is what the
+    digital releases are. A PS3HEN console does not want this form: paired
+    builds of the same title show HEN wants an ordinary re-sign against the
+    3.55-era keyset, which is what sign() does when it is given a key
+    revision.
 
     The NPDRM control block is carried over from the retail template whole, so
     the licence type, the application type, the content ID and both hashes are

@@ -84,6 +84,14 @@ from ps3tools.patching.ftpwrite import FtpWriter
 
 #: webMAN's own page, which names the firmware outright.
 FIRMWARE_PAGE = "/cpursx.ps3"
+
+#: Asked only when the console did not name its own firmware. The two forms a
+#: file can take are not interchangeable, and signing for the wrong one gives
+#: a game that will not start, so this says what it is for.
+FIRMWARE_PROMPT = (
+    "This console did not say which firmware it is running, which is "
+    "unusual.\n\nThe patched file is signed differently for each, and the "
+    "wrong one gives a game that will not start, so it is worth being sure.")
 from ps3tools.patching.signer import Signer
 from ps3tools.shell import icons
 from ps3tools.shell import widgets
@@ -936,11 +944,6 @@ class PatcherScreen(Screen):
         which of those the person in front of it has, so the screen asks and
         this is where the answer is read.
         """
-        if not self.firmware_is_settled():
-            # Nothing is written until it is known which firmware this is
-            # signing for. The two forms are not interchangeable and the wrong
-            # one is a game that will not start.
-            return False
         return not self.CONFIRM_WITH or self._confirm.isChecked()
 
     def _on_confirmed(self, _checked):
@@ -952,6 +955,26 @@ class PatcherScreen(Screen):
             and not (self._update_state is not None
                      and self._update_state.blocks)
             and self.patch_allowed())
+
+    def ask_firmware(self):
+        """Which firmware the console is running, from the user, or "".
+
+        Only reached when the console did not say, which is unusual: every
+        custom firmware fork names itself and HEN names itself. A seam like
+        the others, so a test can answer it without a dialogue box.
+
+        Nothing is preselected. The two forms are not interchangeable and
+        signing for the wrong one gives a game that will not start, so this
+        asks rather than offering a default to click past.
+        """
+        choices = ["PS3HEN", "Custom firmware (Cobra, Evilnat, Rebug and the "
+                   "rest)"]
+        picked, said_yes = QInputDialog.getItem(
+            self, "Which firmware is this console running?",
+            FIRMWARE_PROMPT, choices, 0, False)
+        if not said_yes:
+            return ""
+        return "hen" if picked == choices[0] else "cfw"
 
     def ask_for_folder(self):
         """Where the game is, from the user, or "" if they would rather not.
@@ -1705,6 +1728,14 @@ class PatcherScreen(Screen):
         # between a user and a patch built for another version of the game.
         if self._update_state is not None and self._update_state.blocks:
             return
+        # Which firmware this is signing for, asked here rather than gating
+        # the button on it. Gating it disabled Apply on a console that did not
+        # say, with nothing on screen to answer with, so the fix could not be
+        # applied at all.
+        if not self.firmware_is_settled():
+            self.set_firmware_choice(self.ask_firmware())
+            if not self.firmware_is_settled():
+                return
         ready, why = self.patch_ready()
         if not ready:
             # An empty reason means the user has just been asked something
@@ -2425,13 +2456,6 @@ def _scan_console(host, title_key, tool, open_lister, open_writer, progress,
     return location, report, _release_label(title_id), extra
 
 
-#: The reference values both fixes are checked against were read off disc
-#: releases. A digital install comes back unrecognised rather than being
-#: patched wrongly, which is the safe way round, but somebody holding one
-#: should find that out from the card rather than from the scan.
-NO_DIGITAL = "Digital releases are not supported yet."
-
-
 @register
 class BlackOpsTwoPatcher(PatcherScreen):
     title_key = "bo2"
@@ -2441,7 +2465,6 @@ class BlackOpsTwoPatcher(PatcherScreen):
              "active.")
     tile = "B2"
     order = 20
-    note = NO_DIGITAL
 
 
 @register
@@ -2456,7 +2479,6 @@ class ModernWarfareThreePatcher(PatcherScreen):
     # Two things wrong rather than one. The HEN reports are not understood yet
     # and saying so is better than a card that looks clean to somebody who is
     # about to hit it.
-    note = NO_DIGITAL + " Reported failing on HEN; under investigation."
 
 
 #: Said on the screen and again in the notes after a run, because it is the
@@ -2551,7 +2573,6 @@ class BlackOpsOnePatcher(PatcherScreen):
     # Between Diagnostics and the other two fixes, so the three game fixes sit
     # together and the card most people are here for is not behind them.
     order = 15
-    note = NO_DIGITAL
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)

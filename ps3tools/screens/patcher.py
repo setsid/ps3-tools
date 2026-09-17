@@ -1047,7 +1047,8 @@ class PatcherScreen(Screen):
             return ""
         if self._firmware_host != host:
             self._firmware_host = host
-            self._firmware_kind, self._firmware_line = self._read_firmware(host)
+            found = self._read_firmware(host)
+            self._firmware_kind, self._firmware_line = found
             # A different console is a different answer, so an answer given
             # for the last one must not be carried over to this one.
             self._firmware_choice = ""

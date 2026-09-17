@@ -3690,7 +3690,7 @@ class FirmwareTheConsoleDidNotName(ScreenCase):
         self.assertFalse(screen._scetool().fake_signs)
 
     def test_the_line_the_console_gave_is_shown(self):
-        """A bug report says which firmware it came from without being asked."""
+        """A bug report names the firmware without anybody being asked."""
         screen = self.screen()
         self.assertIn("4.90 HFW", screen.firmware_words())
 

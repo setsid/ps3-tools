@@ -317,10 +317,11 @@ TITLES = {
         # patch site is an offset that is only right for one build. This one
         # finds its own site, so a build it was not written for either matches
         # the patterns, in which case it is the same code, or is refused.
-        "skus": {
-            "BLES01031": {"region": "Europe", "updates": {}},
-            "BLUS30591": {"region": "North America", "updates": {}},
-        },
+        # Two entries carrying no package hash were added here at one point,
+        # which is the thing the paragraph above says not to do: being in this
+        # table is what makes a release verified, and a verified release the
+        # tool cannot then recognise is the worst of both.
+        "skus": {},
     },
     "bo2": {
         "key": "bo2",

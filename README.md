@@ -1,7 +1,5 @@
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
 
-# PS3 Tools
-
 <table>
   <tr>
     <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops-ii"><img src="docs/cards/black-ops-2.svg" alt="Black Ops II, fixed" width="180"></a></td>

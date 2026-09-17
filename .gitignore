@@ -1,7 +1,8 @@
-# Not in the repo. scetool is naehrwert's work, shipped inside the built exe
+# Not in the repo. The keyset is naehrwert's work, shipped inside the built exe
 # but not redistributed here, the same as in the two standalone patcher repos.
-# build-exe.ps1 will tell you where to put it.
-tools/scetool/
+# build-exe.ps1 will tell you where to put it, and keysmith says so too when it
+# is asked to open a file without one.
+ps3tools/keysmith/data/
 
 # Build output
 dist/

@@ -1040,3 +1040,77 @@ class TheMinimumFirmwareMovesWithTheKeyRevision(unittest.TestCase):
                     continue
                 self.assertEqual(
                     self.firmware_of(open(item.path, "rb").read()), want)
+
+
+class TheControlFlagsAHenBuildCarries(unittest.TestCase):
+    """The flags were surveyed before they were written.
+
+    All fourteen of Jacob Schroeder's PS3HEN binaries carry the same value,
+    seven regions across both the multiplayer and the campaign trees. All
+    fourteen of his custom firmware builds are zero, and so is every stock
+    retail file here. Every HEN build sets it, nothing else does, and it never
+    varies, which is what makes it part of the build rather than noise.
+
+    What the two bytes mean is not known. They are reproduced because the
+    survey says they belong, which is a different thing from understanding
+    them.
+    """
+
+    HEN_FLAGS = bytes.fromhex("40" + "00" * 30 + "02")
+    IW4 = os.path.join(corpus.HOME, "IW4-Binaries")
+
+    def flags_of(self, path):
+        from ps3tools.keysmith.structs import CONTROL_FLAGS
+        parsed = keysmith.read(path)
+        return [item for item in parsed.control_infos
+                if item.info_type == CONTROL_FLAGS][0].payload
+
+    def every_build(self, kind):
+        found = []
+        for tree in ("release", "release-sp"):
+            base = os.path.join(self.IW4, tree)
+            if not os.path.isdir(base):
+                continue
+            for region in sorted(os.listdir(base)):
+                folder = os.path.join(base, region, kind)
+                if not os.path.isdir(folder):
+                    continue
+                for name in sorted(os.listdir(folder)):
+                    found.append(os.path.join(folder, name))
+        if not found:
+            self.skipTest(f"{self.IW4} is not on this machine")
+        return found
+
+    def test_every_hen_build_carries_the_same_flags(self):
+        seen = {self.flags_of(path) for path in self.every_build("hen")}
+        self.assertEqual(seen, {self.HEN_FLAGS})
+
+    def test_no_custom_firmware_build_carries_them(self):
+        seen = {self.flags_of(path) for path in self.every_build("cfw")}
+        self.assertEqual(seen, {b"\x00" * 32})
+
+    def test_no_stock_file_carries_them(self):
+        ran = 0
+        for item in chosen():
+            with self.subTest(sample=item.key):
+                self.assertEqual(self.flags_of(item.path), b"\x00" * 32)
+                ran += 1
+        if not ran:
+            self.skipTest("none of the corpus is on this machine")
+
+    def test_re_signing_to_3_55_writes_them(self):
+        item = sample("mw2-mp")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        rebuilt = keysmith.sign(elf, item.path, item.klicensee,
+                                key_revision=0x000A)
+        self.assertEqual(self.flags_of(rebuilt), self.HEN_FLAGS)
+
+    def test_leaving_the_revision_alone_leaves_them_alone(self):
+        item = sample("mw2-mp")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        rebuilt = keysmith.sign(elf, item.path, item.klicensee)
+        self.assertEqual(self.flags_of(rebuilt), b"\x00" * 32)
+
+    def test_a_revision_nobody_has_surveyed_keeps_the_template_s(self):
+        signing = sys.modules["ps3tools.keysmith.sign"]
+        self.assertNotIn(0x0019, signing.CONTROL_FLAGS_FOR_REVISION)

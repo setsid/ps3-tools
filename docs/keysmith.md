@@ -196,6 +196,26 @@ come out as the values the original carried, and the round trip tests rely on
 exactly that: a hash that is recomputed and agrees has been checked, and one
 that is copied is only an assumption.
 
+## What a PS3HEN build differs in
+
+Three fields, surveyed across Jacob Schroeder's paired builds of Modern
+Warfare 2, seven regions in both the multiplayer and the campaign trees, and
+checked against every stock file here:
+
+| Field | Custom firmware | PS3HEN |
+| --- | --- | --- |
+| key revision | the file's own | 0x000A |
+| minimum firmware | the file's own | 35500, which is 3.55 |
+| control flags | zero | `40 00 ... 00 02` |
+
+All fourteen HEN builds carry the same control flags and all fourteen custom
+firmware builds are zero, as is every stock retail file, so the value is part
+of what makes a build a HEN build. What the two bytes mean is not known here;
+they are reproduced because the survey says they belong, which is a different
+thing from understanding them. A key revision the survey does not cover keeps
+the template's flags and its minimum firmware, because a field that decides
+what a console will load is never invented.
+
 ## Two findings worth writing down
 
 **Compression is zlib at level 6.** Every compressed section in the corpus is

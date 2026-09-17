@@ -58,7 +58,8 @@ from . import keys as keymod
 from . import npdrm as npdrm_hash
 from .errors import SigningFailed
 from .self import effective_klicensee
-from .structs import (CONTROL_DIGEST, CONTROL_NPDRM, ControlInfo, MetadataInfo,
+from .structs import (CONTROL_DIGEST, CONTROL_FLAGS, CONTROL_NPDRM,
+                      ControlInfo, MetadataInfo,
                       SECTION_TYPE_PHDR, SECTION_TYPE_SHDR, SceHeader)
 
 #: What a fake-signed SELF carries where a key revision goes. Spelled out here
@@ -92,6 +93,23 @@ DIGEST_CONSTANT = bytes.fromhex("627CB1808AB938E32C8C091708726A579E2586E4")
 #: So re-signing to another key revision moves this with it. Leaving 3.60 in a
 #: file signed against the 3.55 keyset says two different things about the
 #: same file, and this is the field that says which firmware will load it.
+#: The control flags a build for a given key revision carries.
+#:
+#: Surveyed rather than assumed. All fourteen of Jacob Schroeder's PS3HEN
+#: binaries carry exactly this, seven regions across both the multiplayer and
+#: the campaign trees, and it does not vary between any of them. All fourteen
+#: of his custom firmware builds are zero, all eighteen stock retail files
+#: here are zero, and so are the scetool rebuilds on hand. Every HEN build
+#: sets it, nothing else does, and it never varies, so it is part of what
+#: makes a build a HEN build and is written rather than carried.
+#:
+#: What the two bytes mean is not known here. They are reproduced because the
+#: survey says they belong, which is a different thing from understanding
+#: them, and no third value has ever been seen to choose between.
+CONTROL_FLAGS_FOR_REVISION = {
+    0x000A: bytes.fromhex("40" + "00" * 30 + "02"),
+}
+
 DIGEST_FIRMWARE_AT = 40
 FIRMWARE_FOR_REVISION = {
     0x000A: 35500,
@@ -286,6 +304,8 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
             _set_firmware(payload, template.sce.key_revision, key_revision)
             control_infos.append(ControlInfo(block.info_type, block.size,
                                              block.next, bytes(payload)))
+        elif block.info_type == CONTROL_FLAGS and moved:
+            control_infos.append(_control_flags(block, key_revision))
         elif block.info_type == CONTROL_NPDRM:
             control_infos.append(_npdrm_block(block, store, klicensee,
                                               filename))
@@ -351,6 +371,19 @@ def _signing_keyset(template, store, key_revision):
             found=template.app_info.self_type)
     return revision, store.require_candidates(self_type, revision,
                                               template.path)[0]
+
+
+def _control_flags(block, revision):
+    """The control flags for the revision being signed at.
+
+    A revision the survey does not cover keeps the template's flags, for the
+    same reason the minimum firmware does: a field that decides what a console
+    will load is never invented.
+    """
+    want = CONTROL_FLAGS_FOR_REVISION.get(revision)
+    if want is None or len(want) != len(block.payload):
+        return block
+    return ControlInfo(block.info_type, block.size, block.next, want)
 
 
 def _set_firmware(payload, was, now):

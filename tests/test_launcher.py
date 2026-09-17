@@ -929,7 +929,9 @@ class StatsStripTests(StatsCase):
         self.assertEqual(values.get("cpu"), "61 \u00b0C")
         self.assertEqual(values.get("rsx"), "54 \u00b0C")
         self.assertEqual(values.get("fan"), "41% manual")
-        self.assertEqual(values.get("firmware"), "4.93 CEX")
+        # The firmware is one of the three readings on the
+        # right-hand end now, not a figure in this run.
+        self.assertIsNone(values.get("firmware"))
         self.assertEqual(values.get("uptime"), "3h 42m")
         self.assertTrue(self.strip.isVisibleTo(self.launcher))
         # Only the two read-only pages, and only over GET.
@@ -1072,9 +1074,12 @@ class PartialDataTests(StatsCase):
             (("fan", "Fan", "41%", "text"),))
 
     def test_the_fields_keep_their_order_however_few_there_are(self):
+        # Firmware is not among them. It is one of the three readings on the
+        # right-hand end of the strip, and having it in both places had one
+        # console reporting its firmware twice.
         facts = {"uptime": "3h", "cpu_temp_c": 61.0, "firmware": "4.93"}
         keys = [key for key, _l, _v, _t in consolestats.read_fields(facts)]
-        self.assertEqual(keys, ["cpu", "firmware", "uptime"])
+        self.assertEqual(keys, ["cpu", "uptime"])
 
 
 class TemperatureColourTests(StatsCase):

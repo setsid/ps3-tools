@@ -47,6 +47,9 @@ from ps3diag.transport import HttpProbe, tcp_open
 
 from .. import APP_NAME, FULL_NAME, PROJECT_URL, VENDOR, VERSION, crashreport
 from . import consolestats, icons, registry, widgets
+# Re-exported: the line it formats is drawn on the strip now,
+# and callers here still reach for it through this module.
+from .consolestats import relative_time  # noqa: F401
 from .launcher import Launcher
 from .screen import ConnectionState, Services
 from .theme import AppTheme, menu_palette, qt_palette, stylesheet
@@ -932,23 +935,6 @@ EVENT_SEPARATOR = "\u00b7"
 AGO_TICK_MS = 30000
 
 
-def relative_time(seconds):
-    """How long ago, in the fewest words that are still true.
-
-    Rounded down, so "4 min ago" is never said of something that happened
-    three and a half minutes ago.
-    """
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return "just now"
-    minutes = seconds // 60
-    if minutes < 60:
-        return f"{minutes} min ago"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours} hr ago"
-    days = hours // 24
-    return "1 day ago" if days == 1 else f"{days} days ago"
 
 
 class ConnectionBar(QWidget):
@@ -1036,25 +1022,6 @@ class ConnectionBar(QWidget):
         # has left, and the last thing that finished. Each one is drawn only
         # once there is something to draw, so a console that has not answered
         # leaves this side of the bar empty rather than full of gaps.
-        self._firmware_label = QLabel("", self)
-        self._firmware_label.setObjectName("dim")
-        self._firmware_label.setAccessibleName("Console firmware")
-        self._firmware_label.setVisible(False)
-        row.addWidget(self._firmware_label)
-
-        self._free_label = QLabel("", self)
-        self._free_label.setObjectName("dim")
-        self._free_label.setAccessibleName("Free space on the console")
-        self._free_label.setVisible(False)
-        row.addWidget(self._free_label)
-
-        self._event_label = QLabel("", self)
-        self._event_label.setObjectName("dim")
-        self._event_label.setAccessibleName("The last thing that happened")
-        self._event_label.setAlignment(Qt.AlignmentFlag.AlignRight
-                                       | Qt.AlignmentFlag.AlignVCenter)
-        self._event_label.setVisible(False)
-        row.addWidget(self._event_label)
 
         # The detail is where "check the PS3 is switched on" lives, so it gets
         # a line of its own rather than being elided into uselessness beside
@@ -1095,9 +1062,6 @@ class ConnectionBar(QWidget):
         self._event_at = 0.0
         # Owned by the bar so it dies with it. It is the only repeating timer
         # here and it puts nothing on the wire; see tick().
-        self._ago_timer = QTimer(self)
-        self._ago_timer.setInterval(AGO_TICK_MS)
-        self._ago_timer.timeout.connect(self.tick)
 
         self._connection.changed.connect(self._refresh)
         self._theme.changed.connect(self._refresh)
@@ -1209,48 +1173,6 @@ class ConnectionBar(QWidget):
             f"The check could not be completed: {message}")
 
     # -- what the console said, on the right of the bar
-    def note_event(self, text):
-        """Record the last thing that finished, for the line on the right.
-
-        The seam the rest of the window records events through, so that a
-        screen does not have to know where the line is drawn or how the
-        "4 min ago" on the end of it is worked out. An empty text clears it.
-        """
-        self._event = (text or "").strip()
-        self._event_at = time.monotonic()
-        if self._event:
-            self._ago_timer.start()
-        else:
-            self._ago_timer.stop()
-        self._paint_event()
-
-    def tick(self):
-        """Rewrite how long ago the event on the right was.
-
-        Nothing is fetched here and no console is touched. It exists so that a
-        window left open for an hour stops claiming something happened just
-        now, which is the only part of that line that goes stale by itself.
-        """
-        self._paint_event()
-
-    def event_text(self):
-        return self._event_label.text()
-
-    def firmware_text(self):
-        return self._firmware_label.text()
-
-    def free_text(self):
-        return self._free_label.text()
-
-    def _paint_event(self):
-        if not self._event:
-            self._event_label.setText("")
-            self._event_label.setVisible(False)
-            return
-        ago = relative_time(time.monotonic() - self._event_at)
-        self._event_label.setText(f"{self._event} {EVENT_SEPARATOR} {ago}")
-        self._event_label.setVisible(True)
-
     def _sync_console(self):
         """Ask a console that has just answered what it is, off the thread.
 
@@ -1320,11 +1242,7 @@ class ConnectionBar(QWidget):
 
     def _paint_console(self):
         firmware = consolestats.firmware_text(self._console_facts)
-        self._firmware_label.setText(firmware)
-        self._firmware_label.setVisible(bool(firmware))
         free = consolestats.free_space_text(self._console_facts)
-        self._free_label.setText(free)
-        self._free_label.setVisible(bool(free))
 
     # -- the subnet search, which is a different question
     def _scan_targets(self):
@@ -1599,7 +1517,6 @@ class ConnectionBar(QWidget):
         # answered is asked what it is, and one that has gone takes its
         # figures with it.
         self._sync_console()
-        self._paint_event()
 
     # -- for tests and for the shell
     def state_text(self):
@@ -2407,16 +2324,21 @@ class MainWindow(QMainWindow):
         self._paint_status()
 
     def note_event(self, text):
-        """Record something that has just finished, for the connection bar.
+        """Record something that has just finished, for the line on the strip.
 
         The one place the rest of the window records an event, so that a
-        screen holds no opinion about where the line is drawn.
+        screen holds no opinion about where the line is drawn. The strip is
+        the launcher's, because that is where the figures it sits beside are.
 
-        The panel sweeps once at the same moment. An event reaching here is
-        something that was waited for, which is exactly when a sweep is worth
-        having, and it keeps the two ways of saying "that finished" together.
+        The status panel sweeps once at the same moment. An event reaching
+        here is something that was waited for, which is exactly when a sweep
+        is worth having, and it keeps the two ways of saying "that finished"
+        together.
         """
-        self.connection_bar.note_event(text)
+        launcher = getattr(self, "launcher", None)
+        strip = getattr(launcher, "stats", None) if launcher else None
+        if strip is not None:
+            strip.note_event(text)
         if text:
             self.sweep_status()
 

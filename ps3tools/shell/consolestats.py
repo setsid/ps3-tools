@@ -25,6 +25,8 @@ Read only throughout: HttpProbe, whose allowlist is the thing that makes that
 true, and the two pages the diagnostics collector already reads.
 """
 
+import time
+
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve,
                             QPropertyAnimation, QSize, Property, Qt,
                             Signal)
@@ -149,6 +151,25 @@ def free_space_text(facts, device="dev_hdd0"):
     return f"{human_size(free)} free"
 
 
+def relative_time(seconds):
+    """How long ago, in the fewest words that are still true.
+
+    Rounded down, so "4 min ago" is never said of something that happened
+    three and a half minutes ago.
+    """
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hr ago"
+    days = hours // 24
+    return "1 day ago" if days == 1 else f"{days} days ago"
+
+
 def firmware_text(facts):
     """What the console is running, in two or three words, or "".
 
@@ -214,11 +235,14 @@ def _fan(facts):
 
 
 def _firmware(facts):
-    firmware = facts.get("firmware")
-    if not firmware:
-        return None
-    kind = facts.get("firmware_type")
-    return (f"{firmware} {kind}" if kind else str(firmware)), "text"
+    """Superseded by firmware_text, which names the kind as well.
+
+    Kept as a function because FIELDS is read by name elsewhere, and removed
+    from FIELDS itself: the strip showed "4.93 CEX" here while the fuller
+    reading appeared a second time further along, and one console reported
+    its firmware twice.
+    """
+    return None
 
 
 def _uptime(facts):
@@ -237,11 +261,13 @@ def _uptime(facts):
 #: does not report all of this, and a console that only knows its own
 #: temperature should show a strip with one figure on it, not five slots with
 #: four dashes in them.
+#: The left-hand figures. Firmware is not among them: it is one of the three
+#: readings on the right-hand end, and having it in both places is how the
+#: same console came to report its firmware twice.
 FIELDS = (
     ("cpu", "CPU", _cpu),
     ("rsx", "RSX", _rsx),
     ("fan", "Fan", _fan),
-    ("firmware", "Firmware", _firmware),
     ("uptime", "Uptime", _uptime),
 )
 
@@ -492,6 +518,37 @@ class ConsoleStats(QWidget):
         self._refresh.clicked.connect(self.refresh)
         self._row.addWidget(self._refresh, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        # The right-hand end. Everything above is a figure the console reports
+        # about itself; these three are about the console's disk, its firmware
+        # and what this program last did, so they sit apart from the figures
+        # rather than in the run of them.
+        self._row.addStretch(1)
+        self._free_label = QLabel("", self)
+        self._free_label.setObjectName("dim")
+        self._free_label.setAccessibleName("Free space on the console")
+        self._free_label.setVisible(False)
+        self._row.addWidget(self._free_label, 0,
+                            Qt.AlignmentFlag.AlignVCenter)
+
+        self._firmware_label = QLabel("", self)
+        self._firmware_label.setObjectName("dim")
+        self._firmware_label.setAccessibleName("Console firmware")
+        self._firmware_label.setVisible(False)
+        self._row.addWidget(self._firmware_label, 0,
+                            Qt.AlignmentFlag.AlignVCenter)
+
+        self._event_label = QLabel("", self)
+        self._event_label.setObjectName("dim")
+        self._event_label.setAccessibleName("The last thing that happened")
+        self._event_label.setAlignment(Qt.AlignmentFlag.AlignRight
+                                       | Qt.AlignmentFlag.AlignVCenter)
+        self._event_label.setVisible(False)
+        self._row.addWidget(self._event_label, 0,
+                            Qt.AlignmentFlag.AlignVCenter)
+        #: What last happened, and when, for the line on the right.
+        self._event = ""
+        self._event_at = 0.0
+
         # How far the strip is here: nought is gone, one is fully arrived. The
         # fade wants a graphics effect because the figures are real widgets
         # and a painter's opacity does not reach a child; the slide comes out
@@ -728,11 +785,11 @@ class ConsoleStats(QWidget):
         for index, (key, label, value, token) in enumerate(found):
             if index:
                 rule = _Rule(self._theme, self)
-                self._row.insertWidget(self._row.count() - 1, rule,
+                self._row.insertWidget(self._trailing_at(), rule,
                                        0, Qt.AlignmentFlag.AlignVCenter)
                 rule.show()
             stat = _Stat(key, label, value, token, self._theme, self)
-            self._row.insertWidget(self._row.count() - 1, stat,
+            self._row.insertWidget(self._trailing_at(), stat,
                                    0, Qt.AlignmentFlag.AlignVCenter)
             stat.show()
             self._stats.append(stat)
@@ -742,6 +799,50 @@ class ConsoleStats(QWidget):
         self._arrive_or_leave(showing)
         self.updateGeometry()
         self.visibility_changed.emit(showing)
+
+    def _trailing_at(self):
+        """Where a new figure goes: before the stretch and the right-hand end.
+
+        Counted rather than written down, because the number of widgets after
+        the figures is a thing that changes and an index that guessed it would
+        put a figure on the wrong side of the stretch.
+        """
+        return self._row.count() - 4
+
+    def note_event(self, text):
+        """Record the last thing this program did, for the line on the right.
+
+        An empty text clears it. The age beside it is worked out when the line
+        is drawn rather than stored, so it stays true without anything having
+        to tick on its account.
+        """
+        self._event = (text or "").strip()
+        self._event_at = time.monotonic() if self._event else 0.0
+        self._paint_right()
+
+    def event_text(self):
+        if not self._event:
+            return ""
+        ago = relative_time(time.monotonic() - self._event_at)
+        return f"{self._event} · {ago}"
+
+    def free_text(self):
+        return self._free_label.text()
+
+    def firmware_text_shown(self):
+        return self._firmware_label.text()
+
+    def _paint_right(self):
+        """The three readings on the right, each hidden until it has one."""
+        free = free_space_text(self._facts) if self._facts else ""
+        self._free_label.setText(free)
+        self._free_label.setVisible(bool(free))
+        firmware = firmware_text(self._facts) if self._facts else ""
+        self._firmware_label.setText(firmware)
+        self._firmware_label.setVisible(bool(firmware))
+        event = self.event_text()
+        self._event_label.setText(event)
+        self._event_label.setVisible(bool(event))
 
     def _same_figures(self, found):
         """Whether the row on screen holds exactly these fields, in order."""

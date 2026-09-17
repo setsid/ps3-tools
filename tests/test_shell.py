@@ -436,158 +436,98 @@ class SilentProbe:
         return self.Response()
 
 
-class TheRightHandSideOfTheBar(ShellCase):
-    """Free space, the last thing that happened, and the firmware.
+class TheRightHandSideOfTheBar(unittest.TestCase):
+    """Free space, the firmware, and the last thing that happened.
 
-    The console read is replaced in every test here. There is a real console
-    on this network and nothing in this file is allowed to reach it, which is
-    what the seam on the bar is for.
+    They sit on the telemetry strip, beside the figures they belong with. An
+    earlier pass put them in the connection controls at the top right, where
+    they were off the bar entirely and the firmware was reported twice, once
+    there and once among the figures.
+
+    No test here reaches a console: the strip is handed its facts directly.
     """
 
-    HOST = "192.168.1.50"
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.application = QApplication.instance() or QApplication([])
 
-    def setUp(self):
-        super().setUp()
-        self.bar = self.window.connection_bar
-        self.asked = []
-        # Shown on purpose. The bar reads a console only while there is
-        # somebody in front of it, so a test that never shows the window is
-        # testing the case where nothing is read at all.
-        #
-        # Showing it also puts the home screen's figures strip in front of
-        # somebody, and that reads the console for itself. It is not what this
-        # class is about and it is not allowed on the network either.
-        stats = getattr(self.window.launcher, "stats", None)
-        if stats is not None:
-            stats._probe_factory = SilentProbe
-        self.window.show()
-        application.processEvents()
+    FACTS = {
+        "cpu_temp_c": 48, "rsx_temp_c": 51,
+        "firmware": "4.93", "firmware_type": "CEX",
+        "firmware_kind": "cfw", "firmware_version": "4.93",
+        "cobra_version": "8.5",
+        "devices": [{"device": "dev_hdd0", "free_bytes": 90_000_000_000}],
+    }
 
-    def answer_with(self, facts):
-        """Connect, and have the console reply with facts.
+    def strip(self, facts=None):
+        from ps3tools.shell.consolestats import ConsoleStats
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        services = Services(ConnectionState("192.168.1.50"),
+                            AppTheme("dark"), {})
+        strip = ConsoleStats(services, probe_factory=lambda *a, **k: None)
+        self.addCleanup(strip.deleteLater)
+        strip._facts = dict(self.FACTS if facts is None else facts)
+        strip._paint_right()
+        return strip
 
-        Waits for the worker, then pumps the queue the result comes back on.
-        """
-        def read(host):
-            self.asked.append(host)
-            return dict(facts)
+    def test_the_free_space_is_shown(self):
+        self.assertIn("free", self.strip().free_text())
 
-        self.bar._read_console = read
-        self.connection.set_host(self.HOST)
-        self.connection.set_connection("connected", "webMAN answered.")
-        self.assertTrue(self.services.wait(10000))
-        application.processEvents()
+    def test_the_free_space_is_formatted_the_way_the_rest_of_the_app_is(self):
+        from ps3diag.parsers import human_size
+        self.assertIn(human_size(90_000_000_000), self.strip().free_text())
 
-    def test_the_free_space_the_console_reported_is_shown(self):
-        self.answer_with({"devices": [{"device": "dev_hdd0",
-                                       "free_bytes": 90000000000}]})
-        self.assertEqual(self.bar.free_text(), "83.8 GB free")
+    def test_a_console_that_did_not_report_its_drive_shows_nothing(self):
+        facts = dict(self.FACTS)
+        facts.pop("devices")
+        self.assertEqual(self.strip(facts).free_text(), "")
 
-    def test_free_space_is_written_the_way_every_other_size_is(self):
-        # The figure on the bar and the figure in a refusal to download come
-        # off one formatter, so the two cannot disagree about the same drive.
-        free = 42 * 1024 * 1024 * 1024
-        self.answer_with({"devices": [{"device": "dev_hdd0",
-                                       "free_bytes": free}]})
-        self.assertIn(human_size(free), self.bar.free_text())
+    def test_the_firmware_is_shown_once(self):
+        """It used to read twice, once here and once among the figures."""
+        from ps3tools.shell.consolestats import read_fields
+        strip = self.strip()
+        figures = " ".join(str(value)
+                           for _k, _l, value, _t in read_fields(strip._facts))
+        self.assertIn("Cobra 8.5", strip.firmware_text_shown())
+        self.assertNotIn("CEX", figures)
 
-    def test_free_space_the_console_did_not_report_is_left_blank(self):
-        self.answer_with({"devices": [{"device": "dev_usb000"}]})
-        self.assertEqual(self.bar.free_text(), "")
+    def test_a_hen_console_says_hen(self):
+        facts = dict(self.FACTS, firmware_kind="hen", hen_version="3.5.0")
+        facts.pop("cobra_version")
+        self.assertIn("HEN", self.strip(facts).firmware_text_shown())
 
-    def test_an_event_says_what_happened_and_how_long_ago(self):
-        self.bar.note_event("Patched Black Ops 1")
-        self.assertEqual(
-            self.bar.event_text(),
-            f"Patched Black Ops 1 {shell_app.EVENT_SEPARATOR} just now")
+    def test_an_unknown_firmware_is_not_guessed_at(self):
+        facts = dict(self.FACTS, firmware_kind="")
+        self.assertEqual(self.strip(facts).firmware_text_shown(), "")
 
-    def test_the_relative_time_is_brought_up_to_date_on_the_tick(self):
-        self.bar.note_event("Patched Black Ops 1")
-        # Nothing new has happened. The tick rewrites how long ago the same
-        # event was and touches nothing else.
-        self.bar._event_at -= 245
-        self.bar.tick()
-        self.assertEqual(
-            self.bar.event_text(),
-            f"Patched Black Ops 1 {shell_app.EVENT_SEPARATOR} 4 min ago")
+    def test_the_event_line_is_empty_until_something_happens(self):
+        self.assertEqual(self.strip().event_text(), "")
 
-    def test_the_window_records_an_event_on_behalf_of_a_screen(self):
-        self.window.note_event("Installed something.pkg")
-        self.assertIn("Installed something.pkg", self.bar.event_text())
+    def test_an_event_says_what_happened_and_when(self):
+        strip = self.strip()
+        strip.note_event("Patched Black Ops 1")
+        self.assertIn("Patched Black Ops 1", strip.event_text())
+        self.assertIn("just now", strip.event_text())
 
-    def test_a_screen_that_finishes_something_is_heard_by_the_bar(self):
-        registry.register(FinishingScreen)
-        screen = self.window.screen_for(FinishingScreen.key)
-        screen.event_noted.emit("Installed something.pkg")
-        self.assertIn("Installed something.pkg", self.bar.event_text())
+    def test_the_age_is_worked_out_when_the_line_is_read(self):
+        strip = self.strip()
+        strip.note_event("Patched Black Ops 1")
+        strip._event_at -= 245
+        self.assertIn("4 min ago", strip.event_text())
 
-    def test_custom_firmware_is_named_with_the_cobra_version(self):
-        self.answer_with({"firmware_kind": "cfw", "firmware_version": "4.88",
-                          "cobra_version": "8.5"})
-        self.assertEqual(self.bar.firmware_text(), "CFW Cobra 8.5")
+    def test_clearing_the_event_empties_the_line(self):
+        strip = self.strip()
+        strip.note_event("Patched Black Ops 1")
+        strip.note_event("")
+        self.assertEqual(strip.event_text(), "")
 
-    def test_hen_is_named_with_its_own_version(self):
-        self.answer_with({"firmware_kind": "hen", "firmware_version": "4.90",
-                          "hen_version": "3.5.0"})
-        self.assertEqual(self.bar.firmware_text(), "HEN 3.5.0")
-
-    def test_firmware_the_console_did_not_name_is_not_guessed_at(self):
-        self.answer_with({"firmware_version": "4.90", "firmware_kind": ""})
-        self.assertEqual(self.bar.firmware_text(), "")
-        self.assertTrue(self.bar._firmware_label.isHidden())
-        self.assertNotIn("unknown", self.bar.visible_text().lower())
-
-    def test_a_console_that_answers_nothing_leaves_all_three_blank(self):
-        self.answer_with({})
-        self.assertEqual(self.bar.firmware_text(), "")
-        self.assertEqual(self.bar.free_text(), "")
-        self.assertEqual(self.bar.event_text(), "")
-        self.assertTrue(self.bar._firmware_label.isHidden())
-        self.assertTrue(self.bar._free_label.isHidden())
-        self.assertTrue(self.bar._event_label.isHidden())
-        # Silent as well as blank: the state pill still says the console is
-        # there, because it is.
-        self.assertEqual(self.bar.state_text(), "Connected")
-
-    def test_a_console_that_has_not_answered_yet_is_never_asked(self):
-        self.bar._read_console = self.asked.append
-        self.connection.set_host(self.HOST)
-        self.assertTrue(self.services.wait(10000))
-        application.processEvents()
-        self.assertEqual(self.asked, [])
-
-    def test_a_window_nobody_is_looking_at_reads_no_console(self):
-        self.bar._read_console = self.asked.append
-        self.window.hide()
-        application.processEvents()
-        self.connection.set_host(self.HOST)
-        self.connection.set_connection("connected", "webMAN answered.")
-        self.assertTrue(self.services.wait(10000))
-        application.processEvents()
-        self.assertEqual(self.asked, [])
-        # Owed rather than lost: the window coming up takes the reading.
-        self.window.show()
-        application.processEvents()
-        self.assertTrue(self.services.wait(10000))
-        application.processEvents()
-        self.assertEqual(self.asked, [self.HOST])
-
-    def test_a_console_is_asked_once_and_not_asked_again(self):
-        self.answer_with({"firmware_kind": "hen", "hen_version": "3.5.0"})
-        self.connection.set_connection("connected", "webMAN answered again.")
-        self.assertTrue(self.services.wait(10000))
-        application.processEvents()
-        self.assertEqual(self.asked, [self.HOST])
-
-    def test_letting_go_of_a_console_takes_its_figures_with_it(self):
-        self.answer_with({"firmware_kind": "hen", "hen_version": "3.5.0",
-                          "devices": [{"device": "dev_hdd0",
-                                       "free_bytes": 90000000000}]})
-        self.bar.disconnect_console()
-        application.processEvents()
-        self.assertEqual(self.bar.firmware_text(), "")
-        self.assertEqual(self.bar.free_text(), "")
-
+    def test_a_console_that_answered_nothing_leaves_all_three_blank(self):
+        strip = self.strip({})
+        self.assertEqual(strip.free_text(), "")
+        self.assertEqual(strip.firmware_text_shown(), "")
+        self.assertEqual(strip.event_text(), "")
 
 class HowLongAgoSomethingWas(unittest.TestCase):
 

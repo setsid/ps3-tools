@@ -68,7 +68,7 @@ against key revision 0x000A. That is what the community advice to "resign to
 3.55" means in this format, and it is `keysmith.sign(..., key_revision=0x000A)`
 rather than `fake_sign`.
 
-The evidence is Jacob Schroeder's IW4 binaries, which ship a CFW build and a
+The evidence is a third party's paired binaries, which ship a CFW build and a
 HEN build of Modern Warfare 2 for all seven regions. Reading a matched pair
 against each other:
 
@@ -198,7 +198,7 @@ that is copied is only an assumption.
 
 ## What a PS3HEN build differs in
 
-Three fields, surveyed across Jacob Schroeder's paired builds of Modern
+Three fields, surveyed across a third party's paired builds of Modern
 Warfare 2, seven regions in both the multiplayer and the campaign trees, and
 checked against every stock file here:
 

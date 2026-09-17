@@ -3593,7 +3593,7 @@ class SigningForTheFirmwareThatIsThere(unittest.TestCase):
     """Which keyset a rebuilt file is signed against, decided by the console.
 
     PS3HEN loads a SELF through the 3.55-era keyset whatever firmware the
-    console is running, so a HEN console wants key revision 0x000A. Jacob
+    console is running, so a HEN console wants key revision 0x000A. The paired
     Schroeder ships a CFW build and a HEN build of Modern Warfare 2 for all
     seven regions, and a matched pair decrypts to the same ELF, carries a
     byte-identical NPDRM block, and differs in the SCE key revision, 0x0010

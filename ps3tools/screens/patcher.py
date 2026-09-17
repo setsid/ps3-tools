@@ -2551,7 +2551,6 @@ class BlackOpsOnePatcher(PatcherScreen):
     # Between Diagnostics and the other two fixes, so the three game fixes sit
     # together and the card most people are here for is not behind them.
     order = 15
-    badge = "Beta"
     note = NO_DIGITAL
 
     def __init__(self, services, parent=None):

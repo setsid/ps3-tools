@@ -36,7 +36,7 @@ from .scetool import (FIELD_TITLES, REQUIRED_FIELDS, ScetoolError,
 #: firmware, but the loader it uses is the 3.55-era one, which is what the
 #: community advice to "resign to 3.55" is about.
 #:
-#: The evidence is Jacob Schroeder's IW4 binaries, which ship a CFW build and
+#: The evidence is a third party's paired binaries, which ship a CFW build and
 #: a HEN build of Modern Warfare 2 for all seven regions. Reading the
 #: BLUS30377 pair against each other: neither is fake signed, both are
 #: ordinary retail re-signs, and the whole NPDRM block is byte-identical
@@ -67,7 +67,7 @@ class Signer:
         """The key revision to re-sign at, or None to keep the file's own.
 
         A PS3HEN console gets 0x000A, because HEN loads a SELF through the
-        3.55-era keyset whatever firmware the console is on. Jacob Schroeder
+        3.55-era keyset whatever firmware the console is on. The publisher
         ships a CFW and a HEN build of Modern Warfare 2 for all seven regions,
         and the pair for one region differ in this field and in nothing else
         that identifies the file: both are ordinary retail re-signs and the

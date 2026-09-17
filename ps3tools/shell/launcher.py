@@ -50,10 +50,10 @@ def _wording(screen_class):
 #: it had.
 #:
 #: Empty, and kept. The Black Ops 1 stats fix was the one entry in here and is
-#: now a tool with a screen of its own, wearing the same Beta badge its
-#: placeholder wore. The machinery stays because the next thing being worked
-#: on will want it, and because a grid that has held one of these is a grid
-#: that has been tested holding one.
+#: now a tool with a screen of its own, which no longer wears a badge at all.
+#: The machinery stays because the next thing being worked on will want it,
+#: and because a grid that has held one of these is a grid that has been
+#: tested holding one.
 COMING_SOON = ()
 
 

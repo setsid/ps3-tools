@@ -33,7 +33,7 @@ reason is PS3HEN. HEN runs on 4.8x firmware but loads a SELF through the
 carries is not one it can open. That is what the community advice to "resign
 to 3.55" means in this format: key revision 0x000A.
 
-The evidence is Jacob Schroeder's IW4 binaries, which ship a CFW build and a
+The evidence is a third party's paired binaries, which ship a CFW build and a
 HEN build for all seven Modern Warfare 2 regions. Reading the BLUS30377 pair
 against each other: neither is fake signed, both are ordinary retail re-signs
 scetool built, and the whole NPDRM control block is byte-identical between
@@ -85,7 +85,7 @@ DIGEST_CONSTANT = bytes.fromhex("627CB1808AB938E32C8C091708726A579E2586E4")
 #:
 #: The field tracks the keyset across every retail file in the corpus: key
 #: revision 0x0010 carries 36000, which is 3.60, 0x0019 carries 40000 and
-#: 0x001C carries 42000. Jacob Schroeder's PS3HEN builds of Modern Warfare 2
+#: 0x001C carries 42000. the third party's PS3HEN builds of Modern Warfare 2
 #: carry 35500, which is 3.55 and is the value that belongs with 0x000A, and
 #: he set it deliberately: his own custom firmware builds of the same binary
 #: leave it at zero. Confirmed on both the European and American releases.
@@ -95,7 +95,7 @@ DIGEST_CONSTANT = bytes.fromhex("627CB1808AB938E32C8C091708726A579E2586E4")
 #: same file, and this is the field that says which firmware will load it.
 #: The control flags a build for a given key revision carries.
 #:
-#: Surveyed rather than assumed. All fourteen of Jacob Schroeder's PS3HEN
+#: Surveyed rather than assumed. All fourteen of the PS3HEN
 #: binaries carry exactly this, seven regions across both the multiplayer and
 #: the campaign trees, and it does not vary between any of them. All fourteen
 #: of his custom firmware builds are zero, all eighteen stock retail files

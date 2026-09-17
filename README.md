@@ -23,16 +23,19 @@ That is separate from the fixes above and is not yet addressed.
 
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
 
-> ### HEN support is being tested
+> ### HEN consoles are signed for differently
 >
-> The patching is expected to work. The fix re-signs each file with the NPDRM
-> control block and application type read off your own copy, which is what
-> makes a patched file boot on a console that checks licences. What is not
-> confirmed is whether webMAN behaves the same way on HEN as it does on CFW,
-> and everything this program does to a console goes through webMAN.
+> The program reads which firmware your console is running off webMAN's own
+> page and signs for it. A HEN console gets the file re-signed against the
+> 3.55-era keyset, which is what the advice to "resign to 3.55" means, and a
+> custom firmware console keeps its own key revision as before. Where the
+> console does not say which it is, the program asks rather than guessing,
+> because signing for the wrong one gives a game that will not start.
 >
-> If you are on HEN and want to help, run the Diagnostics card and send the
-> file it saves to setsid.research@proton.me, or post it in
+> The three fields that differ between the two forms were measured across
+> twenty-eight paired binaries rather than assumed. What has not happened yet
+> is somebody watching a file this program built load on a HEN console, so if
+> you are on HEN, say how it went in
 > [the Discord](https://discord.gg/PDrSPNgeNj).
 
 # PS3 Tools
@@ -165,9 +168,8 @@ account or your network.
 
 ### Black Ops, and what follows from how it works
 
-It is watched working on hardware. It still carries a **Beta** badge in the
-app, which means only that it is the newest of the three and has been on
-fewer consoles, not that anything about it is unfinished.
+It is watched working on hardware, on the European and American disc releases
+and on every European language variant the table now carries.
 
 The fault is an identity one. The game works out who you are by hashing your
 PSN online ID; the server works it out from your account ID, for every account

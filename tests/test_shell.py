@@ -1748,8 +1748,14 @@ class TheBlackOpsOneCard(unittest.TestCase):
         card.click()
         self.assertEqual(seen, ["bo1"])
 
-    def test_it_still_says_beta(self):
-        self.assertEqual(self.card().badge, "Beta")
+    def test_it_no_longer_says_beta(self):
+        """The badge went when the fix stopped being the newest of the three.
+
+        It is watched working on the European and American discs and on every
+        European language variant the table now carries, so a pill saying
+        Beta was telling people to be careful about the wrong thing.
+        """
+        self.assertEqual(self.card().badge, "")
 
     def test_it_says_what_it_fixes(self):
         card = self.card()
@@ -1791,11 +1797,15 @@ class WhatTheRealCardsSay(unittest.TestCase):
         return [found[key] for key in sorted(found)]
 
     def test_a_badge_is_rationed_to_the_screen_that_asked_for_one(self):
-        # One, and it is the fix that is in beta. A page where everything is
-        # badged is a page where a badge means nothing.
+        """Nothing wears one today. The machinery stays for the next thing
+        being worked on, and a grid that has held one has been tested holding
+        one."""
+        # None today. A page where everything is badged is a page where a
+        # badge means nothing, and the one screen that wore a badge has been
+        # watched working on every release the table carries.
         badged = {screen.key: screen.badge for screen in self.screens()
                   if screen.badge}
-        self.assertEqual(badged, {"bo1": "Beta"})
+        self.assertEqual(badged, {})
 
     def test_both_shipping_fixes_say_digital_releases_are_not_done_yet(self):
         # The reference values were read off disc releases. A digital install

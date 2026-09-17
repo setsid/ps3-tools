@@ -328,8 +328,8 @@ class Screen(QWidget):
     order = 100
 
     #: One or two words for a pill on the card saying what state the tool is
-    #: in -- "Beta", and nothing else so far. Empty for a tool that is simply
-    #: finished, which is most of them. Words, never an emoji.
+    #: in, "Beta" being the one that has been used. Empty for a tool that is
+    #: simply finished, which is all of them today. Words, never an emoji.
     badge = ""
 
     #: A short caveat on the card, beside the Open affordance, for a tool that

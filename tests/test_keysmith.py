@@ -41,10 +41,12 @@ HAVE_KEYS = os.path.isfile(keys.default_path())
 #: Small enough to round trip in a tenth of a second, so they run every time.
 QUICK = ("mw3-eboot", "mw2-eboot")
 
-#: Jacob Schroeder's IW4 binaries, cloned beside the rest of the user's files.
+#: The paired PS3HEN and custom firmware binaries the survey was run
+#: against, cloned beside the rest of the user's files. Published by a
+#: third party; the folder name is simply where they sit on this machine.
 #: He ships a CFW build and a HEN build of the same Modern Warfare 2 ELF for
 #: all seven regions, which is the external gate for what a HEN console wants.
-IW4 = os.path.join(corpus.HOME, "IW4-Binaries")
+PAIRED_BUILDS = os.path.join(corpus.HOME, "IW4-Binaries")
 
 
 def need_keys():
@@ -833,29 +835,30 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
     """Re-signing against a keyset that is not the template's own.
 
     PS3HEN runs on 4.8x firmware and loads a SELF through the 3.55-era
-    keyset, so a HEN console wants key revision 0x000A. The gate is Jacob
-    Schroeder's IW4 binaries: a CFW build and a HEN build of the same Modern
+    keyset, so a HEN console wants key revision 0x000A. The gate is a
+    third party's
+    published binaries: a CFW build and a HEN build of the same Modern
     Warfare 2 ELF, shipped side by side for all seven regions.
     """
 
-    def jacob(self, build, region="bles00683", name="default_mp.self",
+    def paired(self, build, region="bles00683", name="default_mp.self",
               folder="release"):
         need_keys()
-        path = os.path.join(IW4, folder, region, build, name)
+        path = os.path.join(PAIRED_BUILDS, folder, region, build, name)
         if not os.path.isfile(path):
             self.skipTest(f"{path} is not on this machine")
         return path
 
     def test_the_paired_builds_are_one_elf_signed_at_two_key_revisions(self):
         """Neither is fake signed and the payload is the same file."""
-        cfw = keysmith.read(self.jacob("cfw"))
-        hen = keysmith.read(self.jacob("hen"))
+        cfw = keysmith.read(self.paired("cfw"))
+        hen = keysmith.read(self.paired("hen"))
         self.assertFalse(cfw.is_fake_signed)
         self.assertFalse(hen.is_fake_signed)
         self.assertEqual(cfw.sce.key_revision, 0x0010)
         self.assertEqual(hen.sce.key_revision, 0x000A)
-        self.assertEqual(keysmith.decrypt(self.jacob("hen"), corpus.IW_KLIC),
-                         keysmith.decrypt(self.jacob("cfw"), corpus.IW_KLIC))
+        self.assertEqual(keysmith.decrypt(self.paired("hen"), corpus.IW_KLIC),
+                         keysmith.decrypt(self.paired("cfw"), corpus.IW_KLIC))
 
     def test_the_npdrm_block_is_the_same_on_both_of_the_paired_builds(self):
         """Every byte of it, the pad at 0x40 included, so the HEN form is not
@@ -863,7 +866,7 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
         from ps3tools.keysmith.structs import CONTROL_NPDRM
         blocks = []
         for build in ("cfw", "hen"):
-            parsed = keysmith.read(self.jacob(build))
+            parsed = keysmith.read(self.paired(build))
             blocks.append([b.payload for b in parsed.control_infos
                            if b.info_type == CONTROL_NPDRM][0])
         self.assertTrue(blocks[0])
@@ -879,12 +882,12 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
         self.assertEqual(rebuilt.keyset.revision, 0x000A)
         self.assertEqual(rebuilt.keyset.self_type, "NPDRM")
 
-    def test_the_revision_a_hen_console_wants_is_the_one_jacob_ships(self):
+    def test_the_revision_a_hen_console_wants_is_the_one_they_ship(self):
         """The number is read off his binary rather than written down here."""
         item = sample("mw2-mp")
         if not FULL:
             self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
-        theirs = keysmith.read(self.jacob("hen"))
+        theirs = keysmith.read(self.paired("hen"))
         elf = keysmith.decrypt(item.path, item.klicensee)
         mine = keysmith.read(keysmith.sign(
             elf, item.path, item.klicensee, filename="default_mp.self",
@@ -986,7 +989,7 @@ class TheMinimumFirmwareMovesWithTheKeyRevision(unittest.TestCase):
 
     The field tracks the keyset across every retail file here: 0x0010 carries
     36000, which is 3.60, 0x0019 carries 40000 and 0x001C carries 42000.
-    Jacob Schroeder's PS3HEN builds of Modern Warfare 2 carry 35500, which is
+    the third party's PS3HEN builds of Modern Warfare 2 carry 35500, which is
     3.55 and belongs with 0x000A, and he set it deliberately, because his own
     custom firmware builds of the same binary leave it at zero.
 
@@ -1045,7 +1048,7 @@ class TheMinimumFirmwareMovesWithTheKeyRevision(unittest.TestCase):
 class TheControlFlagsAHenBuildCarries(unittest.TestCase):
     """The flags were surveyed before they were written.
 
-    All fourteen of Jacob Schroeder's PS3HEN binaries carry the same value,
+    All fourteen of the PS3HEN binaries carry the same value,
     seven regions across both the multiplayer and the campaign trees. All
     fourteen of his custom firmware builds are zero, and so is every stock
     retail file here. Every HEN build sets it, nothing else does, and it never
@@ -1057,7 +1060,7 @@ class TheControlFlagsAHenBuildCarries(unittest.TestCase):
     """
 
     HEN_FLAGS = bytes.fromhex("40" + "00" * 30 + "02")
-    IW4 = os.path.join(corpus.HOME, "IW4-Binaries")
+    PAIRED_BUILDS = os.path.join(corpus.HOME, "IW4-Binaries")
 
     def flags_of(self, path):
         from ps3tools.keysmith.structs import CONTROL_FLAGS
@@ -1068,7 +1071,7 @@ class TheControlFlagsAHenBuildCarries(unittest.TestCase):
     def every_build(self, kind):
         found = []
         for tree in ("release", "release-sp"):
-            base = os.path.join(self.IW4, tree)
+            base = os.path.join(self.PAIRED_BUILDS, tree)
             if not os.path.isdir(base):
                 continue
             for region in sorted(os.listdir(base)):
@@ -1078,7 +1081,7 @@ class TheControlFlagsAHenBuildCarries(unittest.TestCase):
                 for name in sorted(os.listdir(folder)):
                     found.append(os.path.join(folder, name))
         if not found:
-            self.skipTest(f"{self.IW4} is not on this machine")
+            self.skipTest(f"{self.PAIRED_BUILDS} is not on this machine")
         return found
 
     def test_every_hen_build_carries_the_same_flags(self):

@@ -164,7 +164,7 @@ def sign(elf, template, klicensee="", keys_path="", filename="",
     template's own, writing the number into the SCE header and wrapping the
     metadata info under that revision's erk and riv. None keeps the
     template's. PS3HEN wants 0x000A; sign.py's docstring has the evidence,
-    which is Jacob Schroeder's paired CFW and HEN builds of the same title
+    which is a third party's paired CFW and HEN builds of the same title
     differing in that field and in nothing else.
 
     A fake-signed template is rebuilt through its own header, which carries no
@@ -190,7 +190,7 @@ def fake_sign(elf, template, klicensee="", keys_path="", filename=""):
     metadata, so it goes back out in the form it came in.
 
     It is not what a PS3HEN console needs. HEN loads an ordinary retail
-    re-sign, as long as it is built against the 3.55-era keyset: Jacob
+    re-sign, as long as it is built against the 3.55-era keyset: the published
     Schroeder's paired CFW and HEN builds of Modern Warfare 2 are both retail
     re-signs, and the only header field that differs between them is the SCE
     key revision, 0x0010 against 0x000A. That is what sign(key_revision=...)

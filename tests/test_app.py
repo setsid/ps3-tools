@@ -230,3 +230,84 @@ class ButtonColours(unittest.TestCase):
                             for button in screen.findChildren(QPushButton)
                             if button.property("primary")]
                 self.assertEqual(len(coloured), 1, coloured)
+
+
+class WorkIsIsolatedBetweenServices(unittest.TestCase):
+    """Each Services waits for its own work and nobody else's.
+
+    The suite used to fail in a different test on every whole-run, because
+    every Services shared QThreadPool.globalInstance(). One test's abandoned
+    worker could hold up another's wait, or a wait could report the pool idle
+    while its own task had not been picked up yet, and the result was a panel
+    read before it was filled or an install counted before it ran. Twice this
+    session that pattern turned out to be hiding a real defect, so a suite
+    that cries wolf is expensive.
+    """
+
+    def setUp(self):
+        from PySide6.QtWidgets import QApplication
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        self.app = QApplication.instance() or QApplication([])
+        self.make = lambda: Services(ConnectionState(""), AppTheme("dark"), {})
+
+    def test_two_services_do_not_share_a_pool(self):
+        first, second = self.make(), self.make()
+        self.assertIsNot(first._pool, second._pool)
+
+    def test_a_wait_is_not_held_up_by_another_services_work(self):
+        """The direct cause of the wandering failures."""
+        import threading
+        import time
+
+        slow, quick = self.make(), self.make()
+        release = threading.Event()
+        started = threading.Event()
+
+        def blocker(control):
+            started.set()
+            release.wait(30)
+            return "done"
+
+        slow.submit(blocker)
+        self.assertTrue(started.wait(10), "the slow worker never started")
+
+        quick.submit(lambda control: "immediate")
+        began = time.monotonic()
+        finished = quick.wait(10000)
+        took = time.monotonic() - began
+
+        release.set()
+        slow.wait(30000)
+
+        self.assertTrue(finished, "the quick Services waited on foreign work")
+        self.assertLess(took, 5.0, f"the wait took {took:.1f}s")
+
+    def test_a_wait_covers_this_services_own_work(self):
+        done = []
+        services = self.make()
+        services.submit(lambda control: done.append(1))
+        self.assertTrue(services.wait(10000))
+        self.assertEqual(done, [1])
+
+    def test_cancel_all_reaches_everything_in_flight(self):
+        import threading
+
+        services = self.make()
+        seen = []
+        running = threading.Event()
+
+        def work(control):
+            running.set()
+            for _ in range(200):
+                if control.cancelled:
+                    seen.append("cancelled")
+                    return
+                threading.Event().wait(0.01)
+            seen.append("ran to the end")
+
+        services.submit(work)
+        self.assertTrue(running.wait(10))
+        services.cancel_all()
+        self.assertTrue(services.wait(30000))
+        self.assertEqual(seen, ["cancelled"])

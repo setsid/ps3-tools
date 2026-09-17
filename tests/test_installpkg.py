@@ -104,9 +104,9 @@ class ReadingAPackage(unittest.TestCase):
         self.folder = tempfile.mkdtemp(prefix="ps3-pkg-test-")
         self.addCleanup(lambda: _rmtree(self.folder))
         # Installing rescans the console's packages folder, so a test can
-        # finish with a task still in flight. The pool is
-        # QThreadPool.globalInstance(): work left running here turns up inside
-        # whichever test comes next.
+        # finish with a task still in flight. The pool belongs to this
+        # Services, so it cannot reach another test, but work left running
+        # here still runs into widgets that are about to be destroyed.
         self.addCleanup(self._drain)
 
     def _drain(self):
@@ -224,9 +224,9 @@ class ScreenCase(unittest.TestCase):
         self.folder = tempfile.mkdtemp(prefix="ps3-pkg-test-")
         self.addCleanup(lambda: _rmtree(self.folder))
         # Installing rescans the console's packages folder, so a test can
-        # finish with a task still in flight. The pool is
-        # QThreadPool.globalInstance(): work left running here turns up inside
-        # whichever test comes next.
+        # finish with a task still in flight. The pool belongs to this
+        # Services, so it cannot reach another test, but work left running
+        # here still runs into widgets that are about to be destroyed.
         self.addCleanup(self._drain)
 
     def _drain(self):
@@ -279,11 +279,10 @@ class ScreenCase(unittest.TestCase):
         work leaves a second round undelivered. That raced about one run in
         three: the panel was still empty when the assertion read it.
 
-        Where a task is given, its own done signal is what is waited for.
-        The pool is QThreadPool.globalInstance(), shared with every other test
-        in the process: "the pool is idle" can be true before this task has
-        been picked up at all, and waiting on that raced against another file's
-        leftovers. Waiting on the task itself cannot.
+        Waiting on the one task handed in was not enough: the handler that
+        runs when it finishes often starts another, and between the first
+        finishing and the second being submitted the pool is genuinely idle.
+        So this waits for every task to be gone rather than one.
 
         Then the pool is pumped until it has stayed idle across three passes,
         which covers whatever the handler started -- an install rescans the
@@ -294,24 +293,28 @@ class ScreenCase(unittest.TestCase):
         while time.monotonic() < deadline:
             APP.processEvents()
             idle = self.services.wait(50)
-            # Services keeps a task until its done signal has been delivered,
-            # so "no longer tracked" is the one reading of "this task has
-            # finished" that does not race. Connecting to done here would:
-            # a task can finish before the connection is made, and the signal
-            # is never sent again.
-            if task is not None and task in self.services.running_tasks():
+            # Deliver before asking. Services drops a task when its done
+            # signal reaches the GUI thread, so running_tasks() is only
+            # meaningful after the queue has been pumped. Connecting to done
+            # instead would race: a task can finish before the connection is
+            # made, and the signal is never sent again.
+            APP.processEvents()
+            if self.services.running_tasks() or not idle:
                 quiet = 0
                 continue
-            quiet = quiet + 1 if idle else 0
+            quiet += 1
             if quiet >= 3:
-                # A last round of delivery. The pool being idle says the
-                # worker has stopped; it does not say the queued signal
-                # carrying its result has reached the GUI thread yet, and a
-                # test that reads the panel in that gap sees it empty.
+                # The pool being idle says the worker has stopped; it does not
+                # say the queued signal carrying its result has reached the
+                # GUI thread yet, and a test that reads the panel in that gap
+                # sees it empty.
                 for _ in range(5):
                     APP.processEvents()
                 return
-        raise AssertionError("work did not settle within ten seconds")
+        outstanding = ", ".join(self.services.running()) or "nothing named"
+        raise AssertionError(
+            f"work did not settle within ten seconds; still running: "
+            f"{outstanding}")
 
     def rows(self):
         table = self.screen._table

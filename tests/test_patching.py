@@ -1147,9 +1147,33 @@ class ScreenCase(ConsoleCase):
         return screen, services
 
     def settle(self, services):
-        services.wait(30000)
-        for _ in range(10):
+        """Wait until nothing is outstanding and every result has been
+        delivered.
+
+        Draining the pool once and pumping is not enough: the handler that
+        runs when a task finishes often starts another, and between the first
+        finishing and the second being submitted the pool is genuinely idle.
+        Services drops a task when its done signal reaches the GUI thread, so
+        the queue has to be pumped before running_tasks() means anything.
+        """
+        deadline = time.monotonic() + 30.0
+        quiet = 0
+        while time.monotonic() < deadline:
             self.application.processEvents()
+            idle = services.wait(50)
+            self.application.processEvents()
+            if services.running_tasks() or not idle:
+                quiet = 0
+                continue
+            quiet += 1
+            if quiet >= 3:
+                for _ in range(10):
+                    self.application.processEvents()
+                return
+        outstanding = ", ".join(services.running()) or "nothing named"
+        raise AssertionError(
+            f"work did not settle within thirty seconds; still running: "
+            f"{outstanding}")
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not available")
@@ -1275,13 +1299,17 @@ class StubLister:
 def installation(state, title_id=BO2_ID, key="bo2", tu_version=None,
                  expected=(), missing=()):
     config = titles.TITLES[key]
+    unknown = state == "unknown_variant"
     return detection.Installation(
-        title_id=title_id, title_key=key if state != "unknown_variant" else None,
+        title_id=title_id, title_key=None if unknown else key,
         name=config["name"], short=config["short"],
         path=f"/dev_hdd0/game/{title_id}",
         usrdir=titles.usrdir_for(title_id), state=state, config=config,
         expected=list(expected), missing=list(missing),
         tu_version=tu_version,
+        # An unnamed release carries the game its files say it is, which is
+        # what decides whether a screen may see it at all.
+        candidate_keys=(key,) if unknown else (),
         verified=titles.is_verified(title_id))
 
 

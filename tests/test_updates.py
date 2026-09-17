@@ -3733,34 +3733,42 @@ class ScreenCase(unittest.TestCase):
     def settle(self, task=None):
         """Wait for the worker AND for its result to reach the GUI thread.
 
-        services.wait() only drains the thread pool, and the pool is
-        QThreadPool.globalInstance(), shared with every other test in the
-        process: "the pool is idle" can be true before this task has been
-        picked up at all. A single processEvents() then returns before the
-        queued finished signal has run, and the test reads a panel that is
-        still empty. That is what this used to do, and it failed about one
-        full run in three while passing every time on its own.
+        Waiting on the one task handed in was not enough. The handler that
+        runs when it finishes often starts another task, and between the first
+        finishing and the second being submitted the pool is genuinely idle,
+        so a wait that watched only the first returned into the middle of the
+        work. That is what made a different test in this file fail about one
+        run in six.
+
+        So this waits for every task to be gone rather than one, and pumps the
+        event queue before asking: Services drops a task when its done signal
+        reaches the GUI thread, so running_tasks() means nothing until the
+        queue has been delivered.
         """
         deadline = time.monotonic() + 10.0
         quiet = 0
         while time.monotonic() < deadline:
             APP.processEvents()
             idle = self.services.wait(50)
-            # Services keeps a task until its done signal has been delivered,
-            # so "no longer tracked" is the one reading of "this has finished"
-            # that does not race.
-            if task is not None and task in self.services.running_tasks():
+            # Deliver before asking. Services drops a task when its done
+            # signal reaches the GUI thread, so running_tasks() is only
+            # meaningful after the queue has been pumped.
+            APP.processEvents()
+            if self.services.running_tasks() or not idle:
                 quiet = 0
                 continue
-            quiet = quiet + 1 if idle else 0
+            quiet += 1
             if quiet >= 3:
-                # A last round of delivery. The pool being idle says the
-                # worker has stopped; it does not say the signal carrying its
-                # result has reached the GUI thread yet.
+                # The pool being idle says the worker has stopped; it does not
+                # say the signal carrying its result has reached the GUI
+                # thread yet.
                 for _ in range(5):
                     APP.processEvents()
                 return
-        raise AssertionError("work did not settle within ten seconds")
+        outstanding = ", ".join(self.services.running()) or "nothing named"
+        raise AssertionError(
+            f"work did not settle within ten seconds; still running: "
+            f"{outstanding}")
 
     def scan(self, **kwargs):
         screen = self.build(**kwargs)

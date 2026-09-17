@@ -244,7 +244,16 @@ class Services(QObject):
         self.connection = connection
         self.theme = theme
         self.settings = settings if settings is not None else {}
-        self._pool = QThreadPool.globalInstance()
+        # A pool of this Services' own, not QThreadPool.globalInstance().
+        #
+        # wait() is the shutdown path and the one tests settle on, and on the
+        # global pool it waits for whatever else happens to be using it rather
+        # than for this program's work. In the suite that meant one test could
+        # be held up by another test's abandoned worker, or told the pool was
+        # idle while its own task had not been picked up yet, and the failure
+        # landed in a different test on every run. A pool per Services makes
+        # "my work has finished" mean exactly that.
+        self._pool = QThreadPool(self)
         self._tasks = []
 
     def submit(self, function):
@@ -268,8 +277,22 @@ class Services(QObject):
             self._tasks.remove(task)
 
     def wait(self, milliseconds=10000):
-        """Blocks until the worker pool is idle. For tests and for shutdown."""
+        """Blocks until this Services' own work is done.
+
+        Returns True if it finished, False if the wait ran out. The pool is
+        this object's, so the answer is about this program's work and nothing
+        else's.
+        """
         return self._pool.waitForDone(milliseconds)
+
+    def cancel_all(self):
+        """Asks everything in flight to stop. Cancellation is co-operative.
+
+        Used by teardown paths that are about to destroy the widgets a worker
+        might still be holding. It does not wait; call wait() after it.
+        """
+        for task in list(self._tasks):
+            task.cancel()
 
     def running_tasks(self):
         """The Task objects still in flight. A test waits on one of these."""
@@ -278,9 +301,8 @@ class Services(QObject):
     def running(self):
         """What has been submitted and not finished, by name.
 
-        The pool is QThreadPool.globalInstance() and cancellation is
-        co-operative, so a shutdown that waits can still time out. This is how
-        it says which piece of work it stopped waiting for.
+        Cancellation is co-operative, so a shutdown that waits can still time
+        out. This is how it says which piece of work it stopped waiting for.
         """
         return [getattr(task, "label", "work") for task in self._tasks]
 

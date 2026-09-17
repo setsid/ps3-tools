@@ -134,11 +134,9 @@ class ShellCase(unittest.TestCase):
         self.window.pages.animations_enabled = False
 
     def tearDown(self):
-        # Drain the worker pool first. It is QThreadPool.globalInstance(),
-        # shared by every test in this process, so a test that submits work
-        # and returns without waiting leaves it running into the next one.
-        # That is how a later test came to assert on a scan that had not
-        # started yet: its own task was still queued behind the leftovers.
+        # Drain the worker pool first. Each Services has a pool of its own,
+        # so leftovers cannot reach another test, but work left running here
+        # still runs into the widgets this teardown is about to destroy.
         if not self.services.wait(10000):
             raise AssertionError("a test left work running in the pool")
         application.processEvents()

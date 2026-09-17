@@ -2220,9 +2220,9 @@ class MainWindow(QMainWindow):
     def _drain_workers(self):
         """Wait for the worker pool, but never hold the window open on it.
 
-        Work runs on QThreadPool.globalInstance() and nothing else waits for
-        it, so without this the window closes while workers are still running
-        and Qt starts tearing down underneath them. The wait is bounded: a
+        Work runs on the Services' own pool and nothing else waits for it, so
+        without this the window closes while workers are still running and Qt
+        starts tearing down underneath them. The wait is bounded: a
         worker that will not stop is recorded and the window closes anyway,
         because a program that will not shut down is worse than one that
         leaves a thread behind.

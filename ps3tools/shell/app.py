@@ -2203,12 +2203,16 @@ class MainWindow(QMainWindow):
         3. The update check runs either way, and whatever it finds is shown
            when there is a window to show it on.
 
-        The check is forced, which is what makes it happen at all. Without it
-        the cache answers instead: the timestamp is written even when the
-        fetch failed, so a machine that was offline once asked again the next
-        day rather than the next launch, and a machine that had already looked
-        that day never asked twice. Asking GitHub once per start-up costs one
-        request and is what everybody assumed was happening.
+        The check is forced and runs whatever the setting says. Every start
+        of the program asks GitHub whether there is a newer release. Two
+        things used to stop it: the cache, whose timestamp is written even
+        when the fetch failed, so a machine that was offline once did not ask
+        again until the next day; and the setting, which is now overridden
+        here and here only. The About screen's button still respects it.
+
+        This is the only way somebody running an old build hears about a fix,
+        and it costs one request. Nothing about it is louder than the banner:
+        a check that finds nothing, or cannot run, says nothing at all.
         """
         host = self.connection.host if self.connection else ""
         dialog = None
@@ -2221,7 +2225,8 @@ class MainWindow(QMainWindow):
             # Say it again when the window comes back.
             dialog.finished.connect(
                 lambda _result: self.update_banner.reassert())
-        self.update_banner.start_check(force=True)
+        self.update_banner.start_check(force=True,
+                                       whatever_the_setting=True)
         return dialog
 
     def _drain_workers(self):

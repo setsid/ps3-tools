@@ -272,7 +272,7 @@ class UpdateBanner(QWidget):
 
     # -- the check
 
-    def start_check(self, force=False):
+    def start_check(self, force=False, whatever_the_setting=False):
         """Run the check on a worker and show the banner if there is news.
 
         Never blocks the GUI thread and never reports a failure: a check that
@@ -280,13 +280,14 @@ class UpdateBanner(QWidget):
         """
         if self._task is not None:
             return None
-        if self._dismissed and not force:
+        if self._dismissed and not force and not whatever_the_setting:
             return None
         settings = self.settings
         fetcher = self._fetcher
 
         def work(control):
-            return update.check(settings, fetcher=fetcher, force=force)
+            return update.check(settings, fetcher=fetcher, force=force,
+                                whatever_the_setting=whatever_the_setting)
 
         task = self.services.submit(work)
         self._task = task

@@ -719,13 +719,43 @@ class TheCheckRunsOnEveryLaunch(unittest.TestCase):
         update.check(settings, fetcher=self.fetcher(calls, None), force=True)
         self.assertEqual(len(calls), 2)
 
+    def test_it_asks_even_when_the_setting_is_switched_off(self):
+        """Every launch asks, whatever the setting says.
+
+        The launch path is the one caller that overrides it. Somebody running
+        an old build hears about a fix this way and no other, and the banner
+        is the whole of what it can do about it: a check that finds nothing,
+        or cannot run, says nothing.
+        """
+        calls = []
+        off = {update.SETTING_ENABLED: False}
+        for _ in range(3):
+            update.check(off, fetcher=self.fetcher(calls), force=True,
+                         whatever_the_setting=True)
+        self.assertEqual(len(calls), 3)
+
+    def test_the_about_button_still_respects_the_setting(self):
+        """A button that quietly does what the checkbox turned off is a lie
+        about the checkbox. The launch path is the exception, and it is the
+        only one."""
+        calls = []
+        off = {update.SETTING_ENABLED: False}
+        update.check(off, fetcher=self.fetcher(calls), force=True)
+        self.assertEqual(calls, [])
+
+    def test_start_up_asks_whatever_the_setting_says(self):
+        import inspect
+        from ps3tools.shell import app as shell_app
+        source = inspect.getsource(shell_app.MainWindow.start_launch)
+        self.assertIn("whatever_the_setting=True", source)
+
     def test_start_up_forces_it(self):
         """The launch path itself, read from the source, so the two cannot
         drift apart from each other."""
         import inspect
         from ps3tools.shell import app as shell_app
         source = inspect.getsource(shell_app.MainWindow.start_launch)
-        self.assertIn("start_check(force=True)", source)
+        self.assertIn("force=True", source)
 
     def test_nothing_about_it_can_raise_into_start_up(self):
         """No network, no banner, no error, and start-up carries on."""

@@ -319,7 +319,8 @@ def _store(settings, payload, now):
     settings[SETTING_CACHE] = {"checked": now, "release": trimmed}
 
 
-def check(settings, fetcher=None, now=None, force=False):
+def check(settings, fetcher=None, now=None, force=False,
+          whatever_the_setting=False):
     """The whole check. Returns a Release worth telling the user about, or
     None.
 
@@ -328,12 +329,20 @@ def check(settings, fetcher=None, now=None, force=False):
     not newer than this build. Never raises: the caller is the launch path.
 
     force skips the cache and is what the About screen's Check now button
-    uses. It still respects the setting, because a button that quietly does
-    the thing the checkbox turned off is a lie about the checkbox.
+    uses. That button still respects the setting, because a button that
+    quietly does the thing the checkbox turned off is a lie about the
+    checkbox.
+
+    whatever_the_setting is the launch path and is the one caller that
+    overrides it. Every start of the program asks GitHub whether there is a
+    newer release, which is what the program has always been meant to do, and
+    it is the only way somebody running an old build ever hears about a fix.
+    Nothing about it is louder than the banner: a check that finds nothing,
+    or cannot run at all, still says nothing at all.
     """
     if settings is None:
         settings = {}
-    if not enabled(settings):
+    if not enabled(settings) and not whatever_the_setting:
         return None
     now = time.time() if now is None else now
 

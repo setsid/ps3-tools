@@ -28,7 +28,7 @@ that looks like a guarantee.
 
 import html
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QFrame,
                                QHBoxLayout, QLabel, QMessageBox, QProgressBar,
                                QPushButton, QSizePolicy, QTreeWidget,
@@ -83,6 +83,11 @@ class InstallPackagesScreen(Screen):
     tile = "PK"
     # Beside the game updates card; both of them end at the same install call.
     order = 50
+
+    #: tell the shell something finished, for the line on the connection bar.
+    #: Optional: a shell that has not wired it simply keeps no record of the
+    #: upload, and nothing on this screen depends on it.
+    event_noted = Signal(str)
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)
@@ -528,6 +533,13 @@ class InstallPackagesScreen(Screen):
         landed = [item for item in results if item.confirmed]
         missed = [item for item in results if not item.confirmed]
         self._installed_so_far.extend(landed)
+        if landed:
+            # The console has it and said so, which is the first moment this
+            # is worth remembering. One name while there is one, because a
+            # list of filenames is wider than the bar it would be drawn on.
+            name = (landed[0].filename if len(landed) == 1
+                    else f"{len(landed)} packages")
+            self.event_noted.emit(f"Installed {name}")
         if missed:
             # An install this end could not check is not an install that
             # failed, and the heading says which happened. Plenty of packages

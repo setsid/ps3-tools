@@ -5,8 +5,9 @@ widgets: hover, press and focus want to move together, and a QFrame holding
 three QLabels cannot do that without a stylesheet per state.
 """
 
-from PySide6.QtCore import (QEasingCurve, QPoint, QPropertyAnimation, QRect,
-                            QSize, Property, Qt, Signal)
+from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QPoint,
+                            QPropertyAnimation, QRect, QSize, Property, Qt,
+                            Signal)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel,
                                QLayout, QSizePolicy, QToolButton, QVBoxLayout,
@@ -82,8 +83,19 @@ PILL_SIDES = 9
 PILL_ENDS = 3
 PILL_MINIMUM_HEIGHT = 18
 
+#: How long a pill takes to answer the pointer, and how far its edge and its
+#: fill travel towards the token colour while it is under one. Named rather
+#: than written into the code, so a test can read the numbers instead of
+#: watching for them.
+#:
+#: The same duration as a card's lift. A pill sits on a card and moves with
+#: it, and two speeds on the one surface read as one of them being wrong.
+PILL_HOVER_MS = 140
+PILL_HOVER_EDGE = 0.45
+PILL_HOVER_FILL = 0.10
 
-def pill_colours(theme, token="accent"):
+
+def pill_colours(theme, token="accent", hover=0.0):
     """(fill, ink, edge) for a pill in one of the theme's own colours.
 
     The colour on the quiet tile colour rather than white on a solid fill: a
@@ -91,10 +103,19 @@ def pill_colours(theme, token="accent"):
     one too many. It is also the pair the palette check already guarantees at
     4.5:1 in both themes for every token it is used with, which is the reason
     for reusing it rather than mixing a wash that reads at 4.3 in the dark.
+
+    `hover` is how far the pointer has got, nought to one. It moves the edge
+    and the fill and leaves the ink exactly where it was: the word is the part
+    of a pill that has a contrast figure attached to it, and a word that
+    changes colour under the pointer is a word whose contrast has to be
+    checked twice.
     """
     colour = theme.colour
-    return (colour("surface_alt"), colour(token),
-            mix(colour("border"), colour(token), 0.55))
+    return (mix(colour("surface_alt"), colour(token),
+                PILL_HOVER_FILL * hover),
+            colour(token),
+            mix(colour("border"), colour(token),
+                0.55 + PILL_HOVER_EDGE * hover))
 
 
 def pill_font(base):
@@ -113,7 +134,7 @@ def pill_size(base, text):
                  max(PILL_MINIMUM_HEIGHT, metrics.height() + 2 * PILL_ENDS))
 
 
-def pill_rule(theme, font, height):
+def pill_rule(theme, font, height, hover=0.0):
     """The body of a stylesheet rule that draws a pill.
 
     The size is named here as well as set on the font: an application-wide
@@ -121,15 +142,20 @@ def pill_rule(theme, font, height):
     stylesheet reaches, which is every label on a card. A pill measured at one
     size and drawn at another is a pill with its word hanging out of it.
     """
-    fill, ink, edge = pill_colours(theme)
+    fill, ink, edge = pill_colours(theme, hover=hover)
     return (f"background: {fill}; color: {ink}; border: 1px solid {edge};"
             f" border-radius: {height // 2}px;"
             f" font-size: {font.pointSizeF():g}pt; font-weight: 600;")
 
 
-def draw_pill(painter, rect, text, base, theme):
-    """Paint a pill into `rect`. Used by the cards that paint themselves."""
-    fill, ink, edge = pill_colours(theme)
+def draw_pill(painter, rect, text, base, theme, hover=0.0):
+    """Paint a pill into `rect`. Used by the cards that paint themselves.
+
+    A painted card is one button, so its pills cannot be hovered on their own;
+    `hover` is the card's own lift, passed down so that a pill on a card that
+    has come up comes up with it rather than sitting dead on a live card.
+    """
+    fill, ink, edge = pill_colours(theme, hover=hover)
     radius = rect.height() / 2.0
     painter.setPen(QColor(edge))
     painter.setBrush(QColor(fill))
@@ -184,9 +210,14 @@ class PillBadge(QLabel):
     kinds of card cannot drift apart.
     """
 
+    #: Emitted while the pointer is arriving or leaving, because the card a
+    #: pill sits on may be writing the pill's rule for it. See ComingSoonCard.
+    hover_changed = Signal()
+
     def __init__(self, text, theme, parent=None):
         super().__init__(text, parent)
         self._theme = theme
+        self._hover = 0.0
         # Sized off the card's font rather than the label's own, so that a
         # pill on a card and a pill painted by a card come out the same.
         base = parent.font() if parent is not None else self.font()
@@ -198,12 +229,49 @@ class PillBadge(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setFixedSize(pill_size(base, text))
+        # Owned by the pill, so it stops existing when the pill does. A loose
+        # timer firing into a deleted label is a crash on shutdown, and a grid
+        # of cards makes a lot of pills.
+        self._hover_animation = QPropertyAnimation(self, b"hover", self)
+        self._hover_animation.setDuration(PILL_HOVER_MS)
+        self._hover_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self._paint()
         theme.changed.connect(self._paint)
 
+    @property
+    def hover_animation(self):
+        """The animation itself, for a test that wants to read it."""
+        return self._hover_animation
+
+    def get_hover(self):
+        return self._hover
+
+    def set_hover(self, value):
+        self._hover = float(value)
+        self._paint()
+        self.hover_changed.emit()
+
+    hover = Property(float, get_hover, set_hover)
+
+    def enterEvent(self, event):
+        self._hover_to(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover_to(0.0)
+        super().leaveEvent(event)
+
+    def _hover_to(self, value):
+        """Animated rather than switched, so sweeping past does not strobe."""
+        self._hover_animation.stop()
+        self._hover_animation.setStartValue(self._hover)
+        self._hover_animation.setEndValue(value)
+        self._hover_animation.start()
+
     def _paint(self):
         self.setStyleSheet("QLabel { " + pill_rule(self._theme, self.font(),
-                                                   self.height()) + " }")
+                                                   self.height(),
+                                                   self._hover) + " }")
 
 
 class FlowLayout(QLayout):
@@ -303,16 +371,80 @@ class FlowHost(QWidget):
         self.sync_height()
 
 
+#: The connected dot's breath: how long one cycle takes, and the two opacities
+#: it moves between. Constants rather than literals so a test can read the
+#: numbers off the module instead of waiting the animation out.
+#:
+#: Two and a half seconds sits in the middle of the two to three asked for.
+#: Fast enough to read as a live connection, slow enough that it is never the
+#: thing the eye goes to while somebody is reading the word beside it.
+DOT_BREATH_MS = 2500
+DOT_BREATH_DIM = 0.65
+DOT_BREATH_FULL = 1.0
+
+
 class StatusDot(QWidget):
     """A filled circle with a soft halo. Never the only signal: every use of it
     sits beside a word, because a colour alone is no use to the third of the
-    audience who cannot tell these two greens from these two reds."""
+    audience who cannot tell these two greens from these two reds.
+
+    It can be asked to breathe, which is what a live connection looks like.
+    The breath is opacity and nothing else: a dot that grows and shrinks moves
+    the word beside it in the eye, and a halo that pulses turns a five pixel
+    signal into the largest moving thing on the window.
+    """
 
     def __init__(self, colour="#888888", diameter=10, parent=None):
         super().__init__(parent)
         self._colour = colour
         self._diameter = diameter
+        self._breath = DOT_BREATH_FULL
         self.setFixedSize(diameter + 8, diameter + 8)
+        # Owned by the dot, so it dies with it. This one runs for as long as a
+        # console is connected, and a loose timer still ticking into a deleted
+        # widget is a crash on shutdown.
+        self._breathing = QPropertyAnimation(self, b"breath", self)
+        self._breathing.setDuration(DOT_BREATH_MS)
+        self._breathing.setEasingCurve(QEasingCurve.Type.InOutSine)
+        # Dim, bright, dim within the one cycle, so that a loop joins onto
+        # itself without a step at the seam.
+        self._breathing.setStartValue(DOT_BREATH_DIM)
+        self._breathing.setKeyValueAt(0.5, DOT_BREATH_FULL)
+        self._breathing.setEndValue(DOT_BREATH_DIM)
+        self._breathing.setLoopCount(-1)
+
+    @property
+    def breathing(self):
+        """The animation itself, for a test that wants to read it."""
+        return self._breathing
+
+    def is_breathing(self):
+        return self._breathing.state() == QAbstractAnimation.State.Running
+
+    def set_breathing(self, on):
+        """Start or stop the breath. Idempotent, and never blocks anything.
+
+        Whatever calls this has already changed the thing the dot describes;
+        the dot is being told after the fact and nothing waits on it.
+        """
+        if bool(on) == self.is_breathing():
+            return
+        if on:
+            self._breathing.start()
+        else:
+            self._breathing.stop()
+            # Back to the settled state rather than wherever the cycle
+            # happened to stop, or a disconnected dot is left half faded.
+            self.set_breath(DOT_BREATH_FULL)
+
+    def get_breath(self):
+        return self._breath
+
+    def set_breath(self, value):
+        self._breath = float(value)
+        self.update()
+
+    breath = Property(float, get_breath, set_breath)
 
     def set_colour(self, colour):
         if colour != self._colour:
@@ -322,6 +454,7 @@ class StatusDot(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setOpacity(self._breath)
         painter.setPen(Qt.PenStyle.NoPen)
         centre = self.rect().center()
         halo = QColor(self._colour)
@@ -347,6 +480,14 @@ class ToolCard(QAbstractButton):
     PADDING = 20
     BADGE = 48
     ACTION = "Open"
+
+    #: The hover lift: how far the card rises under the pointer, and how long
+    #: it takes to get there. Two pixels and a border that moves towards the
+    #: accent, and nothing else. A card that scales up under the pointer moves
+    #: the cards beside it in the eye even though the grid has not moved, and
+    #: an easing that overshoots turns a grid of twelve into a trampoline.
+    LIFT_PIXELS = 2
+    LIFT_MS = 140
 
     #: Points over the card's own font for the title. One size for every
     #: card. Drawing the game fixes larger than the tools around them was
@@ -408,7 +549,7 @@ class ToolCard(QAbstractButton):
         # Hover is animated rather than switched so that sweeping the pointer
         # across the grid does not strobe.
         self._animation = QPropertyAnimation(self, b"lift", self)
-        self._animation.setDuration(140)
+        self._animation.setDuration(self.LIFT_MS)
         self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.clicked.connect(lambda: self.activated.emit(self.key))
         theme.changed.connect(self.update)
@@ -424,6 +565,11 @@ class ToolCard(QAbstractButton):
         self.update()
 
     lift = Property(float, get_lift, set_lift)
+
+    @property
+    def lift_animation(self):
+        """The animation itself, for a test that wants to read it."""
+        return self._animation
 
     def enterEvent(self, event):
         self._animate_to(1.0)
@@ -535,6 +681,14 @@ class ToolCard(QAbstractButton):
         body.adjust(1, 2, -1, -3)
         if pressed:
             body.adjust(0, 1, 0, 1)
+
+        # The lift. The whole body moves, so the border, the icon tile and the
+        # words rise together rather than the card's edge sliding out from
+        # under its own contents. body_rect stays where it was: that one
+        # answers questions about layout, and the layout has not moved.
+        rise = round(self.LIFT_PIXELS * raised)
+        if rise:
+            body.translate(0, -rise)
 
         # A soft stack of translucent rounded rectangles reads as a shadow and
         # costs less than a graphics effect on every card in the grid.
@@ -662,7 +816,7 @@ class ToolCard(QAbstractButton):
             note_font = self.note_font()
             note_metrics = QFontMetrics(note_font)
             box = self.note_box(body)
-            fill, ink, edge = pill_colours(self._theme, "warn")
+            fill, ink, edge = pill_colours(self._theme, "warn", raised)
             painter.setPen(QColor(edge))
             painter.setBrush(QColor(fill))
             painter.drawRoundedRect(box.adjusted(0, 0, -1, -1),
@@ -687,7 +841,8 @@ class ToolCard(QAbstractButton):
             pill = QRect(body.right() - padding - size.width(),
                          action_box.center().y() - size.height() // 2,
                          size.width(), size.height())
-            draw_pill(painter, pill, self.badge, self.font(), self._theme)
+            draw_pill(painter, pill, self.badge, self.font(), self._theme,
+                      raised)
 
         if self.hasFocus():
             painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -875,6 +1030,10 @@ class ComingSoonCard(QFrame):
         last.addWidget(self._link, 1, Qt.AlignmentFlag.AlignVCenter)
         if self.badge:
             self._pill = PillBadge(self.badge, theme, self)
+            # The card's own rule for the pill beats anything the pill sets on
+            # itself, so the card has to say it again on every frame of the
+            # pill's hover. Without this the pill animates and nothing shows.
+            self._pill.hover_changed.connect(self._paint)
             last.addWidget(self._pill, 0, Qt.AlignmentFlag.AlignVCenter)
         box.addLayout(last)
 
@@ -905,7 +1064,7 @@ class ComingSoonCard(QFrame):
             return ""
         return ("QFrame#comingsoon QLabel#pillBadge { "
                 + pill_rule(self._theme, self._pill.font(),
-                            self._pill.height()) + " }")
+                            self._pill.height(), self._pill.hover) + " }")
 
     def _paint(self):
         colour = self._theme.colour

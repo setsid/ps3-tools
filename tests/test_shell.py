@@ -26,16 +26,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QEvent,
+                            QPointF, QPropertyAnimation)
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication
 
 from mock_webman import MockWebmanHttp
 from ps3diag import discovery
-from ps3diag.parsers import SIGNATURE_THRESHOLD, looks_like_webman, \
-    webman_score
+from ps3diag.parsers import SIGNATURE_THRESHOLD, human_size, \
+    looks_like_webman, webman_score
 from ps3diag.transport import HttpProbe, assert_safe_path, tcp_open
 from ps3tools.shell import app as shell_app
 from ps3tools.shell import registry
+from ps3tools.shell import widgets
 from ps3tools.shell.screen import (THEME_TOKENS, ConnectionState, Screen,
                                    Services)
 from ps3tools.shell.theme import PALETTES, AppTheme, contrast_ratio
@@ -106,6 +110,21 @@ class LateScreen(DummyScreen):
     blurb = "Registered after the launcher was built."
     tile = "LT"
     order = 30
+
+
+class FinishingScreen(DummyScreen):
+    """A screen that tells the shell when it has finished something.
+
+    The signal is optional, the way request_tool is: most screens have nothing
+    to report and the shell wires whichever ones do.
+    """
+
+    key = "finishing"
+    title = "Finishing tool"
+    blurb = "A screen that announces what it has just finished."
+    tile = "FN"
+    order = 50
+    event_noted = Signal(str)
 
 
 class UnregisteredScreen(DummyScreen):
@@ -401,6 +420,190 @@ class ConnectionBarTests(ShellCase):
         self.bar._checked({"host": "192.168.1.50", "ok": True,
                            "body": fixture("webman_root.html")})
         self.assertEqual(self.connection.connection, "unknown")
+
+
+class SilentProbe:
+    """A console that answers nothing, with no socket opened to find out."""
+
+    class Response:
+        ok = False
+        body = ""
+
+    def __init__(self, host, timeout=0.0):
+        self.host = host
+
+    def get(self, _path):
+        return self.Response()
+
+
+class TheRightHandSideOfTheBar(ShellCase):
+    """Free space, the last thing that happened, and the firmware.
+
+    The console read is replaced in every test here. There is a real console
+    on this network and nothing in this file is allowed to reach it, which is
+    what the seam on the bar is for.
+    """
+
+    HOST = "192.168.1.50"
+
+    def setUp(self):
+        super().setUp()
+        self.bar = self.window.connection_bar
+        self.asked = []
+        # Shown on purpose. The bar reads a console only while there is
+        # somebody in front of it, so a test that never shows the window is
+        # testing the case where nothing is read at all.
+        #
+        # Showing it also puts the home screen's figures strip in front of
+        # somebody, and that reads the console for itself. It is not what this
+        # class is about and it is not allowed on the network either.
+        stats = getattr(self.window.launcher, "stats", None)
+        if stats is not None:
+            stats._probe_factory = SilentProbe
+        self.window.show()
+        application.processEvents()
+
+    def answer_with(self, facts):
+        """Connect, and have the console reply with facts.
+
+        Waits for the worker, then pumps the queue the result comes back on.
+        """
+        def read(host):
+            self.asked.append(host)
+            return dict(facts)
+
+        self.bar._read_console = read
+        self.connection.set_host(self.HOST)
+        self.connection.set_connection("connected", "webMAN answered.")
+        self.assertTrue(self.services.wait(10000))
+        application.processEvents()
+
+    def test_the_free_space_the_console_reported_is_shown(self):
+        self.answer_with({"devices": [{"device": "dev_hdd0",
+                                       "free_bytes": 90000000000}]})
+        self.assertEqual(self.bar.free_text(), "83.8 GB free")
+
+    def test_free_space_is_written_the_way_every_other_size_is(self):
+        # The figure on the bar and the figure in a refusal to download come
+        # off one formatter, so the two cannot disagree about the same drive.
+        free = 42 * 1024 * 1024 * 1024
+        self.answer_with({"devices": [{"device": "dev_hdd0",
+                                       "free_bytes": free}]})
+        self.assertIn(human_size(free), self.bar.free_text())
+
+    def test_free_space_the_console_did_not_report_is_left_blank(self):
+        self.answer_with({"devices": [{"device": "dev_usb000"}]})
+        self.assertEqual(self.bar.free_text(), "")
+
+    def test_an_event_says_what_happened_and_how_long_ago(self):
+        self.bar.note_event("Patched Black Ops 1")
+        self.assertEqual(
+            self.bar.event_text(),
+            f"Patched Black Ops 1 {shell_app.EVENT_SEPARATOR} just now")
+
+    def test_the_relative_time_is_brought_up_to_date_on_the_tick(self):
+        self.bar.note_event("Patched Black Ops 1")
+        # Nothing new has happened. The tick rewrites how long ago the same
+        # event was and touches nothing else.
+        self.bar._event_at -= 245
+        self.bar.tick()
+        self.assertEqual(
+            self.bar.event_text(),
+            f"Patched Black Ops 1 {shell_app.EVENT_SEPARATOR} 4 min ago")
+
+    def test_the_window_records_an_event_on_behalf_of_a_screen(self):
+        self.window.note_event("Installed something.pkg")
+        self.assertIn("Installed something.pkg", self.bar.event_text())
+
+    def test_a_screen_that_finishes_something_is_heard_by_the_bar(self):
+        registry.register(FinishingScreen)
+        screen = self.window.screen_for(FinishingScreen.key)
+        screen.event_noted.emit("Installed something.pkg")
+        self.assertIn("Installed something.pkg", self.bar.event_text())
+
+    def test_custom_firmware_is_named_with_the_cobra_version(self):
+        self.answer_with({"firmware_kind": "cfw", "firmware_version": "4.88",
+                          "cobra_version": "8.5"})
+        self.assertEqual(self.bar.firmware_text(), "CFW Cobra 8.5")
+
+    def test_hen_is_named_with_its_own_version(self):
+        self.answer_with({"firmware_kind": "hen", "firmware_version": "4.90",
+                          "hen_version": "3.5.0"})
+        self.assertEqual(self.bar.firmware_text(), "HEN 3.5.0")
+
+    def test_firmware_the_console_did_not_name_is_not_guessed_at(self):
+        self.answer_with({"firmware_version": "4.90", "firmware_kind": ""})
+        self.assertEqual(self.bar.firmware_text(), "")
+        self.assertTrue(self.bar._firmware_label.isHidden())
+        self.assertNotIn("unknown", self.bar.visible_text().lower())
+
+    def test_a_console_that_answers_nothing_leaves_all_three_blank(self):
+        self.answer_with({})
+        self.assertEqual(self.bar.firmware_text(), "")
+        self.assertEqual(self.bar.free_text(), "")
+        self.assertEqual(self.bar.event_text(), "")
+        self.assertTrue(self.bar._firmware_label.isHidden())
+        self.assertTrue(self.bar._free_label.isHidden())
+        self.assertTrue(self.bar._event_label.isHidden())
+        # Silent as well as blank: the state pill still says the console is
+        # there, because it is.
+        self.assertEqual(self.bar.state_text(), "Connected")
+
+    def test_a_console_that_has_not_answered_yet_is_never_asked(self):
+        self.bar._read_console = self.asked.append
+        self.connection.set_host(self.HOST)
+        self.assertTrue(self.services.wait(10000))
+        application.processEvents()
+        self.assertEqual(self.asked, [])
+
+    def test_a_window_nobody_is_looking_at_reads_no_console(self):
+        self.bar._read_console = self.asked.append
+        self.window.hide()
+        application.processEvents()
+        self.connection.set_host(self.HOST)
+        self.connection.set_connection("connected", "webMAN answered.")
+        self.assertTrue(self.services.wait(10000))
+        application.processEvents()
+        self.assertEqual(self.asked, [])
+        # Owed rather than lost: the window coming up takes the reading.
+        self.window.show()
+        application.processEvents()
+        self.assertTrue(self.services.wait(10000))
+        application.processEvents()
+        self.assertEqual(self.asked, [self.HOST])
+
+    def test_a_console_is_asked_once_and_not_asked_again(self):
+        self.answer_with({"firmware_kind": "hen", "hen_version": "3.5.0"})
+        self.connection.set_connection("connected", "webMAN answered again.")
+        self.assertTrue(self.services.wait(10000))
+        application.processEvents()
+        self.assertEqual(self.asked, [self.HOST])
+
+    def test_letting_go_of_a_console_takes_its_figures_with_it(self):
+        self.answer_with({"firmware_kind": "hen", "hen_version": "3.5.0",
+                          "devices": [{"device": "dev_hdd0",
+                                       "free_bytes": 90000000000}]})
+        self.bar.disconnect_console()
+        application.processEvents()
+        self.assertEqual(self.bar.firmware_text(), "")
+        self.assertEqual(self.bar.free_text(), "")
+
+
+class HowLongAgoSomethingWas(unittest.TestCase):
+
+    def test_something_that_has_just_happened_has_no_number_on_it(self):
+        self.assertEqual(shell_app.relative_time(0), "just now")
+        self.assertEqual(shell_app.relative_time(59), "just now")
+
+    def test_minutes_are_rounded_down_so_the_line_is_never_early(self):
+        self.assertEqual(shell_app.relative_time(60), "1 min ago")
+        self.assertEqual(shell_app.relative_time(299), "4 min ago")
+
+    def test_an_hour_is_said_in_hours_and_a_day_in_days(self):
+        self.assertEqual(shell_app.relative_time(3600), "1 hr ago")
+        self.assertEqual(shell_app.relative_time(7200), "2 hr ago")
+        self.assertEqual(shell_app.relative_time(90000), "1 day ago")
+        self.assertEqual(shell_app.relative_time(200000), "2 days ago")
 
 
 class UpdateBannerTests(ShellCase):
@@ -1891,3 +2094,252 @@ class ClosingTheWindowEndsTheProgram(unittest.TestCase):
         with mock.patch.object(crashreport, "note", said.append):
             shell_app.finish(0, wait=0.05, exit_now=lambda code: None)
         self.assertTrue(any("image-reader" in line for line in said), said)
+
+
+# --- the animation pass ----------------------------------------------------
+
+def hover(widget, over):
+    """Put the pointer on a widget, or take it off again.
+
+    A real event rather than a call to the handler, so that what the test
+    drives is what a pointer drives.
+    """
+    from PySide6.QtGui import QEnterEvent
+    if over:
+        spot = QPointF(1.0, 1.0)
+        application.sendEvent(widget, QEnterEvent(spot, spot, spot))
+    else:
+        application.sendEvent(widget, QEvent(QEvent.Type.Leave))
+
+
+class TheConnectedDotBreathes(unittest.TestCase):
+    """The one animation in this program that is meant never to stop.
+
+    Everything else here happens once and settles. This one runs for as long
+    as a console is connected, which is the whole of what it says.
+    """
+
+    def setUp(self):
+        self.dot = widgets.StatusDot()
+        self.addCleanup(self.dot.deleteLater)
+
+    def test_the_breath_is_owned_by_the_dot_it_belongs_to(self):
+        breath = self.dot.breathing
+        self.assertIsInstance(breath, QPropertyAnimation)
+        self.assertIs(breath.parent(), self.dot)
+        self.assertIs(breath.targetObject(), self.dot)
+        self.assertEqual(bytes(breath.propertyName()), b"breath")
+
+    def test_one_breath_takes_between_two_and_three_seconds(self):
+        self.assertEqual(self.dot.breathing.duration(),
+                         widgets.DOT_BREATH_MS)
+        self.assertGreaterEqual(widgets.DOT_BREATH_MS, 2000)
+        self.assertLessEqual(widgets.DOT_BREATH_MS, 3000)
+
+    def test_it_moves_between_nought_point_six_five_and_one(self):
+        breath = self.dot.breathing
+        self.assertEqual(widgets.DOT_BREATH_DIM, 0.65)
+        self.assertEqual(widgets.DOT_BREATH_FULL, 1.0)
+        self.assertEqual(breath.startValue(), widgets.DOT_BREATH_DIM)
+        self.assertEqual(breath.endValue(), widgets.DOT_BREATH_DIM)
+        self.assertEqual(breath.keyValueAt(0.5), widgets.DOT_BREATH_FULL)
+
+    def test_it_eases_in_and_out_rather_than_running_at_one_speed(self):
+        self.assertEqual(self.dot.breathing.easingCurve().type(),
+                         QEasingCurve.Type.InOutSine)
+
+    def test_the_connected_dot_breathes_continuously(self):
+        self.assertFalse(self.dot.is_breathing())
+        self.dot.set_breathing(True)
+        self.assertTrue(self.dot.is_breathing())
+        # The only animation in the pass that loops. Everything else is one
+        # event and one run.
+        self.assertEqual(self.dot.breathing.loopCount(), -1)
+
+    def test_a_dot_that_stops_breathing_settles_at_full_opacity(self):
+        self.dot.set_breathing(True)
+        self.dot.set_breath(widgets.DOT_BREATH_DIM)
+        self.dot.set_breathing(False)
+        self.assertFalse(self.dot.is_breathing())
+        self.assertEqual(self.dot.breath, widgets.DOT_BREATH_FULL)
+
+    def test_being_told_twice_over_does_not_restart_it(self):
+        self.dot.set_breathing(True)
+        started = self.dot.breathing.currentTime()
+        self.dot.breathing.setCurrentTime(started + 400)
+        self.dot.set_breathing(True)
+        self.assertGreaterEqual(self.dot.breathing.currentTime(),
+                                started + 400)
+
+    def test_the_colour_is_still_the_only_thing_the_caller_sets(self):
+        # The breath is opacity and nothing else: no halo of its own and no
+        # size change, so the word beside the dot does not move.
+        self.dot.set_colour("#2e7d32")
+        self.assertEqual(self.dot.size(), widgets.StatusDot().size())
+
+
+class TheCardsLiftOnHover(unittest.TestCase):
+    """Two pixels and a border. No growing, and nothing that overshoots."""
+
+    def setUp(self):
+        self.theme = AppTheme("light")
+        self.card = widgets.ToolCard("dummy", "Dummy tool", "A blurb.", "DY",
+                                     self.theme, badge="Beta",
+                                     note="Reads only.")
+        self.addCleanup(self.card.deleteLater)
+
+    def test_the_lift_is_owned_by_the_card_it_belongs_to(self):
+        lift = self.card.lift_animation
+        self.assertIsInstance(lift, QPropertyAnimation)
+        self.assertIs(lift.parent(), self.card)
+        self.assertIs(lift.targetObject(), self.card)
+        self.assertEqual(bytes(lift.propertyName()), b"lift")
+
+    def test_it_takes_between_a_hundred_and_twenty_and_a_hundred_and_sixty(
+            self):
+        self.assertEqual(self.card.lift_animation.duration(),
+                         widgets.ToolCard.LIFT_MS)
+        self.assertGreaterEqual(widgets.ToolCard.LIFT_MS, 120)
+        self.assertLessEqual(widgets.ToolCard.LIFT_MS, 160)
+
+    def test_the_card_rises_by_two_pixels_and_does_not_scale(self):
+        self.assertEqual(widgets.ToolCard.LIFT_PIXELS, 2)
+        before = self.card.sizeHint()
+        hover(self.card, True)
+        self.card.set_lift(1.0)
+        self.assertEqual(self.card.sizeHint(), before)
+
+    def test_the_lift_runs_once_and_does_not_bounce(self):
+        lift = self.card.lift_animation
+        self.assertEqual(lift.loopCount(), 1)
+        # OutCubic arrives and stays. An easing with an overshoot in it turns
+        # a grid of twelve cards into a trampoline.
+        self.assertEqual(lift.easingCurve().type(), QEasingCurve.Type.OutCubic)
+
+    def test_the_pointer_arriving_and_leaving_runs_it_both_ways(self):
+        hover(self.card, True)
+        self.assertEqual(self.card.lift_animation.endValue(), 1.0)
+        self.assertEqual(self.card.lift_animation.state(),
+                         QAbstractAnimation.State.Running)
+        hover(self.card, False)
+        self.assertEqual(self.card.lift_animation.endValue(), 0.0)
+
+    def test_the_border_moves_towards_the_accent_as_the_card_comes_up(self):
+        colour = self.theme.colour
+        at_rest = widgets.mix(colour("border"), colour("accent"), 0.0)
+        raised = widgets.mix(colour("border"), colour("accent"), 1.0)
+        self.assertEqual(at_rest, colour("border"))
+        self.assertNotEqual(raised, at_rest)
+
+
+class ThePillsAnswerThePointer(unittest.TestCase):
+    """A warning or a beta pill that sits at one colour reads as a picture."""
+
+    def setUp(self):
+        self.theme = AppTheme("light")
+        self.pill = widgets.PillBadge("Beta", self.theme)
+        self.addCleanup(self.pill.deleteLater)
+
+    def test_the_hover_is_owned_by_the_pill_it_belongs_to(self):
+        hovering = self.pill.hover_animation
+        self.assertIsInstance(hovering, QPropertyAnimation)
+        self.assertIs(hovering.parent(), self.pill)
+        self.assertIs(hovering.targetObject(), self.pill)
+        self.assertEqual(bytes(hovering.propertyName()), b"hover")
+
+    def test_it_runs_once_at_the_same_speed_as_a_card(self):
+        self.assertEqual(self.pill.hover_animation.duration(),
+                         widgets.PILL_HOVER_MS)
+        self.assertEqual(widgets.PILL_HOVER_MS, widgets.ToolCard.LIFT_MS)
+        self.assertEqual(self.pill.hover_animation.loopCount(), 1)
+
+    def test_the_pointer_arriving_and_leaving_runs_it_both_ways(self):
+        hover(self.pill, True)
+        self.assertEqual(self.pill.hover_animation.endValue(), 1.0)
+        hover(self.pill, False)
+        self.assertEqual(self.pill.hover_animation.endValue(), 0.0)
+
+    def test_the_border_and_the_fill_move_and_the_word_does_not(self):
+        at_rest = widgets.pill_colours(self.theme, "warn", 0.0)
+        raised = widgets.pill_colours(self.theme, "warn", 1.0)
+        self.assertNotEqual(raised[0], at_rest[0])
+        self.assertNotEqual(raised[2], at_rest[2])
+        # The word keeps the colour its contrast was checked at.
+        self.assertEqual(raised[1], at_rest[1])
+        self.assertEqual(at_rest[1], self.theme.colour("warn"))
+
+    def test_the_pill_redraws_itself_as_the_hover_moves(self):
+        at_rest = self.pill.styleSheet()
+        self.pill.set_hover(1.0)
+        self.assertNotEqual(self.pill.styleSheet(), at_rest)
+        self.pill.set_hover(0.0)
+        self.assertEqual(self.pill.styleSheet(), at_rest)
+
+    def test_a_card_that_writes_the_pill_s_rule_says_it_again(self):
+        # A rule naming the card beats one the pill sets on itself, so a pill
+        # inside a ComingSoonCard would animate and show nothing without this.
+        card = widgets.ComingSoonCard("soon", "Soon", "A blurb.", "Talk",
+                                      "https://example.invalid", self.theme,
+                                      badge="Planned")
+        self.addCleanup(card.deleteLater)
+        at_rest = card.styleSheet()
+        card._pill.set_hover(1.0)
+        self.assertNotEqual(card.styleSheet(), at_rest)
+
+
+class ThePanelSweepsOnceWhenSomethingFinishes(unittest.TestCase):
+    """One event, one animation, then static.
+
+    The sweep marks the two moments something was waited for: a console
+    answering, and an upload the console has confirmed. It runs once and stops,
+    because a panel that keeps moving while somebody reads it is worse than one
+    that never moved.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        cls.application = QApplication.instance() or QApplication([])
+
+    def window(self):
+        from ps3tools.shell import app as shell_app
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        services = Services(ConnectionState(""), AppTheme("light"), {})
+        window = shell_app.MainWindow(services)
+        window.pages.animations_enabled = False
+        self.addCleanup(window.deleteLater)
+        return window
+
+    def test_the_sweep_runs_once_and_stops(self):
+        window = self.window()
+        self.assertEqual(window._status_sweep.loopCount(), 1)
+        self.assertEqual(window._status_sweep.duration(), window.SWEEP_MS)
+
+    def test_it_is_owned_by_the_panel_it_paints(self):
+        """A loose animation outliving its widget is a crash on the way out."""
+        window = self.window()
+        self.assertIs(window._status_sweep.parent(), window.status_bar)
+
+    def test_an_event_sweeps_the_panel(self):
+        window = self.window()
+        window._status_sweep.stop()
+        window.note_event("Patched Black Ops 1")
+        self.assertEqual(window._status_sweep.state(),
+                         QAbstractAnimation.State.Running)
+
+    def test_clearing_the_line_does_not_sweep(self):
+        window = self.window()
+        window._status_sweep.stop()
+        window.note_event("")
+        self.assertNotEqual(window._status_sweep.state(),
+                            QAbstractAnimation.State.Running)
+
+    def test_the_theme_button_animates_when_the_theme_changes(self):
+        window = self.window()
+        window._paint_theme_button()
+        spin = getattr(window, "_theme_spin", None)
+        self.assertIsNotNone(spin)
+        self.assertEqual(spin.duration(), window.THEME_SPIN_MS)
+        self.assertEqual(spin.loopCount(), 1)
+        self.assertIs(spin.parent(), window.theme_button)

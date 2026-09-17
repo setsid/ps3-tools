@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QAbstractAnimation, QPropertyAnimation
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
@@ -944,6 +945,10 @@ class StatsStripTests(StatsCase):
         self.connection.set_connection("unreachable", "gone")
         self.settle()
         self.assertEqual(self.strip.fields(), ())
+        # The figures go the moment the console does; the strip itself stays
+        # up for the length of its fade and then goes. Cut the fade short
+        # rather than waiting a sixth of a second of real time out.
+        self.strip.finish_animations()
         self.assertFalse(self.strip.isVisibleTo(self.launcher))
 
     def test_a_console_that_says_nothing_useful_shows_nothing_at_all(self):
@@ -1216,6 +1221,184 @@ class NothingReachesTheNetworkTests(StatsCase):
         self.assertEqual(NoRealProbe.constructed, [])
 
 
+
+
+class TheFiguresChangeGently(StatsCase):
+    """A number being replaced under somebody who is reading it.
+
+    None of this is on the path of a reading. The figure the console reported
+    is what the strip holds from the moment the fade reaches its trough, and
+    every one of these can be cut short without changing what is on the strip.
+    """
+
+    def make_stat(self, key="cpu", value="61 \u00b0C", token="ok"):
+        stat = consolestats._Stat(key, key.upper(), value, token, self.theme,
+                                  self.host)
+        self.addCleanup(stat.deleteLater)
+        return stat
+
+    def test_a_figure_owns_the_two_animations_that_change_it(self):
+        stat = self.make_stat()
+        for animation in (stat.fade_animation, stat.flash_animation):
+            self.assertIsInstance(animation, QPropertyAnimation)
+            self.assertIs(animation.parent(), stat)
+            self.assertIs(animation.targetObject(), stat)
+        self.assertEqual(bytes(stat.fade_animation.propertyName()), b"fade")
+        self.assertEqual(bytes(stat.flash_animation.propertyName()), b"flash")
+
+    def test_a_value_fades_over_about_a_tenth_of_a_second(self):
+        stat = self.make_stat()
+        self.assertEqual(consolestats.VALUE_FADE_MS, 100)
+        self.assertEqual(stat.fade_animation.duration(),
+                         consolestats.VALUE_FADE_MS)
+        self.assertEqual(stat.fade_animation.startValue(), 1.0)
+        self.assertEqual(stat.fade_animation.endValue(), 1.0)
+        self.assertEqual(stat.fade_animation.keyValueAt(0.5),
+                         consolestats.VALUE_FADE_FLOOR)
+
+    def test_neither_of_them_loops(self):
+        stat = self.make_stat()
+        self.assertEqual(stat.fade_animation.loopCount(), 1)
+        self.assertEqual(stat.flash_animation.loopCount(), 1)
+
+    def test_the_new_number_arrives_at_the_bottom_of_the_fade(self):
+        stat = self.make_stat()
+        self.assertTrue(stat.set_value("64 \u00b0C", "ok"))
+        # Still the old one on the way down, so neither number is ever
+        # missing and no digits roll.
+        self.assertEqual(stat.value.text(), "61 \u00b0C")
+        stat.fade_animation.setCurrentTime(consolestats.VALUE_FADE_MS // 2)
+        self.assertEqual(stat.value.text(), "64 \u00b0C")
+        stat.finish_animations()
+        self.assertEqual(stat.get_fade(), 1.0)
+        self.assertEqual(stat.accessibleName(), "CPU 64 \u00b0C")
+
+    def test_a_reading_that_did_not_move_is_not_animated_at_all(self):
+        stat = self.make_stat()
+        self.assertFalse(stat.set_value("61 \u00b0C", "ok"))
+        self.assertEqual(stat.fade_animation.state(),
+                         QAbstractAnimation.State.Stopped)
+
+    def test_a_temperature_brightens_and_a_fan_speed_does_not(self):
+        self.assertEqual(consolestats.FLASH_KEYS, ("cpu", "rsx"))
+        warm = self.make_stat("cpu")
+        warm.set_value("64 \u00b0C", "ok")
+        self.assertEqual(warm.flash_animation.state(),
+                         QAbstractAnimation.State.Running)
+        fan = self.make_stat("fan", "41%", "text")
+        fan.set_value("52%", "text")
+        self.assertEqual(fan.flash_animation.state(),
+                         QAbstractAnimation.State.Stopped)
+
+    def test_the_brightening_settles_back_onto_the_token_s_own_colour(self):
+        stat = self.make_stat()
+        settled = stat.value.styleSheet()
+        stat.set_flash(1.0)
+        self.assertNotEqual(stat.value.styleSheet(), settled)
+        stat.set_value("64 \u00b0C", "ok")
+        stat.finish_animations()
+        self.assertEqual(stat.get_flash(), 0.0)
+        self.assertEqual(stat.value.styleSheet(), settled)
+        self.assertEqual(stat.value_colour(), self.theme.colour("ok"))
+
+    def test_the_brightening_is_short_and_runs_the_once(self):
+        stat = self.make_stat()
+        self.assertEqual(stat.flash_animation.duration(),
+                         consolestats.FLASH_MS)
+        self.assertLess(consolestats.FLASH_MS, 1000)
+        self.assertEqual(stat.flash_animation.startValue(), 0.0)
+        self.assertEqual(stat.flash_animation.endValue(), 0.0)
+        self.assertEqual(stat.flash_animation.keyValueAt(0.2), 1.0)
+
+
+class TheStripComesAndGoes(StatsCase):
+    """The strip fading and sliding, which never holds a connection up."""
+
+    def strip_with(self, bodies):
+        strip = consolestats.ConsoleStats(self.services, self.host,
+                                          probe_factory=Canned(bodies))
+        self.addCleanup(strip.deleteLater)
+        return strip
+
+    def connected_strip(self, bodies=None):
+        strip = self.strip_with(
+            bodies or {"/": "", "/cpursx.ps3": CPURSX_HOT})
+        self.connection.set_host("127.0.0.1:1")
+        self.connection.set_connection("connected", "")
+        self.settle()
+        return strip
+
+    def test_the_strip_owns_the_animation_that_brings_it_in_and_out(self):
+        strip = self.strip_with({})
+        arriving = strip.presence_animation
+        self.assertIsInstance(arriving, QPropertyAnimation)
+        self.assertIs(arriving.parent(), strip)
+        self.assertIs(arriving.targetObject(), strip)
+        self.assertEqual(bytes(arriving.propertyName()), b"presence")
+        self.assertEqual(arriving.loopCount(), 1)
+
+    def test_the_telemetry_returns_over_a_hundred_and_fifty_to_two_hundred(
+            self):
+        self.assertGreaterEqual(consolestats.STRIP_IN_MS, 150)
+        self.assertLessEqual(consolestats.STRIP_IN_MS, 200)
+
+    def test_a_console_arriving_fades_the_strip_in_from_nothing(self):
+        strip = self.connected_strip()
+        arriving = strip.presence_animation
+        self.assertEqual(arriving.duration(), consolestats.STRIP_IN_MS)
+        self.assertEqual(arriving.startValue(), 0.0)
+        self.assertEqual(arriving.endValue(), 1.0)
+        self.assertTrue(strip.isVisibleTo(self.host))
+        strip.finish_animations()
+        self.assertEqual(strip.get_presence(), 1.0)
+
+    def test_a_console_going_away_fades_the_strip_out_and_then_hides_it(self):
+        strip = self.connected_strip()
+        strip.finish_animations()
+        self.connection.set_connection("unreachable", "gone")
+        self.settle()
+        arriving = strip.presence_animation
+        self.assertEqual(arriving.duration(), consolestats.STRIP_OUT_MS)
+        self.assertEqual(arriving.endValue(), 0.0)
+        # Still up while it is going, because Qt cannot draw a widget that is
+        # not visible. It goes when the fade is over and not before.
+        self.assertTrue(strip.isVisibleTo(self.host))
+        strip.finish_animations()
+        self.assertFalse(strip.isVisibleTo(self.host))
+
+    def test_the_figures_go_the_moment_the_console_does(self):
+        # The proof that the fade is cosmetic. Nothing waits on it.
+        strip = self.connected_strip()
+        strip.finish_animations()
+        self.assertTrue(strip.fields())
+        self.connection.set_connection("unreachable", "gone")
+        self.settle()
+        self.assertEqual(strip.fields(), ())
+
+    def test_the_slide_comes_out_of_the_strip_s_own_margins(self):
+        strip = self.strip_with({})
+        at_rest = strip._row.getContentsMargins()
+        strip.set_presence(0.0)
+        moved = strip._row.getContentsMargins()
+        self.assertEqual(moved[1] - at_rest[1], consolestats.STRIP_SLIDE_PX)
+        self.assertEqual(at_rest[3] - moved[3], consolestats.STRIP_SLIDE_PX)
+        # The height does not change, so nothing below the strip moves.
+        self.assertEqual(sum(moved), sum(at_rest))
+        strip.set_presence(1.0)
+        self.assertEqual(strip._row.getContentsMargins(), at_rest)
+
+    def test_a_fresh_reading_keeps_the_rows_it_is_fading_between(self):
+        strip = self.connected_strip()
+        strip.finish_animations()
+        was = strip.stat("cpu")
+        strip._probe_factory = Canned(
+            {"/": "", "/cpursx.ps3": CPURSX_HOT.replace("84", "86")})
+        strip.refresh()
+        self.settle()
+        # The same widget, or there would be no old number to fade away from.
+        self.assertIs(strip.stat("cpu"), was)
+        strip.finish_animations()
+        self.assertEqual(strip.stat("cpu").value.text(), "86 \u00b0C")
 
 
 class TheDiscordLink(LauncherCase):

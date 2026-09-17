@@ -25,16 +25,20 @@ Read only throughout: HttpProbe, whose allowlist is the thing that makes that
 true, and the two pages the diagnostics collector already reads.
 """
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import (QAbstractAnimation, QEasingCurve,
+                            QPropertyAnimation, QSize, Property, Qt,
+                            Signal)
 from PySide6.QtGui import QColor, QPainter, QPainterPath
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QWidget)
+from PySide6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel,
+                               QPushButton, QSizePolicy, QWidget)
 
-from ps3diag.parsers import html_to_text, parse_cpursx, parse_identity
+from ps3diag.parsers import (html_to_text, human_size, parse_cpursx,
+                            parse_identity, parse_storage)
 from ps3diag.transport import HttpProbe
 
+from ..updates import free_bytes_for
 from . import icons
-from .widgets import IconLabel
+from .widgets import IconLabel, mix
 
 #: The two pages the figures come off. Both are on the transport's read-only
 #: allowlist, and both are already fetched by the diagnostics collector, so
@@ -52,6 +56,41 @@ TIMEOUT = 5.0
 #: eighty is the point at which the console itself starts to mind.
 WARM_C = 70.0
 HOT_C = 80.0
+
+#: How long a figure takes to change: out of the old number and into the new
+#: one, the whole of it. Short on purpose. This is a value being replaced in
+#: front of somebody who is reading it, and a slow fade reads as the strip
+#: having gone wrong rather than as a fresh reading arriving.
+VALUE_FADE_MS = 100
+
+#: How faint the value gets at the bottom of that fade. Not all the way to
+#: nothing: a number that disappears completely, even for a twentieth of a
+#: second, reads as the console having stopped answering.
+VALUE_FADE_FLOOR = 0.15
+
+#: The keys that get the brightening as well as the fade, and how long it
+#: lasts. Temperatures only. They are the two figures on the strip that are
+#: ever a reason to stop what you are doing, and a fan speed that flashed
+#: every time it moved a percent would teach everybody to ignore the flash.
+FLASH_KEYS = ("cpu", "rsx")
+FLASH_MS = 320
+
+#: How far towards the theme's strongest ink a flashed figure travels. Towards
+#: `text` rather than towards white: in the light theme white is the page, and
+#: a number that brightens into the page disappears instead of catching the
+#: eye. Towards the full text colour it reads as emphasis in both themes.
+FLASH_STRENGTH = 0.55
+
+#: The strip arriving and leaving. In is the hundred and fifty to two hundred
+#: that was asked for; out is shorter, because a strip on its way out is
+#: describing a console that has already gone.
+STRIP_IN_MS = 180
+STRIP_OUT_MS = 150
+
+#: How far the row travels as the strip comes and goes. Taken out of the
+#: strip's own top and bottom margins, one against the other, so the contents
+#: slide without the strip changing height and shoving the page below it.
+STRIP_SLIDE_PX = 6
 
 
 def make_probe(host, timeout=TIMEOUT):
@@ -87,7 +126,50 @@ def read_console(host, probe_factory=None, cancelled=lambda: False):
     text = "\n".join(parts)
     facts = dict(parse_identity(text))
     facts.update(parse_cpursx(text))
+    # The mounted devices come off the same text rather than a second fetch.
+    # The storage collector's own parser, so there is one answer in this
+    # program to how much room a console has left.
+    facts["devices"] = parse_storage(text)
     return facts
+
+
+def free_space_text(facts, device="dev_hdd0"):
+    """How much room is left on the console's drive, or "".
+
+    free_bytes_for is the same reader the downloads use, and human_size is how
+    every other size in this program is written, so the figure on the bar and
+    the figure in a refusal to download cannot drift apart.
+
+    A console that did not report its free space gets "", which the bar draws
+    as nothing at all. None is not zero.
+    """
+    free = free_bytes_for((facts or {}).get("devices"), device)
+    if free is None:
+        return ""
+    return f"{human_size(free)} free"
+
+
+def firmware_text(facts):
+    """What the console is running, in two or three words, or "".
+
+    Read from the console rather than asked, so "" is the honest answer for a
+    console that did not say and the word unknown is never shown: a guess here
+    is worse than a gap, because the firmware decides what this program is
+    allowed to write.
+    """
+    facts = facts or {}
+    kind = (facts.get("firmware_kind") or "").strip().lower()
+    version = (facts.get("firmware_version") or "").strip()
+    if kind == "hen":
+        # HEN's own version when the page gave it, because that is the number
+        # somebody is asked for; the firmware version otherwise.
+        return f"HEN {(facts.get('hen_version') or version).strip()}".strip()
+    if kind == "cfw":
+        cobra = (facts.get("cobra_version") or "").strip()
+        return f"CFW Cobra {cobra}" if cobra else f"CFW {version}".strip()
+    if kind == "ofw":
+        return f"OFW {version}".strip()
+    return ""
 
 
 def _number(value):
@@ -210,8 +292,113 @@ class _Stat(QWidget):
         row.addWidget(self.caption)
         row.addWidget(self.value)
         self.setAccessibleName(f"{caption} {value}")
+        self._fade = 1.0
+        self._flash = 0.0
+        # The reading that is waiting for the fade to reach its trough.
+        self._pending = None
+        # Both animations are owned by the figure they belong to, so they die
+        # with it. The strip throws its rows away and builds new ones whenever
+        # a console reports a different set of fields, and an animation left
+        # ticking into a deleted label is a crash rather than a glitch.
+        self._fading = QPropertyAnimation(self, b"fade", self)
+        self._fading.setDuration(VALUE_FADE_MS)
+        self._fading.setEasingCurve(QEasingCurve.Type.InOutQuad)
+        self._fading.setStartValue(1.0)
+        self._fading.setKeyValueAt(0.5, VALUE_FADE_FLOOR)
+        self._fading.setEndValue(1.0)
+        self._fading.finished.connect(self._take_the_new_value)
+        self._flashing = QPropertyAnimation(self, b"flash", self)
+        self._flashing.setDuration(FLASH_MS)
+        self._flashing.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._flashing.setStartValue(0.0)
+        # Up quickly and down slowly. A temperature that brightened and dimmed
+        # at the same rate reads as a throb; this reads as a nudge.
+        self._flashing.setKeyValueAt(0.2, 1.0)
+        self._flashing.setEndValue(0.0)
         theme.changed.connect(self.apply_theme)
         self.apply_theme()
+
+    # -- the reading changing under somebody who is reading it
+
+    @property
+    def fade_animation(self):
+        """The crossfade itself, for a test that wants to read it."""
+        return self._fading
+
+    @property
+    def flash_animation(self):
+        """The brightening itself, for a test that wants to read it."""
+        return self._flashing
+
+    def set_value(self, value, token):
+        """A new reading for a figure that is already on the strip.
+
+        Faded rather than swapped, and returns True when anything moved. The
+        strip calls this instead of building a fresh row, because a label that
+        has just been created has no old value to fade away from.
+
+        Nothing waits on this. The reading has already arrived by the time it
+        is called, and the figure the console reported is what `fields` says
+        from the moment the fade reaches its trough.
+        """
+        if value == self.value.text() and token == self.token:
+            return False
+        self._pending = (value, token)
+        self._fading.stop()
+        self._fading.start()
+        # Temperatures only, and never the first time a figure is drawn: the
+        # flash says this number has moved, and everything moves on the first
+        # reading.
+        if self.key in FLASH_KEYS:
+            self._flashing.stop()
+            self._flashing.start()
+        return True
+
+    def finish_animations(self):
+        """Jump to where the animations were going. For tests, and teardown.
+
+        A test must not have to wait real time out to see where a figure
+        ended up, and nothing functional is on the far side of one of these.
+        """
+        for animation in (self._fading, self._flashing):
+            if animation.state() == QAbstractAnimation.State.Running:
+                animation.setCurrentTime(animation.duration())
+        self._take_the_new_value()
+
+    def _take_the_new_value(self):
+        if self._pending is None:
+            return
+        value, token = self._pending
+        self._pending = None
+        self.token = token
+        self.value.setText(value)
+        self.setAccessibleName(f"{self.caption.text()} {value}")
+        self.apply_theme()
+
+    def get_fade(self):
+        return self._fade
+
+    def set_fade(self, value):
+        self._fade = float(value)
+        # The swap happens at the bottom of the fade rather than at the top of
+        # it, so the old number is at its faintest when it is replaced and
+        # neither number is ever missing.
+        if (self._pending is not None
+                and self._fading.currentTime() * 2 >= self._fading.duration()):
+            self._take_the_new_value()
+            return
+        self.apply_theme()
+
+    fade = Property(float, get_fade, set_fade)
+
+    def get_flash(self):
+        return self._flash
+
+    def set_flash(self, value):
+        self._flash = float(value)
+        self.apply_theme()
+
+    flash = Property(float, get_flash, set_flash)
 
     def apply_theme(self):
         """Colour is never named here, only asked for.
@@ -223,10 +410,32 @@ class _Stat(QWidget):
         self.caption.setStyleSheet(
             f"color: {self._theme.colour('text_dim')};")
         self.value.setStyleSheet(
-            f"color: {self._theme.colour(self.token)}; font-weight: 600;")
+            f"color: {self._value_ink()}; font-weight: 600;")
+
+    def _value_ink(self):
+        """What the value is drawn in right now, animations and all.
+
+        At rest this is the token's own colour and nothing more, so a settled
+        strip is drawn in exactly what the theme says and the contrast figures
+        that were checked against the palette are the ones on screen.
+        """
+        colour = self._theme.colour(self.token)
+        if self._flash > 0.0:
+            colour = mix(colour, self._theme.colour("text"),
+                         FLASH_STRENGTH * self._flash)
+        if self._fade >= 1.0:
+            return colour
+        ink = QColor(colour)
+        return (f"rgba({ink.red()}, {ink.green()}, {ink.blue()},"
+                f" {max(0.0, min(1.0, self._fade)):.3f})")
 
     def value_colour(self):
-        """What the value is actually drawn in. For tests, and for review."""
+        """What the value settles at. For tests, and for review.
+
+        The settled colour rather than the flashed one: the flash is a couple
+        of hundred milliseconds of emphasis, and the question this answers is
+        which band a temperature is in.
+        """
         return self._theme.colour(self.token)
 
 
@@ -283,12 +492,100 @@ class ConsoleStats(QWidget):
         self._refresh.clicked.connect(self.refresh)
         self._row.addWidget(self._refresh, 0, Qt.AlignmentFlag.AlignVCenter)
 
+        # How far the strip is here: nought is gone, one is fully arrived. The
+        # fade wants a graphics effect because the figures are real widgets
+        # and a painter's opacity does not reach a child; the slide comes out
+        # of the row's own margins, which is why it does not move the page.
+        self._presence = 1.0
+        # The row's resting margins, read rather than written again here, so
+        # that moving the strip's padding does not silently move the slide.
+        self._row_margins = self._row.getContentsMargins()
+        self._fade_effect = QGraphicsOpacityEffect(self)
+        self._fade_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._fade_effect)
+        # Owned by the strip, in the same way the launcher owns its resync
+        # timer: a singleShot left over from a widget that has gone is a crash
+        # on shutdown rather than a dropped frame.
+        self._arriving = QPropertyAnimation(self, b"presence", self)
+        self._arriving.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._arriving.setDuration(STRIP_IN_MS)
+        self._arriving.finished.connect(self._settled)
+
         self._theme.changed.connect(self._apply_theme)
         self._connection.changed.connect(self._connection_changed)
         self._apply_theme()
         # Absent, not empty, and absent is also how it starts: constructing the
         # home screen must not put a request on the wire.
         self.setVisible(False)
+
+    # -- coming and going
+
+    @property
+    def presence_animation(self):
+        """The arrive and leave animation, for a test that wants to read it."""
+        return self._arriving
+
+    def get_presence(self):
+        return self._presence
+
+    def set_presence(self, value):
+        self._presence = float(value)
+        self._fade_effect.setOpacity(max(0.0, min(1.0, self._presence)))
+        # Down and out, up and in. The two margins move against each other so
+        # the strip keeps its height while its contents travel.
+        drop = round(STRIP_SLIDE_PX * (1.0 - self._presence))
+        left, top, right, bottom = self._row_margins
+        self._row.setContentsMargins(left, top + drop, right, bottom - drop)
+
+    presence = Property(float, get_presence, set_presence)
+
+    def finish_animations(self):
+        """Jump every animation to its end. For tests, and for a teardown.
+
+        A test must not have to wait a fifth of a second of real time to see
+        where the strip ended up. Nothing functional is on the far side of one
+        of these, so cutting them short changes only what is on the screen.
+        """
+        if self._arriving.state() == QAbstractAnimation.State.Running:
+            self._arriving.setCurrentTime(self._arriving.duration())
+        for stat in self._stats:
+            stat.finish_animations()
+
+    def _settled(self):
+        # Only the leaving end hides. Qt cannot draw a widget that is not
+        # visible, so the widget stays up for as long as the fade does and
+        # goes when it is over. Nothing is waiting on that: the connection
+        # changed state before this was called, and `visibility_changed` has
+        # already told the home screen to close the gap.
+        if self._presence <= 0.0:
+            self.setVisible(False)
+
+    def _arrive_or_leave(self, showing):
+        """Fade and slide in, or fade and slide out.
+
+        Called after the strip has finished deciding what it says, so it can
+        never hold a reading up. A strip already in the state it is asked for
+        does nothing at all.
+        """
+        self._arriving.stop()
+        if showing:
+            if self.isVisible() and self._presence >= 1.0:
+                return
+            if not self.isVisible():
+                self.set_presence(0.0)
+                self.setVisible(True)
+            self._arriving.setDuration(STRIP_IN_MS)
+            self._arriving.setStartValue(self._presence)
+            self._arriving.setEndValue(1.0)
+            self._arriving.start()
+            return
+        if not self.isVisible():
+            self.set_presence(0.0)
+            return
+        self._arriving.setDuration(STRIP_OUT_MS)
+        self._arriving.setStartValue(self._presence)
+        self._arriving.setEndValue(0.0)
+        self._arriving.start()
 
     # -- what the launcher and the tests ask it
 
@@ -403,6 +700,19 @@ class ConsoleStats(QWidget):
     # -- drawing
 
     def _draw(self):
+        found = read_fields(self._facts)
+        if self._same_figures(found):
+            # The same fields with new numbers in them, so the rows stay and
+            # take the new values. Rebuilding them is what a change looked
+            # like before: a label that has just been created has no old value
+            # to fade away from.
+            for stat, (_key, _label, value, token) in zip(self._stats, found):
+                stat.set_value(value, token)
+            self.setToolTip(self._summary())
+            self.updateGeometry()
+            self.visibility_changed.emit(True)
+            return
+
         for stat in self._stats:
             self._row.removeWidget(stat)
             stat.hide()
@@ -415,7 +725,6 @@ class ConsoleStats(QWidget):
             rule.deleteLater()
         self._stats = []
 
-        found = read_fields(self._facts)
         for index, (key, label, value, token) in enumerate(found):
             if index:
                 rule = _Rule(self._theme, self)
@@ -430,9 +739,16 @@ class ConsoleStats(QWidget):
 
         self.setToolTip(self._summary())
         showing = bool(found)
-        self.setVisible(showing)
+        self._arrive_or_leave(showing)
         self.updateGeometry()
         self.visibility_changed.emit(showing)
+
+    def _same_figures(self, found):
+        """Whether the row on screen holds exactly these fields, in order."""
+        if not found or not self._stats:
+            return False
+        return ([stat.key for stat in self._stats]
+                == [key for key, _label, _value, _token in found])
 
     def _summary(self):
         """The couple of things worth knowing that are not worth a column.

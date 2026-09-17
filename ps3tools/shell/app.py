@@ -26,7 +26,8 @@ import time
 
 from PySide6.QtCore import (QByteArray, QEasingCurve, QParallelAnimationGroup,
                             QPoint, QPointF, QPropertyAnimation, QRectF, QSize,
-                            Property, Qt, QTimer, QUrl, Signal)
+                            QVariantAnimation, Property, Qt, QTimer, QUrl,
+                            Signal)
 from PySide6.QtGui import (QAction, QActionGroup, QColor, QDesktopServices,
                            QFont, QGuiApplication, QIcon, QImage, QPainter,
                            QPainterPath, QPen, QPixmap)
@@ -45,7 +46,7 @@ from ps3diag.parsers import SIGNATURE_THRESHOLD, looks_like_webman, \
 from ps3diag.transport import HttpProbe, tcp_open
 
 from .. import APP_NAME, FULL_NAME, PROJECT_URL, VENDOR, VERSION, crashreport
-from . import icons, registry, widgets
+from . import consolestats, icons, registry, widgets
 from .launcher import Launcher
 from .screen import ConnectionState, Services
 from .theme import AppTheme, menu_palette, qt_palette, stylesheet
@@ -922,6 +923,34 @@ class FirstRunDialog(QDialog):
         timer.start(self.LINGER_MS)
 
 
+#: Between the event and how long ago it was. The line is two facts about
+#: one thing rather than a sentence, so it is punctuated as a list.
+EVENT_SEPARATOR = "\u00b7"
+
+#: How often the "4 min ago" on the bar is rewritten. Nothing is fetched on
+#: this tick: it relabels one line and stops.
+AGO_TICK_MS = 30000
+
+
+def relative_time(seconds):
+    """How long ago, in the fewest words that are still true.
+
+    Rounded down, so "4 min ago" is never said of something that happened
+    three and a half minutes ago.
+    """
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return "just now"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes} min ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours} hr ago"
+    days = hours // 24
+    return "1 day ago" if days == 1 else f"{days} days ago"
+
+
 class ConnectionBar(QWidget):
     """The console's address, entered once and shared by every screen.
 
@@ -1003,6 +1032,30 @@ class ConnectionBar(QWidget):
 
         row.addStretch(1)
 
+        # The right-hand side: what this console is running, how much room it
+        # has left, and the last thing that finished. Each one is drawn only
+        # once there is something to draw, so a console that has not answered
+        # leaves this side of the bar empty rather than full of gaps.
+        self._firmware_label = QLabel("", self)
+        self._firmware_label.setObjectName("dim")
+        self._firmware_label.setAccessibleName("Console firmware")
+        self._firmware_label.setVisible(False)
+        row.addWidget(self._firmware_label)
+
+        self._free_label = QLabel("", self)
+        self._free_label.setObjectName("dim")
+        self._free_label.setAccessibleName("Free space on the console")
+        self._free_label.setVisible(False)
+        row.addWidget(self._free_label)
+
+        self._event_label = QLabel("", self)
+        self._event_label.setObjectName("dim")
+        self._event_label.setAccessibleName("The last thing that happened")
+        self._event_label.setAlignment(Qt.AlignmentFlag.AlignRight
+                                       | Qt.AlignmentFlag.AlignVCenter)
+        self._event_label.setVisible(False)
+        row.addWidget(self._event_label)
+
         # The detail is where "check the PS3 is switched on" lives, so it gets
         # a line of its own rather than being elided into uselessness beside
         # everything else. The bar is only that tall when there is something
@@ -1033,6 +1086,18 @@ class ConnectionBar(QWidget):
         self.scan_fetch = None
         self._scan_task = None
         self._scan_networks = ""
+
+        # The right-hand side's state. Nothing is read on the way up: the
+        # bar asks a console only once that console has answered a check.
+        self._console_host = ""
+        self._console_facts = {}
+        self._event = ""
+        self._event_at = 0.0
+        # Owned by the bar so it dies with it. It is the only repeating timer
+        # here and it puts nothing on the wire; see tick().
+        self._ago_timer = QTimer(self)
+        self._ago_timer.setInterval(AGO_TICK_MS)
+        self._ago_timer.timeout.connect(self.tick)
 
         self._connection.changed.connect(self._refresh)
         self._theme.changed.connect(self._refresh)
@@ -1069,6 +1134,11 @@ class ConnectionBar(QWidget):
             "unknown", "Not connected. Press Find my PS3, or type an address "
                        "and press Check IP.")
         self._connection.set_scan("idle", "")
+        # The next thing anybody does here is type an address or press the
+        # button beside it, so the box is ready for them rather than waiting
+        # to be clicked.
+        self._address.setFocus(Qt.OtherFocusReason)
+        self._address.selectAll()
         return True
 
     def check(self):
@@ -1118,6 +1188,11 @@ class ConnectionBar(QWidget):
         if result["ok"] and looks_like_webman(result["body"]):
             self._connection.set_connection(
                 "connected", f"webMAN answered at {host}.")
+            # One of the two moments something was waited for. The window owns
+            # the panel, so the bar asks it rather than reaching for it.
+            window = self.window()
+            if hasattr(window, "sweep_status"):
+                window.sweep_status()
         elif result["ok"]:
             self._connection.set_connection(
                 "unreachable", NOT_WEBMAN.format(host=host))
@@ -1132,6 +1207,124 @@ class ConnectionBar(QWidget):
         self._connection.set_connection(
             "unreachable",
             f"The check could not be completed: {message}")
+
+    # -- what the console said, on the right of the bar
+    def note_event(self, text):
+        """Record the last thing that finished, for the line on the right.
+
+        The seam the rest of the window records events through, so that a
+        screen does not have to know where the line is drawn or how the
+        "4 min ago" on the end of it is worked out. An empty text clears it.
+        """
+        self._event = (text or "").strip()
+        self._event_at = time.monotonic()
+        if self._event:
+            self._ago_timer.start()
+        else:
+            self._ago_timer.stop()
+        self._paint_event()
+
+    def tick(self):
+        """Rewrite how long ago the event on the right was.
+
+        Nothing is fetched here and no console is touched. It exists so that a
+        window left open for an hour stops claiming something happened just
+        now, which is the only part of that line that goes stale by itself.
+        """
+        self._paint_event()
+
+    def event_text(self):
+        return self._event_label.text()
+
+    def firmware_text(self):
+        return self._firmware_label.text()
+
+    def free_text(self):
+        return self._free_label.text()
+
+    def _paint_event(self):
+        if not self._event:
+            self._event_label.setText("")
+            self._event_label.setVisible(False)
+            return
+        ago = relative_time(time.monotonic() - self._event_at)
+        self._event_label.setText(f"{self._event} {EVENT_SEPARATOR} {ago}")
+        self._event_label.setVisible(True)
+
+    def _sync_console(self):
+        """Ask a console that has just answered what it is, off the thread.
+
+        Asked once per console and never retried. The answer is worth two
+        short labels, and a console that will not give it is somebody's games
+        machine being asked the same question again for no gain. It runs after
+        the connection is already made, so nothing here can delay connecting.
+        """
+        host = self._connection.host if self._connection.connected else ""
+        if host == self._console_host:
+            return None
+        self._console_host = host
+        # Whatever is up describes the console that was there before.
+        self._console_facts = {}
+        self._paint_console()
+        if not host:
+            return None
+        if not self.isVisible():
+            # Nobody can see this bar, so nobody is waiting on these two
+            # labels, and the console on the other end is somebody's games
+            # machine. The reading is left owed until showEvent, which is the
+            # same rule the figures on the home screen follow and the same
+            # reason: several tests drive a window that was never shown as far
+            # as connected, using addresses that belong to real machines on
+            # this network.
+            self._console_host = ""
+            return None
+        read = self._read_console
+
+        def work(control):
+            if control.cancelled:
+                return None
+            return {"host": host, "facts": read(host) or {}}
+
+        task = self.services.submit(work)
+        # finished and nothing else. A failure leaves this side of the bar
+        # empty and says nothing: none of it is worth a word in front of
+        # somebody who has just got their console to answer.
+        task.finished.connect(self._console_read)
+        return task
+
+    def showEvent(self, event):
+        """Take a reading that was owed while there was nobody to see it."""
+        super().showEvent(event)
+        self._sync_console()
+
+    def _read_console(self, host):
+        """What the console says about itself. The seam; tests replace this.
+
+        Runs on a worker and never on the GUI thread. read_console is the same
+        reader the figures on the home screen come from, off the same two
+        pages, so this asks a console for nothing it is not asked elsewhere.
+        """
+        try:
+            return consolestats.read_console(host)
+        except Exception:                                   # noqa: BLE001
+            # A console that will not answer has said nothing, and nothing is
+            # exactly what this side of the bar then shows.
+            return {}
+
+    def _console_read(self, result):
+        if not result or result.get("host") != self._console_host:
+            # The address moved on while the worker was out.
+            return
+        self._console_facts = result.get("facts") or {}
+        self._paint_console()
+
+    def _paint_console(self):
+        firmware = consolestats.firmware_text(self._console_facts)
+        self._firmware_label.setText(firmware)
+        self._firmware_label.setVisible(bool(firmware))
+        free = consolestats.free_space_text(self._console_facts)
+        self._free_label.setText(free)
+        self._free_label.setVisible(bool(free))
 
     # -- the subnet search, which is a different question
     def _scan_targets(self):
@@ -1360,6 +1553,10 @@ class ConnectionBar(QWidget):
         word, token = CONNECTION_WORDS.get(state, ("Not checked", "text_dim"))
         colour = self._theme.colour(token)
         self._dot.set_colour(colour)
+        # It breathes while there is a console on the other end and is still
+        # while there is not, so the one moving thing on the bar means
+        # something rather than being decoration.
+        self._dot.set_breathing(state == "connected")
         self._state_label.setText(word)
         self._state_label.setStyleSheet(f"color: {colour};")
         detail = self._connection.connection_detail
@@ -1397,6 +1594,12 @@ class ConnectionBar(QWidget):
             blocked = self._address.blockSignals(True)
             self._address.setText(self._connection.host)
             self._address.blockSignals(blocked)
+
+        # The right-hand side follows the connection: a console that has just
+        # answered is asked what it is, and one that has gone takes its
+        # figures with it.
+        self._sync_console()
+        self._paint_event()
 
     # -- for tests and for the shell
     def state_text(self):
@@ -1739,7 +1942,8 @@ class MainWindow(QMainWindow):
         self.pages = PageHost(self)
         column.addWidget(self.pages, 1)
 
-        column.addWidget(self._build_status_bar())
+        self.status_bar = self._build_status_bar()
+        column.addWidget(self.status_bar)
 
         self.launcher = Launcher(self.theme, self)
         self.launcher.open_screen.connect(self.open_screen)
@@ -1888,6 +2092,26 @@ class MainWindow(QMainWindow):
         # so the stored choice still has to be written through.
         self._apply_theme()
 
+    #: One sweep of the status panel's top border, and then it goes static.
+    #: Long enough to be noticed on a glance away from the panel, short enough
+    #: that it is over before anybody looks for a way to stop it.
+    SWEEP_MS = 900
+
+    def sweep_status(self):
+        """One pass of light along the status panel's edge.
+
+        Called when a connection succeeds and when an upload finishes, which
+        are the two moments something was waited for. One event, one
+        animation: the sweep runs once and the panel is static again after
+        it, so nothing on screen moves while somebody is reading.
+        """
+        holder = getattr(self, "status_bar", None)
+        sweep = getattr(self, "_status_sweep", None)
+        if holder is None or sweep is None:
+            return
+        sweep.stop()
+        sweep.start()
+
     def _build_status_bar(self):
         holder = QWidget(self)
         holder.setObjectName("statusBar")
@@ -1895,6 +2119,18 @@ class MainWindow(QMainWindow):
         column = QVBoxLayout(holder)
         column.setContentsMargins(0, 0, 0, 0)
         column.setSpacing(0)
+
+        # Owned by the panel so it dies with it. A loose animation outliving
+        # the widget it paints is a crash on the way out.
+        self._sweep_position = 0.0
+        self._status_sweep = QVariantAnimation(holder)
+        self._status_sweep.setDuration(self.SWEEP_MS)
+        self._status_sweep.setStartValue(0.0)
+        self._status_sweep.setEndValue(1.0)
+        self._status_sweep.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._status_sweep.setLoopCount(1)
+        self._status_sweep.valueChanged.connect(self._on_sweep)
+        self._status_sweep.finished.connect(lambda: self._on_sweep(0.0))
 
         self.busy_bar = QProgressBar(holder)
         self.busy_bar.setRange(0, 0)
@@ -1930,6 +2166,16 @@ class MainWindow(QMainWindow):
         self._paint_status()
         self.update()
 
+    def _on_sweep(self, value):
+        """Paint the sweep. Position only: the panel keeps its own colours."""
+        self._sweep_position = float(value or 0.0)
+        holder = getattr(self, "status_bar", None)
+        if holder is not None:
+            holder.update()
+
+    #: Long enough to read as a turn rather than a flicker.
+    THEME_SPIN_MS = 260
+
     def _paint_theme_button(self):
         button = getattr(self, "theme_button", None)
         if button is None:
@@ -1937,6 +2183,30 @@ class MainWindow(QMainWindow):
         button.setIcon(icons.icon("theme", self.theme.colour("text"),
                                   size=18))
         button.setIconSize(QSize(18, 18))
+        self._spin_theme_button(button)
+
+    def _spin_theme_button(self, button):
+        """The icon eases out and back as the theme changes under it.
+
+        Owned by the button so it dies with it. The size is animated rather
+        than the icon rotated: rotating means repainting the pixmap every
+        frame, and this says the same thing for a fraction of the work.
+        """
+        spin = getattr(self, "_theme_spin", None)
+        if spin is None:
+            spin = QVariantAnimation(button)
+            spin.setDuration(self.THEME_SPIN_MS)
+            spin.setLoopCount(1)
+            spin.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            spin.setKeyValueAt(0.0, 18.0)
+            spin.setKeyValueAt(0.5, 12.0)
+            spin.setKeyValueAt(1.0, 18.0)
+            spin.valueChanged.connect(
+                lambda value: button.setIconSize(
+                    QSize(int(value), int(value))))
+            self._theme_spin = spin
+        spin.stop()
+        spin.start()
 
     def offer_to_find_console(self):
         """Ask for a console, once, on a start with no address saved.
@@ -2014,6 +2284,10 @@ class MainWindow(QMainWindow):
         # not on it; a screen without the signal is the normal case.
         if hasattr(screen, "request_tool"):
             screen.request_tool.connect(self._open_tool)
+        # Optional in the same way: a screen that knows when it has finished
+        # something worth remembering says so, and the bar shows the last one.
+        if hasattr(screen, "event_noted"):
+            screen.event_noted.connect(self.note_event)
         screen.hide()
         self._screens[key] = screen
         return screen
@@ -2131,6 +2405,20 @@ class MainWindow(QMainWindow):
         self._status = message or ""
         self._notice_timer.stop()
         self._paint_status()
+
+    def note_event(self, text):
+        """Record something that has just finished, for the connection bar.
+
+        The one place the rest of the window records an event, so that a
+        screen holds no opinion about where the line is drawn.
+
+        The panel sweeps once at the same moment. An event reaching here is
+        something that was waited for, which is exactly when a sweep is worth
+        having, and it keeps the two ways of saying "that finished" together.
+        """
+        self.connection_bar.note_event(text)
+        if text:
+            self.sweep_status()
 
     def notice(self, message, token="warn"):
         """A short-lived line in the status area, coloured. Used for refusals,

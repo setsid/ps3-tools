@@ -433,6 +433,11 @@ class PatcherScreen(Screen):
     #: falls back to request_home, which at least lands the user on the card.
     request_tool = Signal(str, str)
 
+    #: tell the shell something finished, for the line on the connection bar.
+    #: Optional in the same way request_tool is: a shell that has not wired it
+    #: simply has no record of the run, and the screen is unaffected.
+    event_noted = Signal(str)
+
     def __init__(self, services, parent=None):
         super().__init__(services, parent)
         self.config = titles.TITLES.get(self.title_key, {})
@@ -1859,6 +1864,11 @@ class PatcherScreen(Screen):
         self._detail.setText(message)
         self.status_message.emit(
             "Finished" if result.ok else "Nothing was changed")
+        if worked:
+            # Only a run that actually replaced something. An attempt that
+            # changed nothing is not an event anybody wants remembered on the
+            # bar for the next hour.
+            self.event_noted.emit(f"{self.title} applied")
         # A failed or rolled-back attempt is left on screen saying so, rather
         # than having its message replaced by a second run of the scan.
         self._read_back_wanted = worked

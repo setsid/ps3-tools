@@ -523,6 +523,42 @@ class TheRightHandSideOfTheBar(unittest.TestCase):
         strip.note_event("")
         self.assertEqual(strip.event_text(), "")
 
+    def test_a_console_read_fills_them_in(self):
+        """The path a real console takes, which is the one that was broken.
+
+        The three were painted from the event seam alone, so a console read
+        filled in the temperatures and left the right-hand end empty. Every
+        other test here set the facts and called the painter directly, which
+        is exactly the step that was missing.
+        """
+        from ps3tools.shell.consolestats import ConsoleStats
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        services = Services(ConnectionState("192.168.1.50"),
+                            AppTheme("dark"), {})
+        strip = ConsoleStats(services, probe_factory=lambda *a, **k: None)
+        self.addCleanup(strip.deleteLater)
+        strip._arrived(strip._generation,
+                       {"host": "192.168.1.50", "facts": dict(self.FACTS)})
+        self.assertIn("free", strip.free_text())
+        self.assertIn("Cobra 8.5", strip.firmware_text_shown())
+
+    def test_the_strip_shows_for_the_right_hand_end_alone(self):
+        """A console with no temperatures can still have said how much room
+        is left on its drive."""
+        from ps3tools.shell.consolestats import ConsoleStats
+        from ps3tools.shell.screen import ConnectionState, Services
+        from ps3tools.shell.theme import AppTheme
+        services = Services(ConnectionState("192.168.1.50"),
+                            AppTheme("dark"), {})
+        strip = ConsoleStats(services, probe_factory=lambda *a, **k: None)
+        self.addCleanup(strip.deleteLater)
+        facts = {"devices": [{"device": "dev_hdd0",
+                              "free_bytes": 90_000_000_000}]}
+        strip._arrived(strip._generation,
+                       {"host": "192.168.1.50", "facts": facts})
+        self.assertTrue(strip._has_right())
+
     def test_a_console_that_answered_nothing_leaves_all_three_blank(self):
         strip = self.strip({})
         self.assertEqual(strip.free_text(), "")

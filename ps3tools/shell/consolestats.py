@@ -758,6 +758,10 @@ class ConsoleStats(QWidget):
 
     def _draw(self):
         found = read_fields(self._facts)
+        # The right-hand end comes off the same facts and has to be redrawn
+        # whichever branch below runs. Painting it only from note_event left
+        # it empty on every console read, which is every time it matters.
+        self._paint_right()
         if self._same_figures(found):
             # The same fields with new numbers in them, so the rows stay and
             # take the new values. Rebuilding them is what a change looked
@@ -795,7 +799,10 @@ class ConsoleStats(QWidget):
             self._stats.append(stat)
 
         self.setToolTip(self._summary())
-        showing = bool(found)
+        # The strip is worth showing for the right-hand end alone: a console
+        # that reports no temperatures can still have said how much room is
+        # left on its drive.
+        showing = bool(found) or self._has_right()
         self._arrive_or_leave(showing)
         self.updateGeometry()
         self.visibility_changed.emit(showing)
@@ -831,6 +838,10 @@ class ConsoleStats(QWidget):
 
     def firmware_text_shown(self):
         return self._firmware_label.text()
+
+    def _has_right(self):
+        return bool(self.free_text() or self.firmware_text_shown()
+                    or self.event_text())
 
     def _paint_right(self):
         """The three readings on the right, each hidden until it has one."""

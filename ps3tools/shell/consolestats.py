@@ -35,7 +35,8 @@ from PySide6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QPushButton, QSizePolicy, QWidget)
 
 from ps3diag.parsers import (html_to_text, human_size, parse_cpursx,
-                            parse_identity, parse_storage)
+                            parse_hdd_free, parse_identity,
+                            parse_storage)
 from ps3diag.transport import HttpProbe
 
 from ..updates import free_bytes_for
@@ -132,6 +133,12 @@ def read_console(host, probe_factory=None, cancelled=lambda: False):
     # The storage collector's own parser, so there is one answer in this
     # program to how much room a console has left.
     facts["devices"] = parse_storage(text)
+    # webMAN words it as a sentence, "HDD: 572.9 GB free", which the
+    # mount-listing reader above matches nothing in. Read separately so
+    # a console that said how much room it has is not treated as silent.
+    free = parse_hdd_free(text)
+    if free is not None:
+        facts["hdd_free_bytes"] = free
     return facts
 
 
@@ -145,7 +152,12 @@ def free_space_text(facts, device="dev_hdd0"):
     A console that did not report its free space gets "", which the bar draws
     as nothing at all. None is not zero.
     """
-    free = free_bytes_for((facts or {}).get("devices"), device)
+    facts = facts or {}
+    free = free_bytes_for(facts.get("devices"), device)
+    if free is None:
+        # The mount listing did not carry it. webMAN's own wording did, on
+        # every console that prints the line at all.
+        free = facts.get("hdd_free_bytes")
     if free is None:
         return ""
     return f"{human_size(free)} free"
@@ -503,6 +515,12 @@ class ConsoleStats(QWidget):
         # a strip that ends where its last value ends stays the small thing it
         # was asked to be, and shrinks by itself when a console reports less.
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        # Expanding across the page, so the stretch inside the row has room
+        # and the readings on the right land at the right-hand edge. Left to
+        # its size hint it drew as a pill about a third of the page wide with
+        # the stretch collapsed to nothing.
+        self.setSizePolicy(QSizePolicy.Policy.Expanding,
+                           QSizePolicy.Policy.Fixed)
         self._row = QHBoxLayout(self)
         self._row.setContentsMargins(16, 9, 10, 9)
         self._row.setSpacing(18)

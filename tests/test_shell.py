@@ -2319,3 +2319,56 @@ class ThePanelSweepsOnceWhenSomethingFinishes(unittest.TestCase):
         self.assertEqual(spin.duration(), window.THEME_SPIN_MS)
         self.assertEqual(spin.loopCount(), 1)
         self.assertIs(spin.parent(), window.theme_button)
+
+
+class EveryAnimationHasACaller(unittest.TestCase):
+    """The painter existing is not the same as anything calling it.
+
+    Three times in one day something passed its tests and was never reached
+    on the real path: the Apply button, the right-hand end of the strip, and
+    the free space reading. These assert the caller rather than the painter.
+    """
+
+    def source_of(self, function):
+        import inspect
+        return inspect.getsource(function)
+
+    def test_the_dot_is_told_to_breathe_when_a_console_connects(self):
+        from ps3tools.shell.app import ConnectionBar
+        self.assertIn("set_breathing", self.source_of(ConnectionBar._refresh))
+
+    def test_the_figures_are_told_to_fade_when_a_reading_lands(self):
+        from ps3tools.shell.consolestats import ConsoleStats
+        self.assertIn("set_value", self.source_of(ConsoleStats._draw))
+
+    def test_the_strip_is_told_to_arrive_or_leave_on_a_reading(self):
+        from ps3tools.shell.consolestats import ConsoleStats
+        self.assertIn("_arrive_or_leave", self.source_of(ConsoleStats._draw))
+
+    def test_the_right_hand_end_is_painted_on_a_reading(self):
+        from ps3tools.shell.consolestats import ConsoleStats
+        self.assertIn("_paint_right", self.source_of(ConsoleStats._draw))
+
+    def test_a_card_starts_its_lift_from_the_pointer_entering(self):
+        from ps3tools.shell.widgets import ToolCard
+        self.assertIn("_animate_to", self.source_of(ToolCard.enterEvent))
+        self.assertIn("_animate_to", self.source_of(ToolCard.leaveEvent))
+        self.assertIn("start", self.source_of(ToolCard._animate_to))
+
+    def test_a_pill_starts_its_own_from_the_pointer_entering(self):
+        from ps3tools.shell.widgets import PillBadge
+        self.assertIn("_hover_to", self.source_of(PillBadge.enterEvent))
+        self.assertIn("_hover_to", self.source_of(PillBadge.leaveEvent))
+        self.assertIn("start", self.source_of(PillBadge._hover_to))
+
+    def test_the_panel_sweeps_from_a_connection_and_from_an_event(self):
+        from ps3tools.shell.app import ConnectionBar, MainWindow
+        self.assertIn("sweep_status", self.source_of(ConnectionBar._checked))
+        self.assertIn("sweep_status", self.source_of(MainWindow.note_event))
+
+    def test_the_theme_button_spins_when_the_theme_is_applied(self):
+        from ps3tools.shell.app import MainWindow
+        self.assertIn("_spin_theme_button",
+                      self.source_of(MainWindow._paint_theme_button))
+        self.assertIn("_paint_theme_button",
+                      self.source_of(MainWindow._apply_theme))

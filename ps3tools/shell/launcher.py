@@ -260,7 +260,11 @@ class Launcher(QWidget):
         if self._services is not None:
             self.stats = ConsoleStats(self._services, host)
             self.stats.visibility_changed.connect(self._stats_gap.setVisible)
-            body.addWidget(self.stats, 0, Qt.AlignmentFlag.AlignLeft)
+            # Spanning the width rather than hugging its content. Aligned
+            # left it drew as a pill about a third of the page wide, so the
+            # stretch inside it had no room and the readings meant to sit at
+            # the far right had nowhere to go.
+            body.addWidget(self.stats)
         # A spacer item cannot be hidden, so the gap under the strip is a
         # widget that comes and goes with it. Without this the home screen
         # carries eighteen pixels of nothing at the top whenever there is no

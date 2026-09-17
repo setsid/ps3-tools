@@ -429,6 +429,27 @@ DEVICE = re.compile(r"(?i)\b(dev_(?:hdd\d|usb\d{3}|sd|ms|cf|bdvd|flash\d?|"
 SIZE_TOKEN = re.compile(r"([\d.]+)\s*(TB|GB|MB|KB|B)\b", re.IGNORECASE)
 
 
+#: webMAN's own pages say "HDD: 572.9 GB free" rather than naming the device
+#: the way a mount listing does. parse_storage matches device names, so it
+#: reads nothing from that wording and the figure was being dropped on a
+#: console that had reported it perfectly well.
+HDD_FREE = re.compile(
+    r"(?i)\bHDD\b[^\n]{0,24}?([\d.,]+)\s*(TB|GB|MB|KB)\b[^\n]{0,12}?\bfree\b")
+
+
+def parse_hdd_free(text):
+    """Free bytes on the internal drive as webMAN's pages word it, or None.
+
+    Separate from parse_storage because that reads a mount listing, where the
+    device is named and the numbers are positional. This reads one sentence
+    meant for a person.
+    """
+    match = HDD_FREE.search(text or "")
+    if not match:
+        return None
+    return parse_size(match.group(1).replace(",", ""), match.group(2))
+
+
 def parse_storage(text):
     """Mounted devices with free and total space.
 

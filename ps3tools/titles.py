@@ -304,24 +304,29 @@ TITLES = {
                    "using the content ID, application type and key revision "
                    "read back off your own copy. Keep the backup: it is the "
                    "only way back."),
-        # Empty, and not because nothing has been confirmed. The fix was
-        # watched working on BLES01031 title update 1.13: rank and experience
-        # survive backing out of a lobby, going back in, and a full relaunch.
-        # What is missing is the other half of what a verified entry means
-        # here, which is the sha1 of Sony's update package for that build, and
-        # a verified release with no package hash is a release this tool would
-        # claim to have confirmed and could not then recognise.
+        # Both of these are confirmed on hardware. BLES01031 was watched
+        # through a real public match with rank and experience surviving a
+        # relaunch, and BLUS30591 was confirmed at sign-in on somebody else's
+        # console.
         #
-        # The practical effect is that there is no title-update check on this
-        # game, and it matters less here than it would on the other two. Their
-        # patch site is an offset that is only right for one build. This one
-        # finds its own site, so a build it was not written for either matches
-        # the patterns, in which case it is the same code, or is refused.
-        # Two entries carrying no package hash were added here at one point,
-        # which is the thing the paragraph above says not to do: being in this
-        # table is what makes a release verified, and a verified release the
-        # tool cannot then recognise is the worst of both.
-        "skus": {},
+        # Neither carries the sha1 of Sony's update package, and for this game
+        # that costs nothing. A package hash exists so a title-update check can
+        # name which update is installed, and this game has no such check: the
+        # other two fixes patch an offset that is only right for one build,
+        # while this one finds its own site, so a build it was not written for
+        # either matches the patterns and is the same code, or is refused.
+        # There is nothing here for a hash to recognise.
+        #
+        # Being confirmed and having a package hash are therefore two
+        # different things, and publishes_update_hashes below is what keeps
+        # them apart. Dropping these entries to satisfy the hash rule is
+        # something that was tried: it made the screen tell the user nobody
+        # had confirmed the fix on the one release he had proved it on.
+        "publishes_update_hashes": False,
+        "skus": {
+            "BLES01031": {"region": "Europe", "updates": {}},
+            "BLUS30591": {"region": "North America", "updates": {}},
+        },
     },
     "bo2": {
         "key": "bo2",
@@ -494,6 +499,21 @@ def sku_for(title_id):
     if not config:
         return None
     return config["skus"].get(normalise(title_id))
+
+
+def publishes_update_hashes(title_id):
+    """Whether this game's releases carry the sha1 of Sony's update package.
+
+    A hash exists so a title-update check can say which update is installed.
+    Black Ops 1 has no such check, because its fix finds its own patch site
+    rather than trusting an offset that is only right for one build, so its
+    releases are confirmed on hardware without one. Being confirmed and
+    having a hash are separate, and this is the separation.
+    """
+    config = config_for(title_id)
+    if config is None:
+        return True
+    return bool(config.get("publishes_update_hashes", True))
 
 
 def verified_update_for(title_id):

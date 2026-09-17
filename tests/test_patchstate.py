@@ -668,11 +668,37 @@ class TheUpdateTheFixWasVerifiedOn(unittest.TestCase):
         self.assertIsNone(titles.verified_update_for(None))
 
     def test_every_verified_release_has_a_package_hash_for_that_build(self):
-        # The two tables are independent and a verified update with no entry in
-        # the SKU's update list would be a version this tool claims to have
-        # confirmed and cannot recognise.
+        """Where a package hash does any work, a verified release has one.
+
+        A hash exists so a title-update check can say which update is
+        installed, and a verified release missing one would be a version the
+        tool claims to have confirmed and cannot recognise.
+
+        That only holds for a game with such a check. Black Ops 1 has none:
+        its fix finds its own patch site rather than trusting an offset that
+        is right for one build, so its releases are confirmed on hardware
+        with no hash and nothing goes looking for one. Being confirmed and
+        having a hash are separate, and publishes_update_hashes is which is
+        which.
+        """
         from ps3tools import titles
         for title_id in titles.VERIFIED_TITLE_IDS:
+            if not titles.publishes_update_hashes(title_id):
+                continue
             wanted = titles.verified_update_for(title_id)
             self.assertIn(wanted, titles.sku_for(title_id)["updates"],
                           title_id)
+
+    def test_a_release_confirmed_on_hardware_reads_as_confirmed(self):
+        """Dropping these to satisfy the hash rule was tried once. It made
+        the screen say nobody had confirmed the fix on the one release it had
+        been proved on."""
+        from ps3tools import titles
+        for title_id in ("BLES01031", "BLUS30591"):
+            self.assertTrue(titles.is_verified(title_id), title_id)
+
+    def test_a_game_without_the_check_is_not_asked_for_hashes(self):
+        from ps3tools import titles
+        self.assertFalse(titles.publishes_update_hashes("BLES01031"))
+        self.assertTrue(titles.publishes_update_hashes("BLES01717"))
+        self.assertTrue(titles.publishes_update_hashes("BLES01428"))

@@ -1132,10 +1132,19 @@ class ScreenCase(ConsoleCase):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         cls.application = QApplication.instance() or QApplication([])
 
+    #: What the stubbed console says it is running. Custom firmware, because
+    #: that is what every release so far has been signed for, so these tests
+    #: go on describing the behaviour that has shipped. The tests for an
+    #: unknown firmware set this themselves.
+    firmware = ("cfw", "4.93 CEX Cobra 8.5")
+
     def build(self, screen_class, host="127.0.0.1"):
         connection = ConnectionState(host)
         services = Services(connection, StubTheme())
         screen = screen_class(services)
+        # Nothing in a test reaches the network, and the firmware read is an
+        # HTTP call, so it is answered here for every screen these build.
+        screen._read_firmware = lambda _host: self.firmware
         self.addCleanup(screen.deleteLater)
         server = getattr(self, "server", None)
         if server is not None:
@@ -3618,3 +3627,106 @@ class SigningForTheFirmwareThatIsThere(unittest.TestCase):
         self.assertTrue(hasattr(screen, "firmware_kind"))
         self.assertTrue(hasattr(screen, "_read_firmware"))
         self.assertEqual(patcher_module.FIRMWARE_PAGE, "/cpursx.ps3")
+
+    def test_an_unknown_firmware_is_never_taken_for_custom_firmware(self):
+        """A console this program can reach is already running homebrew.
+
+        webMAN does not run on stock firmware, and on HEN it only runs once
+        HEN has been enabled, so a reachable console that does not name itself
+        as custom firmware is more likely HEN. Every custom firmware fork
+        names itself, so silence is unusual. Defaulting to custom firmware
+        would get it wrong for exactly the people the fake-signed form is
+        meant to help.
+        """
+        from ps3tools.screens import patcher as patcher_module
+        screen = patcher_module.PatcherScreen
+        for name in ("effective_firmware", "firmware_is_settled",
+                     "firmware_words", "set_firmware_choice"):
+            self.assertTrue(hasattr(screen, name), name)
+
+    def test_the_signer_is_given_nothing_it_was_not_told(self):
+        """The signer still treats empty as "do not fake sign", because the
+        screen never lets a run start without an answer."""
+        self.assertFalse(self.signer("").fake_signs)
+
+
+class FirmwareTheConsoleDidNotName(ScreenCase):
+    """Unknown firmware is asked about, never assumed.
+
+    A console this program can reach is already running homebrew: webMAN does
+    not run on stock firmware, and on HEN it only runs once HEN is enabled. So
+    a reachable console that does not name itself as custom firmware is more
+    likely HEN, and defaulting to custom firmware would get it wrong for
+    exactly the people the fake-signed form is meant to help. Every custom
+    firmware fork names itself, so silence is genuinely unusual.
+    """
+
+    firmware = ("", "4.90 HFW")
+
+    def screen(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        screen.firmware_kind()
+        return screen
+
+    def test_apply_waits_until_the_user_says_which_it_is(self):
+        screen = self.screen()
+        self.assertFalse(screen.firmware_is_settled())
+        self.assertFalse(screen.patch_allowed())
+
+    def test_nothing_is_chosen_for_the_user(self):
+        screen = self.screen()
+        self.assertEqual(screen.effective_firmware(), "")
+
+    def test_answering_hen_settles_it(self):
+        screen = self.screen()
+        screen.set_firmware_choice("hen")
+        self.assertEqual(screen.effective_firmware(), "hen")
+        self.assertTrue(screen.firmware_is_settled())
+        self.assertTrue(screen._scetool().fake_signs)
+
+    def test_answering_custom_firmware_settles_it(self):
+        screen = self.screen()
+        screen.set_firmware_choice("cfw")
+        self.assertFalse(screen._scetool().fake_signs)
+
+    def test_the_line_the_console_gave_is_shown(self):
+        """A bug report says which firmware it came from without being asked."""
+        screen = self.screen()
+        self.assertIn("4.90 HFW", screen.firmware_words())
+
+    def test_anything_else_is_not_an_answer(self):
+        screen = self.screen()
+        for rubbish in ("ofw", "maybe", "", None):
+            with self.subTest(answer=rubbish):
+                screen.set_firmware_choice(rubbish)
+                self.assertFalse(screen.firmware_is_settled())
+
+    def test_a_different_console_is_asked_again(self):
+        """An answer given for one console must not follow to the next."""
+        screen = self.screen()
+        screen.set_firmware_choice("hen")
+        self.assertEqual(screen.effective_firmware(), "hen")
+        # The host the answer was given for is what ties it down, so a screen
+        # pointed at another console starts again with nothing chosen.
+        screen._firmware_host = "192.168.0.9"
+        screen.connection.host
+        screen.firmware_kind()
+        self.assertEqual(screen.effective_firmware(), "")
+
+
+class FirmwareTheConsoleNamed(ScreenCase):
+    """When it did say, it is shown and nothing is asked."""
+
+    firmware = ("hen", "4.93 CEX PS3HEN 3.5.0")
+
+    def test_a_hen_console_is_settled_without_asking(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        self.assertEqual(screen.effective_firmware(), "hen")
+        self.assertTrue(screen.firmware_is_settled())
+        self.assertTrue(screen._scetool().fake_signs)
+
+    def test_the_firmware_is_shown_as_read(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        words = screen.firmware_words()
+        self.assertIn("4.93 CEX PS3HEN 3.5.0", words)
+        self.assertIn("HEN", words)

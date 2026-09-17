@@ -432,7 +432,11 @@ class PatcherScreen(Screen):
         #: from, so a different console is asked again rather than inheriting
         #: the last one's answer.
         self._firmware_kind = ""
+        self._firmware_line = ""
         self._firmware_host = ""
+        #: What the user said, where the console did not. Empty until they
+        #: answer, and Apply waits for it.
+        self._firmware_choice = ""
         self._scan = None
         #: File names the user has taken the tick out of. Held here rather
         #: than on the scan, which is rebuilt every time the console is read.
@@ -932,6 +936,11 @@ class PatcherScreen(Screen):
         which of those the person in front of it has, so the screen asks and
         this is where the answer is read.
         """
+        if not self.firmware_is_settled():
+            # Nothing is written until it is known which firmware this is
+            # signing for. The two forms are not interchangeable and the wrong
+            # one is a game that will not start.
+            return False
         return not self.CONFIRM_WITH or self._confirm.isChecked()
 
     def _on_confirmed(self, _checked):
@@ -973,7 +982,56 @@ class PatcherScreen(Screen):
     # The three seams. Tests replace all three: the mock console listens on a
     # port of its own rather than on 21.
     def _scetool(self):
-        return Signer(firmware_kind=self.firmware_kind())
+        return Signer(firmware_kind=self.effective_firmware())
+
+    def effective_firmware(self):
+        """What to sign for: what the console said, or what the user answered.
+
+        A console this program can reach is already running homebrew. webMAN
+        does not run on stock firmware, and on PS3HEN it only runs once HEN
+        has been enabled, so a reachable console that does not name itself as
+        custom firmware is more likely to be HEN than CFW. Every custom
+        firmware fork names itself, Evilnat and Rebug and Ferrox and Habib
+        among them, so silence is genuinely unusual.
+
+        That is why this never falls back to custom firmware on its own.
+        Signing for the wrong one produces a game that will not start, and
+        guessing custom firmware gets it wrong for exactly the people the
+        fake-signed form exists to help. Where the console did not say, the
+        user is asked and Apply waits for the answer.
+        """
+        read = self.firmware_kind()
+        if read in ("cfw", "hen"):
+            return read
+        return self._firmware_choice
+
+    def firmware_is_settled(self):
+        return self.effective_firmware() in ("cfw", "hen")
+
+    def firmware_words(self):
+        """The firmware line as the console gave it, for the screen to show."""
+        # Asked first: it is what fills in the line, and reading the line
+        # before asking gave a screen that named the kind and not the words
+        # the console used.
+        kind = self.firmware_kind()
+        line = self._firmware_line or ""
+        if kind == "hen":
+            return f"Firmware: {line} (HEN)" if line else "Firmware: HEN"
+        if kind == "cfw":
+            return (f"Firmware: {line} (custom firmware)" if line
+                    else "Firmware: custom firmware")
+        if line:
+            return (f"Firmware: {line}. This does not name HEN or a custom "
+                    f"firmware, so which one it is has to be said below.")
+        return ("The console did not say which firmware it is running, so "
+                "which one it is has to be said below.")
+
+    def set_firmware_choice(self, kind):
+        """The user's answer, when the console did not say. "" clears it."""
+        self._firmware_choice = kind if kind in ("cfw", "hen") else ""
+        # Apply is gated on this, so the button has to be looked at again the
+        # moment the answer changes.
+        self._on_confirmed(None)
 
     def firmware_kind(self):
         """What the console said it is running, or "" if it did not say.
@@ -989,22 +1047,30 @@ class PatcherScreen(Screen):
             return ""
         if self._firmware_host != host:
             self._firmware_host = host
-            self._firmware_kind = self._read_firmware(host)
+            self._firmware_kind, self._firmware_line = self._read_firmware(host)
+            # A different console is a different answer, so an answer given
+            # for the last one must not be carried over to this one.
+            self._firmware_choice = ""
         return self._firmware_kind
 
     def _read_firmware(self, host):
-        """The seam. Tests replace this; nothing else reaches the network."""
+        """(kind, the line as printed). The seam; tests replace this.
+
+        The line is kept as well as the kind so the screen can show what the
+        console actually said, which is what makes a bug report say which
+        firmware it came from without anybody being asked.
+        """
         try:
             page = transport.HttpClient(host).get(FIRMWARE_PAGE)
             if not getattr(page, "ok", False):
-                return ""
-            return parsers.parse_firmware_line(page.body).get(
-                "firmware_kind", "")
+                return "", ""
+            found = parsers.parse_firmware_line(page.body)
+            return (found.get("firmware_kind", ""),
+                    found.get("firmware_line", ""))
         except Exception:                                   # noqa: BLE001
-            # A console that will not answer is a console that has not said,
-            # which is the same as saying nothing. It must never become a
-            # guess at the firmware.
-            return ""
+            # A console that will not answer has not said, which is the same
+            # as saying nothing. It must never become a guess.
+            return "", ""
 
     def _lister(self, host):
         return transport.FtpLister(host)

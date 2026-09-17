@@ -234,6 +234,13 @@ def _xor(left, right):
             ^ int.from_bytes(right, "big")).to_bytes(size, "big")
 
 
+def xor_bytes(left, right):
+    """Exclusive-or of two equal-length byte strings."""
+    if len(left) != len(right):
+        raise ValueError(f"lengths differ: {len(left)} and {len(right)}")
+    return _xor(bytes(left), bytes(right))
+
+
 def ecb_encrypt(key, data):
     cipher = AES(key)
     return b"".join(cipher.encrypt_block(data[at:at + 16])
@@ -284,7 +291,8 @@ def ctr_keystream(key, counter, length):
     blocks = []
     append = blocks.append
     for _ in range((length + 15) // 16):
-        append(pack(">4I", *encrypt(*unpack(">4I", value.to_bytes(16, "big")))))
+        words = unpack(">4I", value.to_bytes(16, "big"))
+        append(pack(">4I", *encrypt(*words)))
         value = (value + 1) & ((1 << 128) - 1)
     return b"".join(blocks)[:length]
 
@@ -292,3 +300,37 @@ def ctr_keystream(key, counter, length):
 def ctr_crypt(key, counter, data):
     """CTR is its own inverse, so this both encrypts and decrypts."""
     return _xor(bytes(data), ctr_keystream(key, counter, len(data)))
+
+
+def omac1(key, message):
+    """AES-OMAC1, which is AES-CMAC. Checked against the RFC 4493 vectors.
+
+    This is what the two NPDRM hashes are built on. It is here rather than in
+    a module of its own because it is a mode of the cipher above and nothing
+    else uses it.
+    """
+    cipher = AES(key)
+
+    def double(block):
+        value = int.from_bytes(block, "big")
+        shifted = (value << 1) & ((1 << 128) - 1)
+        if value & (1 << 127):
+            shifted ^= 0x87
+        return shifted.to_bytes(16, "big")
+
+    subkey = double(cipher.encrypt_block(b"\x00" * 16))
+    message = bytes(message)
+    if message and len(message) % 16 == 0:
+        blocks = len(message) // 16
+        tail = _xor(message[-16:], subkey)
+    else:
+        subkey = double(subkey)
+        blocks = len(message) // 16 + 1
+        padded = message[(blocks - 1) * 16:]
+        padded = padded + b"\x80" + b"\x00" * (15 - len(padded))
+        tail = _xor(padded, subkey)
+    state = b"\x00" * 16
+    for index in range(blocks - 1):
+        chunk = message[index * 16:index * 16 + 16]
+        state = cipher.encrypt_block(_xor(state, chunk))
+    return cipher.encrypt_block(_xor(state, tail))

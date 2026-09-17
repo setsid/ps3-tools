@@ -138,13 +138,18 @@ def decrypt(file, klicensee="", keys_path=""):
     return parsed.to_elf(_klic(klicensee), store)
 
 
-def sign(elf, template, klicensee="", keys_path=""):
+def sign(elf, template, klicensee="", keys_path="", filename=""):
     """An ELF put back into the container its template came from.
 
     The template is the user's own original file. Everything that identifies
     the file is taken from it, which is the whole point: a rebuild that loses
     the NPDRM block or writes application type 0 gives 8001000F, and both of
     those are mistakes shipped tools have made.
+
+    filename is the name the file will carry on the console. It feeds the
+    CID_FN hash, so a file that will be written under a different name has to
+    say so or it will be perfectly valid and refuse to load. Left empty, the
+    name is taken to be unchanged.
     """
     parsed = template if isinstance(template, SelfFile) else read(template)
     if isinstance(elf, (str, os.PathLike)):
@@ -154,4 +159,5 @@ def sign(elf, template, klicensee="", keys_path=""):
     if _fself.is_fake_signed(parsed):
         return _fself.rebuild(parsed, elf)
     store = _keys.load(keys_path) if keys_path else None
-    return _sign.rebuild(parsed, elf, _klic(klicensee), store)
+    return _sign.rebuild(parsed, elf, _klic(klicensee), store,
+                         filename=filename)

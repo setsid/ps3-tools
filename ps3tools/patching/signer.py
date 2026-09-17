@@ -145,15 +145,17 @@ class Signer:
         than being passed back in on a command line. They stay in the
         signature so the flow does not have to care which tool it holds.
 
-        target_name fed scetool's -g, which decides the CID_FN hash. Here the
-        hash comes off the original file unchanged, so a name that does not
-        match cannot produce the valid-but-will-not-load file it used to.
+        target_name is the name the file will have on the console. It fed
+        scetool's -g and it feeds the CID_FN hash here, for the same reason:
+        that hash binds the content ID to the file name, and a file written
+        under a name it was not signed for is valid and will not load.
         """
-        del profile, info, target_name
+        del profile, info
         try:
             with open(elf_path, "rb") as handle:
                 elf = handle.read()
-            out = keysmith.sign(elf, source, klicensee or "", self.keys_path)
+            out = keysmith.sign(elf, source, klicensee or "", self.keys_path,
+                                filename=target_name or "")
         except keysmith.SceError as exc:
             raise ScetoolError(str(exc)) from None
         except OSError as exc:

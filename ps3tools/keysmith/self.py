@@ -46,6 +46,18 @@ SELF_TYPE_NAMES_FOR_KEYS = {
 }
 
 
+def effective_klicensee(store, klicensee):
+    """The klicensee actually used, which is NP_klic_free when none is given.
+
+    A FREE licensed disc EBOOT carries no klicensee of its own. Working that
+    out in one place matters because the same value opens the metadata and
+    keys the NPDRM control info hash, and the two silently disagreeing would
+    give a file that decrypts and will not load.
+    """
+    klic = bytes(klicensee) if klicensee else b""
+    return klic or store.named_key("NP_klic_free")
+
+
 class Metadata:
     """The decrypted metadata: header, section headers, keys, optional data."""
 
@@ -182,9 +194,7 @@ class SelfFile:
         raw = self.raw[offset:offset + MetadataInfo.SIZE]
 
         if self.is_npdrm:
-            klic = bytes(klicensee) if klicensee else b""
-            if not klic:
-                klic = store.named_key("NP_klic_free")
+            klic = effective_klicensee(store, klicensee)
             if len(klic) != 16:
                 raise KeyNotFound(
                     "a klicensee is sixteen bytes", path=self.path,

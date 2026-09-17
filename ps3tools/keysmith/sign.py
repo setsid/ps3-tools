@@ -10,16 +10,13 @@ Eboot-Self Builder writes application type 0, and both give 8001000F on a
 console that checks licences.
 
 What is recomputed is what genuinely depends on the payload: section sizes and
-offsets, the per-section HMACs, the ELF digest, and the lengths in the headers.
+offsets, the per-section HMACs, the ELF digest, the lengths in the headers, and
+both NPDRM hashes. See npdrm.py for the two of those.
 
 What is carried through unchanged, because it cannot be derived:
 
   * The signature. These files are signed with a private key nobody outside
     Sony has, and the keys file ships zeros for it. scetool cannot sign either.
-  * The NPDRM CI hash. Its construction is not known here. HMAC-SHA1 and
-    AES-CMAC were both tried over every contiguous range of the header with
-    every key in the keys file and none reproduces the value a known-good
-    scetool build wrote, so it is copied rather than guessed at.
   * The type 3 metadata section. It holds a build comment table that is not in
     the decrypted ELF at all, so a rebuild that worked from the ELF alone would
     silently drop it. scetool does drop it.
@@ -37,8 +34,10 @@ import zlib
 
 from . import aes
 from . import keys as keymod
+from . import npdrm as npdrm_hash
 from .errors import SigningFailed
-from .structs import (CONTROL_DIGEST, ControlInfo, MetadataInfo,
+from .self import effective_klicensee
+from .structs import (CONTROL_DIGEST, CONTROL_NPDRM, ControlInfo, MetadataInfo,
                       SECTION_TYPE_PHDR, SECTION_TYPE_SHDR, SceHeader)
 
 #: What a fake-signed SELF carries where a key revision goes. Spelled out here
@@ -119,13 +118,19 @@ def section_payloads(template, elf, metadata):
     return out
 
 
-def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True):
+def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
+            filename=""):
     """A SELF built from this template and this ELF.
 
     keep_layout reuses the template's own section offsets when the payload
     sizes have not changed, so rebuilding a file nobody touched gives back the
     bytes it started with. When a size does change the sections are packed from
     the end of the header at the same alignment scetool uses.
+
+    filename is the name the file will have on the console. It feeds the
+    CID_FN hash, so a file written under a different name needs it given here
+    or it will be valid and refuse to load. Left empty, the template's hash is
+    kept, which is right whenever the name has not changed.
     """
     # Checked before anything else: a fake-signed template has no keys and no
     # metadata, so every message from further down would be about the wrong
@@ -224,6 +229,9 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True):
             payload[20:40] = hashlib.sha1(elf).digest()
             control_infos.append(ControlInfo(block.info_type, block.size,
                                              block.next, bytes(payload)))
+        elif block.info_type == CONTROL_NPDRM:
+            control_infos.append(_npdrm_block(block, store, klicensee,
+                                              filename))
         else:
             control_infos.append(block)
 
@@ -251,6 +259,30 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True):
     if keep_layout and unchanged and len(out) < len(template.raw):
         out.extend(template.raw[len(out):])
     return bytes(out)
+
+
+def _npdrm_block(block, store, klicensee, filename):
+    """The NPDRM control block with both of its hashes computed.
+
+    Computed rather than copied. The CID_FN hash only changes when the file
+    name does, and the CI hash covers this block's own first 0x60 bytes and
+    nothing outside it, so for a rebuild under the same name both come out as
+    the values the original carried. That is the point: a hash that is
+    recomputed and agrees is a hash that has been checked, and one that is
+    copied is only an assumption.
+    """
+    payload = bytearray(block.payload)
+    if filename:
+        content_id = bytes(payload[npdrm_hash.CONTENT_ID_AT:
+                                   npdrm_hash.CONTENT_ID_AT
+                                   + npdrm_hash.CONTENT_ID_BYTES])
+        digest = npdrm_hash.cid_fn_hash(store, content_id, filename)
+        payload[npdrm_hash.CID_FN_HASH_AT:
+                npdrm_hash.CID_FN_HASH_AT + 16] = digest
+    klic = effective_klicensee(store, klicensee)
+    payload[npdrm_hash.CI_HASH_AT:npdrm_hash.CI_HASH_AT + 16] = (
+        npdrm_hash.ci_hash(store, bytes(payload), klic))
+    return ControlInfo(block.info_type, block.size, block.next, bytes(payload))
 
 
 def _check_geometry(template, elf):

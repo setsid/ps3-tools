@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 import corpus                                             # noqa: E402
 from ps3tools import keysmith                             # noqa: E402
-from ps3tools.keysmith import aes, fself, keys             # noqa: E402
+from ps3tools.keysmith import aes, fself, keys, npdrm      # noqa: E402
 from ps3tools.keysmith.self import SelfFile                # noqa: E402
 
 # keysmith.sign is the public function, so the name of the module it lives in
@@ -116,6 +116,124 @@ class TheCipher(unittest.TestCase):
         self.assertEqual(
             aes.ctr_crypt(key, counter, aes.ctr_crypt(key, counter, blob)),
             blob)
+
+
+class TheNpdrmHashes(unittest.TestCase):
+    """Both are AES-OMAC1, and both are checked against the real files.
+
+    These were the one thing this package could not reproduce for a while, so
+    every claim here is against a value somebody else's tool wrote, never
+    against our own.
+    """
+
+    #: The name each file has on the console, which is what CID_FN binds to.
+    NAMES = {"bo1-blus30591": "t5mp_ps3f.self",
+             "mw3-bles01428": "default_mp.self",
+             "npeb00756-fself": "t5mp_ps3f.self",
+             "npub30787-fself": "default_mp.self"}
+
+    def name_of(self, item):
+        return self.NAMES.get(item.key, os.path.basename(item.path))
+
+    def test_omac1_against_rfc_4493(self):
+        key = bytes.fromhex("2b7e151628aed2a6abf7158809cf4f3c")
+        message = bytes.fromhex("6bc1bee22e409f96e93d7e117393172a"
+                                "ae2d8a571e03ac9c9eb76fac45af8e51"
+                                "30c81c46a35ce411e5fbc1191a0a52ef"
+                                "f69f2445df4f9b17ad2b417be66c3710")
+        for length, want in ((0, "bb1d6929e95937287fa37d129b756746"),
+                             (16, "070a16b46b4d4144f79bdd9dd04a287c"),
+                             (40, "dfa66747de9ae63030ca32611497c827"),
+                             (64, "51f0bebf7e3b9d92fc49741779363cfe")):
+            with self.subTest(length=length):
+                self.assertEqual(aes.omac1(key, message[:length]).hex(), want)
+
+    def test_the_cid_fn_hash_is_reproduced_for_every_file(self):
+        store = keys.load() if HAVE_KEYS else self.skipTest("no keyset")
+        ran = 0
+        for item in chosen():
+            if item.kind != "self":
+                continue
+            with self.subTest(sample=item.key):
+                block = keysmith.read(item.path).npdrm
+                self.assertEqual(
+                    npdrm.cid_fn_hash(store, block.content_id,
+                                      self.name_of(item)),
+                    block.cid_fn_hash)
+                ran += 1
+        if not ran:
+            self.skipTest("none of the corpus is on this machine")
+
+    def test_the_ci_hash_is_reproduced_for_every_file(self):
+        store = keys.load() if HAVE_KEYS else self.skipTest("no keyset")
+        ran = 0
+        for item in chosen():
+            if item.kind != "self":
+                continue
+            with self.subTest(sample=item.key):
+                block = keysmith.read(item.path).npdrm
+                self.assertEqual(
+                    npdrm.ci_hash(store, block.pack(),
+                                  bytes.fromhex(item.klicensee)),
+                    block.header_hash)
+                ran += 1
+        if not ran:
+            self.skipTest("none of the corpus is on this machine")
+
+    def test_the_ci_hash_covers_the_block_and_nothing_outside_it(self):
+        """The question this package could not answer for a while.
+
+        It matters because a patch moves the section table, the ELF digest and
+        the metadata. If the hash covered any of those, a rebuild would need a
+        value we could not work out. It does not: change the header and the
+        hash is unmoved; change a byte inside the block's first 0x60 and it
+        moves.
+        """
+        store = keys.load() if HAVE_KEYS else self.skipTest("no keyset")
+        item = sample("mw3-eboot")
+        block = keysmith.read(item.path).npdrm
+        klic = bytes.fromhex(item.klicensee)
+        before = npdrm.ci_hash(store, block.pack(), klic)
+
+        moved = bytearray(block.pack())
+        moved[npdrm.CI_HASH_AT + 4] ^= 0xFF      # past the covered range
+        self.assertEqual(npdrm.ci_hash(store, bytes(moved), klic), before)
+
+        inside = bytearray(block.pack())
+        inside[npdrm.CID_FN_HASH_AT] ^= 0xFF     # within it
+        self.assertNotEqual(npdrm.ci_hash(store, bytes(inside), klic), before)
+
+    def test_it_is_keyed_by_the_klicensee(self):
+        store = keys.load() if HAVE_KEYS else self.skipTest("no keyset")
+        item = sample("mw3-eboot")
+        block = keysmith.read(item.path).npdrm
+        right = npdrm.ci_hash(store, block.pack(),
+                              bytes.fromhex(item.klicensee))
+        wrong = npdrm.ci_hash(store, block.pack(), b"\x00" * 16)
+        self.assertEqual(right, block.header_hash)
+        self.assertNotEqual(wrong, block.header_hash)
+
+    def test_a_klicensee_that_is_the_wrong_length_is_refused(self):
+        store = keys.load() if HAVE_KEYS else self.skipTest("no keyset")
+        item = sample("mw3-eboot")
+        block = keysmith.read(item.path).npdrm
+        with self.assertRaises(ValueError):
+            npdrm.ci_hash(store, block.pack(), b"\x00" * 8)
+
+    def test_signing_under_another_name_moves_both_hashes(self):
+        """CID_FN binds the content ID to the name on the console, and the CI
+        hash covers CID_FN, so the two move together."""
+        store = keys.load() if HAVE_KEYS else self.skipTest("no keyset")
+        item = sample("mw3-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        same = keysmith.sign(elf, item.path, item.klicensee,
+                             filename=self.name_of(item))
+        other = keysmith.sign(elf, item.path, item.klicensee,
+                              filename="something_else.self")
+        self.assertEqual(same, open(item.path, "rb").read())
+        first, second = keysmith.read(same).npdrm, keysmith.read(other).npdrm
+        self.assertNotEqual(first.cid_fn_hash, second.cid_fn_hash)
+        self.assertNotEqual(first.header_hash, second.header_hash)
 
 
 class TheKeysFile(unittest.TestCase):

@@ -52,7 +52,8 @@ needs it, which only the tests do.
         keys.py       the keyset file, and where it is found
         sign.py       rebuilding a SELF from a template and an ELF
         structs.py    the on-disk structures
-        aes.py        AES-128/192/256, ECB, CBC and CTR
+        aes.py        AES-128/192/256, ECB, CBC, CTR and OMAC1
+        npdrm.py      the two NPDRM control block hashes
         report.py     the description, laid out the way scetool laid it out
         errors.py     failures that name the file and the field
         data/keys     the keyset, inside the package but not in the repo
@@ -88,6 +89,7 @@ Recomputed, because it depends on the payload:
 - section offsets and sizes, in both the metadata and the SELF's section infos
 - the per-section HMAC-SHA1, keyed from the slot two after the hash's own
 - the file digest, which is the SHA1 of the ELF that was signed
+- both NPDRM hashes, the CID_FN hash and the CI hash
 - `data_length` in the SCE header
 
 Carried through unchanged, because it identifies the file:
@@ -106,15 +108,41 @@ Carried through because it cannot be derived:
 - **The signature.** These files are signed with a private key nobody outside
   Sony has, and the public keyset ships zeros for it. scetool cannot sign
   either.
-- **The NPDRM CI hash.** Its construction is not known here. HMAC-SHA1 and
-  AES-CMAC were both tried, keyed with every key in the keys file, over every
-  contiguous range of the header and over several structural variants, and none
-  reproduces the value a known-good scetool build wrote. Guessing at it would
-  be worse than copying it, so it is copied.
 - **The type 3 metadata section.** It holds a build comment table that is not
   in the decrypted ELF at all. A rebuild working from the ELF alone drops it,
   which is what scetool does.
 - Every field named `unknown` in `structs.py`.
+
+## The two NPDRM hashes
+
+Both are AES-OMAC1 over the NPDRM control block, and both are confirmed on all
+fifteen retail files, across four titles, three key revisions and both regions,
+as well as on a file scetool built that a console has played online with.
+
+    cid_fn_hash = omac1(NP_tid, content_id + filename)
+    ci_hash     = omac1(NP_ci XOR klicensee, block[0:0x60])
+
+The exclusive-or with the klicensee is what took the longest to find, and it is
+what ties the block to the title: a file signed with the wrong klicensee has a
+CI hash that does not match even though every visible field is right.
+
+**The CI hash covers the first 0x60 bytes of the control block and nothing
+else.** Not the SELF header, not the section table, not the ELF digest, not the
+metadata. Patching a file moves all of those and leaves the hash where it was,
+which is why a rebuild computes the same value the original carried. That is
+also why scetool's rebuild has a different one: it replaces the random pad at
+0x40 with the ASCII "watermarktrololo", and the pad is inside the covered
+range.
+
+The CID_FN hash binds the content ID to the name the file has on the console.
+That is the field that makes a perfectly valid SELF refuse to load when it is
+written under a different name, so `sign()` takes the name rather than assuming
+it.
+
+Both are computed rather than copied. For a rebuild under the same name they
+come out as the values the original carried, and the round trip tests rely on
+exactly that: a hash that is recomputed and agrees has been checked, and one
+that is copied is only an assumption.
 
 ## Two findings worth writing down
 

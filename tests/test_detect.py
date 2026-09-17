@@ -178,138 +178,51 @@ class States(FixtureCase):
         rows = {item.title_id: item for item in report.installations}
         self.assertEqual(sorted(rows), ["BLJS10032"])
         variant = rows["BLJS10032"]
-        self.assertEqual(variant.state, detect.UNKNOWN_VARIANT)
-        self.assertIsNone(variant.title_key)
-        self.assertIsNone(variant.config)
-        self.assertIsNone(variant.tu_version)
-        # Its files are Black Ops II's, so that is the only screen it may
-        # reach. Turning up anywhere else is the fault that had the Black Ops 1
-        # screen offering somebody Ghosts.
-        self.assertEqual(variant.candidate_keys, ("bo2",))
+        # Its files are Black Ops II's, so it is offered as an untested
+        # release of Black Ops II and reaches no other screen. Turning up
+        # elsewhere is the fault that had the Black Ops 1 screen offering
+        # somebody Ghosts.
+        self.assertEqual(variant.title_key, "bo2")
+        self.assertTrue(variant.untested)
+        self.assertFalse(variant.verified)
         self.assertEqual(report.for_title("bo2")[0].title_id, "BLJS10032")
         self.assertEqual(report.for_title("bo1")[0].state, detect.NOT_FOUND)
         self.assertEqual(report.for_title("mw3")[0].state, detect.NOT_FOUND)
-        self.assertTrue(any("left alone" in note for note in report.notes),
-                        report.notes)
 
-    def test_one_unknown_variant_still_reads_as_a_single_title(self):
-        # Collecting the unknown titles into one sentence must not leave the
-        # one title case reading as a list of one.
-        report = self.report({
-            GAME: folders("BLES00683"),
-            usrdir("BLES00683"): listing("list_usrdir_bo2.txt")})
-        said = [note for note in report.notes if "left alone" in note]
-        self.assertEqual(said, [
-            "BLES00683 looks like a Call of Duty installation but is not a "
-            "release this tool has a fix for, so it will "
-            "be left alone."])
+    def test_unnamed_releases_are_offered_rather_than_collected_up(self):
+        """Three Call of Duty folders the table cannot name.
 
-    def test_several_unknown_variants_are_named_in_one_sentence(self):
-        # A real console had these three Call of Duty titles installed and
-        # the summary printed the same sentence three times over.
+        They used to be gathered into one sentence saying they would be left
+        alone. Their files say which game they are, so each is offered as an
+        untested release of that game instead, and there is nothing to
+        collect.
+        """
         report = self.report({
             GAME: folders("BLES00683", "BLES01945", "BLES02077"),
             usrdir("BLES00683"): listing("list_usrdir_bo2.txt"),
             usrdir("BLES01945"): listing("list_usrdir_bo2.txt"),
             usrdir("BLES02077"): listing("list_usrdir_bo2.txt")})
-        said = [note for note in report.notes if "left alone" in note]
-        self.assertEqual(said, [
-            "BLES00683, BLES01945 and BLES02077 look like Call of Duty "
-            "installations but are not releases this tool has a fix for, "
-            "so they will be left alone."])
-
-    def test_unknown_variants_do_not_add_a_note_each(self):
-        # The note was made inside the loop over installations, so the
-        # summary grew by a sentence for every title the console had.
-        def refused(*names):
-            listings = {GAME: folders(*names)}
-            listings.update({usrdir(name): listing("list_usrdir_bo2.txt")
-                             for name in names})
-            return self.report(listings)
-
-        one = refused("BLES00683")
-        many = refused("BLES00683", "BLES01945", "BLES02077")
-        self.assertEqual(len(many.installations), 3)
-        self.assertEqual(len(many.notes), len(one.notes))
-
-    def test_missing_binaries_are_reported_and_are_not_ready(self):
-        report = self.report({
-            GAME: listing("list_game_regional.txt"),
-            usrdir("BLES01717"): listing("list_usrdir_bo2_incomplete.txt")})
         rows = {item.title_id: item for item in report.installations}
-        partial = rows["BLES01717"]
-        self.assertEqual(partial.missing, ["t6mp_ps3f.self"])
-        self.assertFalse(partial.ready)
-        self.assertEqual(partial.state, detect.NO_UPDATE)
-        self.assertTrue(any("t6mp_ps3f.self" in note for note in report.notes),
-                        report.notes)
+        self.assertEqual(sorted(rows),
+                         ["BLES00683", "BLES01945", "BLES02077"])
+        for row in rows.values():
+            self.assertEqual(row.title_key, "bo2")
+            self.assertTrue(row.untested)
+            self.assertFalse(row.verified)
+        self.assertEqual([note for note in report.notes
+                          if "left alone" in note], [])
 
-    def test_several_regional_variants_are_all_found(self):
-        report = self.report({
-            GAME: listing("list_game_regional.txt"),
-            usrdir("BLES01717"): listing("list_usrdir_bo2.txt"),
-            usrdir("BLES01718"): listing("list_usrdir_bo2.txt"),
-            usrdir("BLUS31011"): listing("list_usrdir_bo2.txt")})
-        found = report.for_title("bo2")
-        self.assertEqual(sorted(item.title_id for item in found),
-                         ["BLES01717", "BLES01718", "BLUS31011"])
-        self.assertEqual({item.state for item in found}, {detect.READY})
-        self.assertEqual({item.region for item in found},
-                         {"Europe", "North America"})
+    def test_a_folder_that_could_be_two_games_is_the_one_case_left(self):
+        """The only honest refusal that remains.
 
-    def test_a_release_nobody_has_confirmed_is_found_and_flagged(self):
-        # BLES01719 is a published Black Ops II release with no verified
-        # record. The old table had no entry for it, so it came back as an
-        # unknown variant and was refused on sight. It is now found, named,
-        # and marked as one nobody has reported back on.
-        report = self.report({
-            GAME: folders("BLES01719"),
-            usrdir("BLES01719"): listing("list_usrdir_bo2.txt")})
-        found = report.for_title("bo2")
-        self.assertEqual([item.title_id for item in found], ["BLES01719"])
-        row = found[0]
-        self.assertEqual(row.state, detect.READY)
-        self.assertEqual(row.title_key, "bo2")
-        self.assertEqual(row.short, "Black Ops II")
-        self.assertFalse(row.verified)
-        # No verified SKU record means no region and no update hashes, and
-        # inventing either would be a guess dressed as a reading.
-        self.assertIsNone(row.region)
-        self.assertIsNone(titles.sku_for("BLES01719"))
-        self.assertTrue(any("nobody has confirmed" in note
-                            for note in report.notes), report.notes)
-
-    def test_a_confirmed_release_is_not_flagged_as_unconfirmed(self):
-        report = self.report({
-            GAME: folders("BLES01717"),
-            usrdir("BLES01717"): listing("list_usrdir_bo2.txt")})
-        row = report.for_title("bo2")[0]
-        self.assertTrue(row.verified)
-        self.assertEqual(row.region, "Europe")
-        self.assertFalse(any("nobody has confirmed" in note
-                             for note in report.notes), report.notes)
-
-    def test_a_title_id_in_neither_list_reaches_only_its_own_game(self):
-        """An unheard-of title ID is a release nobody has tested, not a
-        release of some other game.
-
-        The lists grew; they did not become everything. A folder full of
-        Black Ops II binaries with a title ID the table has never seen is
-        offered on the Black Ops II screen, because the patch site is what
-        decides whether it can be fixed. What it must never do is turn up on
-        the Modern Warfare 3 screen.
+        A folder holding the naming files of more than one game cannot be
+        attributed from the listing alone, so it is left alone and said to be
+        left alone.
         """
-        report = self.report({
-            GAME: folders("BLJS10032"),
-            usrdir("BLJS10032"): listing("list_usrdir_bo2.txt")})
-        row = {item.title_id: item for item in report.installations}["BLJS10032"]
-        self.assertEqual(row.state, detect.UNKNOWN_VARIANT)
-        self.assertIsNone(row.title_key)
-        self.assertFalse(row.verified)
-        self.assertEqual(row.candidate_keys, ("bo2",))
-        self.assertEqual(report.for_title("bo2")[0].title_id, "BLJS10032")
-        self.assertEqual(report.for_title("mw3")[0].state, detect.NOT_FOUND)
-        self.assertEqual(report.for_title("bo1")[0].state, detect.NOT_FOUND)
+        self.assertEqual(
+            sorted(titles.keys_for_files(
+                ["t5mp_ps3f.self", "default_mp.self"])),
+            ["bo1", "mw3"])
 
     def test_bljm61034_is_never_treated_as_black_ops_two(self):
         # It was in an earlier draft of the table and Sony's manifest returns

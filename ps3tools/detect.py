@@ -86,6 +86,11 @@ NO_READER = (f"{NO_VERSION} This connection has no way to fetch PARAM.SFO "
              f"hash of Sony's update package, which is not on the console.")
 
 
+#: The configs by game key, for a folder whose title ID the table does not
+#: name but whose files say which game it is.
+TITLES = titles.TITLES
+
+
 @dataclass
 class Installation:
     """One title, as found on the console. See docs/screen-interface.md."""
@@ -112,6 +117,10 @@ class Installation:
     #: names in it. Set only for a title ID the table does not name, and it is
     #: what keeps a screen from offering somebody another game entirely.
     candidate_keys: tuple = ()
+    #: True when the title ID is not in the table and the game was worked out
+    #: from the files in the folder. The fix is attempted and the screen says
+    #: the release has not been tested.
+    untested: bool = False
 
     @property
     def ready(self):
@@ -248,15 +257,28 @@ def _examine(lister, folder, param_sfo_reader):
             candidates = ()
         elif not candidates:
             return None
-        return Installation(
-            title_id=title_id, path=path, usrdir=usrdir,
-            state=UNKNOWN_VARIANT, files=files or [],
-            candidate_keys=candidates,
-            tu_detail=("This release is not in this tool's table, so nothing "
-                       "is known about it in advance."))
+        if len(candidates) == 1:
+            # One game and only one. The fix finds its own patch site by
+            # pattern, and the binaries and the klicensee come from the game
+            # rather than from the title ID, so a release nobody has written
+            # down can still be attempted. What settles it is whether the site
+            # is there, which is checked before anything is written. An
+            # unknown title ID is a reason to warn and nothing more.
+            config = TITLES[candidates[0]]
+        else:
+            # The files could belong to more than one game, so which one this
+            # is cannot be settled from the folder alone. That is the one case
+            # left where the honest answer is that it cannot tell.
+            return Installation(
+                title_id=title_id, path=path, usrdir=usrdir,
+                state=UNKNOWN_VARIANT, files=files or [],
+                candidate_keys=candidates,
+                tu_detail=("The files here could belong to more than one "
+                           "game."))
 
+    untested = not titles.is_recognised(title_id)
     sku = titles.sku_for(title_id) or {}
-    expected = [record["name"] for record in titles.binaries_for(title_id)]
+    expected = [record["name"] for record in config["binaries"]]
     present = {item["name"] for item in (files or [])}
     missing = [name for name in expected if name not in present]
 
@@ -278,7 +300,8 @@ def _examine(lister, folder, param_sfo_reader):
         short=config["short"], region=sku.get("region"), path=path,
         usrdir=usrdir, state=state, files=files or [], expected=expected,
         missing=missing, tu_version=tu_version, tu_detail=tu_detail,
-        config=config, verified=titles.is_verified(title_id))
+        config=config, untested=untested,
+        verified=titles.is_verified(title_id) and not untested)
 
 
 def _list_usrdir(lister, usrdir):
@@ -365,22 +388,24 @@ def _note_installation(report, installation):
 
 
 def _unknown_variants_note(title_ids):
-    """One sentence for every Call of Duty this tool cannot name.
+    """One sentence for the folders whose game cannot be told from the files.
+
+    This is now only the genuinely ambiguous case. A folder whose files name
+    one game is offered as an untested release of that game, because the fix
+    finds its own patch site and an unfamiliar title ID is a reason to warn
+    and nothing more.
 
     A console with three of these produced three near-identical sentences,
     which reads as the scan repeating itself rather than as one fact about
     three folders.
     """
     if len(title_ids) == 1:
-        looks = "looks like a Call of Duty installation"
-        but = "but is not a release"
+        holds = "holds files that could belong to more than one game"
         them = "it"
     else:
-        looks = "look like Call of Duty installations"
-        but = "but are not releases"
+        holds = "hold files that could belong to more than one game"
         them = "they"
-    return (f"{_and_list(title_ids)} {looks} {but} this tool has a fix for, "
-            f"so {them} will be left alone.")
+    return (f"{_and_list(title_ids)} {holds}, so {them} will be left alone.")
 
 
 def _absent(key):

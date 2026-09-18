@@ -378,6 +378,145 @@ class TheWiring(unittest.TestCase):
         self.assertEqual(found["state"], patchstate.UNKNOWN)
 
 
+class TheApplyPath(unittest.TestCase):
+    """What Apply actually runs, which is not what the rest of this file runs.
+
+    Everything above calls the fix directly. Apply goes through
+    flow._build_all: decrypt, apply the fix, sign, decrypt the result again
+    and check it. That path looks several things up by title key, and one of
+    them was a plain subscript into a table with no entry for this game, so a
+    console with a real install got "KeyError: 'mw2'" after a scan that had
+    gone perfectly. Nothing in the suite ran that path for this title.
+    """
+
+    class Tool:
+        """A signer that keeps the bytes and none of the cryptography.
+
+        The container is a prefix and the ELF. That is enough for this: what
+        is being tested is the flow around signing, and keysmith's own round
+        trips are what test the signing.
+        """
+
+        PREFIX = b"SELF"
+        key_revision = None
+
+        def __init__(self, info):
+            self.fields = dict(info)
+            self.signed = []
+
+        def decrypt(self, source, destination, klicensee=None):
+            with open(source, "rb") as handle:
+                body = handle.read()
+            if body.startswith(self.PREFIX):
+                body = body[len(self.PREFIX):]
+            if destination:
+                with open(destination, "wb") as handle:
+                    handle.write(body)
+            return body
+
+        def sign(self, profile, info, source, elf_path, destination,
+                 target_name, klicensee=None):
+            self.signed.append((profile, target_name))
+            with open(elf_path, "rb") as handle:
+                elf = handle.read()
+            with open(destination, "wb") as handle:
+                handle.write(self.PREFIX + elf)
+            return destination
+
+        def info(self, path, klicensee=None):
+            return dict(self.fields)
+
+    class Saved:
+        def __init__(self, paths):
+            self.paths = paths
+
+        def entry_for(self, name):
+            return {"path": self.paths[name]}
+
+    #: What the scan reads off a real file, enough for the checks the build
+    #: path makes. The carried fields are what a rebuilt file has to come
+    #: back with unchanged.
+    INFO = {"content_id": "EP0002-BLES00683_00-IW4PATCH0000000",
+            "self_type": "APP", "app_type": "NPDRM", "licence_type": "free",
+            "auth_id": "1010000001000003", "vendor_id": "01000002",
+            "app_version": "0001000000000000",
+            "fw_version": "0004000000000000", "key_revision": "0010",
+            "cid_fn_hash": "00" * 16}
+
+    def setUp(self):
+        import tempfile
+        from ps3tools.patching.flow import FileScan, PatchReport
+        self.workdir = tempfile.mkdtemp()
+        self.addCleanup(__import__("shutil").rmtree, self.workdir,
+                        ignore_errors=True)
+        config = titles.config_for("BLES00683")
+        record = config["binaries"][0]
+        self.item = FileScan(record["name"], record,
+                             "/dev_hdd0/game/BLES00683/USRDIR/"
+                             + record["name"])
+        self.item.info = dict(self.INFO)
+        self.source = os.path.join(self.workdir, record["name"])
+        with open(self.source, "wb") as handle:
+            handle.write(self.Tool.PREFIX + build_image())
+        self.saved = self.Saved({record["name"]: self.source})
+        self.tool = self.Tool(self.INFO)
+        self.out = PatchReport("BLES00683")
+
+    def build(self):
+        return flow._build_all(self.tool, [self.item], self.saved, "mw2",
+                               mw2, self.workdir, None, self.out)
+
+    def test_the_whole_build_runs_for_this_title(self):
+        built = self.build()
+        self.assertEqual(sorted(built), [self.item.name])
+        self.assertTrue(os.path.isfile(built[self.item.name]))
+
+    def test_what_comes_out_is_the_patched_binary(self):
+        built = self.build()
+        with open(built[self.item.name], "rb") as handle:
+            body = handle.read()[len(self.Tool.PREFIX):]
+        self.assertEqual(mw2.find_site(body)[1], mw2.PATCHED)
+        self.assertEqual(body, mw2.apply(build_image())[0])
+
+    def test_the_file_is_signed_under_the_name_it_will_have(self):
+        """The CID_FN hash binds the content ID to the file name, so a file
+        signed under the wrong one is valid and will not load."""
+        self.build()
+        self.assertEqual([name for _profile, name in self.tool.signed],
+                         [self.item.name])
+
+    def test_a_file_that_comes_back_wrong_stops_the_run(self):
+        """The check that the rebuilt file decrypts to what went into it."""
+        def wrong(source, destination, klicensee=None):
+            return b"not what went in"
+
+        self.tool.decrypt_real = self.tool.decrypt
+
+        calls = []
+
+        def decrypt(source, destination, klicensee=None):
+            calls.append(source)
+            if len(calls) == 1:
+                return self.tool.decrypt_real(source, destination, klicensee)
+            return wrong(source, destination, klicensee)
+
+        self.tool.decrypt = decrypt
+        with self.assertRaises(flow.PatchFailed) as caught:
+            self.build()
+        self.assertIn("does not decrypt back", str(caught.exception))
+
+    def test_a_carried_field_that_changed_stops_the_run(self):
+        """The content ID is one of the five that have to come back the same.
+
+        A file signed with the wrong one of those is perfectly valid and will
+        not load, which is the failure that looks like nothing at all.
+        """
+        self.tool.fields["content_id"] = "EP0002-BLES99999_00-SOMETHINGELSE00"
+        with self.assertRaises(flow.PatchFailed) as caught:
+            self.build()
+        self.assertIn("different", str(caught.exception))
+
+
 # --- the real files --------------------------------------------------------
 
 HOME = sce_corpus.HOME

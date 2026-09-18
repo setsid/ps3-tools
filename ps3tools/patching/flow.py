@@ -85,6 +85,17 @@ REPLACED = "replaced"
 #   bo2  -1 TRUE -s FALSE, with -3 and -4 passed explicitly
 #   mw3  -1 FALSE -s TRUE, with -t handing scetool the original as a template,
 #        which is where the Auth-ID, Vendor-ID and control info come from
+#
+# Nothing reads these any more. The signer takes every one of those values off
+# the file it was handed, which is why signer.sign discards this argument on
+# its first line, and a title added since then has no entry here and needs
+# none. It is kept because it records what the external tool had to be told,
+# and that is the only place that knowledge is written down.
+#
+# Looked up with get rather than by subscript for exactly that reason. It was
+# a subscript, and adding a fourth fix that had no entry in a table nobody
+# reads turned Apply into "KeyError: 'mw2'" on a real console with a real
+# install, after a scan that had gone perfectly.
 SIGNING = {
     # Compression on. With it off the rebuilt file comes out at nearly twice
     # the size of the stock one, which is the shape of a file that will not
@@ -958,7 +969,7 @@ def _build_all(tool, chosen, saved, kind, module, workdir, progress, out,
     that what is verified against the console and what is patched are the same
     bytes.
     """
-    profile = SIGNING[kind]
+    profile = SIGNING.get(kind)
     fallbacks = FIELD_FALLBACKS.get(kind, {})
     built = {}
     images = {}

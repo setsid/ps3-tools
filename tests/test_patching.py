@@ -178,6 +178,68 @@ RETAIL_DUMP = """[*] SCE Header:
 """
 
 
+class EveryTitleTheProgramCanPatch(unittest.TestCase):
+    """The registrations a fourth fix turned out to need in several places.
+
+    A title is registered in ps3tools/titles.py and then has to be known to
+    the flow, to the patch state and to the scripts on disk. Modern Warfare 2
+    was registered everywhere it was looked for by the scan and missed one
+    table the build path indexed with a plain subscript, so Apply stopped
+    with "KeyError: 'mw2'" on a real console after a scan that had gone
+    perfectly. Every one of these runs for every title, so the next fix
+    cannot be half registered in the same way.
+    """
+
+    def build_prologue(self, key):
+        """_build_all with nothing to build, which is the part that looked up
+        the title before it looked at a file."""
+        module = patchstate.patcher_module(key)
+        report = flow.PatchReport("BLES00000")
+        with tempfile.TemporaryDirectory() as folder:
+            return flow._build_all(FakeScetool(), [], None, key, module,
+                                   folder, None, report)
+
+    def test_the_build_path_knows_every_title(self):
+        for key in titles.TITLES:
+            with self.subTest(title=key):
+                self.assertEqual(self.build_prologue(key), {})
+
+    def test_every_title_has_a_patch_script_on_disk(self):
+        for key in titles.TITLES:
+            with self.subTest(title=key):
+                self.assertIsNotNone(patchstate.patcher_module(key),
+                                     patchstate.PATCHER_FILES.get(key))
+                self.assertIn(key, patchstate.PATCHER_FILES)
+                self.assertIn(key, patchstate.PATCHER_ENV)
+
+    def test_every_title_has_a_fix_the_flow_can_apply(self):
+        """A title with no branch in apply_fix says so rather than being
+        quietly skipped."""
+        for key in titles.TITLES:
+            with self.subTest(title=key):
+                module = patchstate.patcher_module(key)
+                with self.assertRaises(Exception) as caught:
+                    flow.apply_fix(b"\x7fELF" + bytes(0x200), key, module)
+                self.assertNotIn(f"there is no fix for {key}",
+                                 str(caught.exception))
+
+    def test_every_title_reads_its_own_state_from_a_decrypted_image(self):
+        for key in titles.TITLES:
+            with self.subTest(title=key):
+                found = patchstate.decrypted_state(b"\x7fELF" + bytes(0x200),
+                                                   key)
+                self.assertFalse(found.get("tool_fault"), found)
+                self.assertEqual(found["state"], patchstate.UNKNOWN)
+
+    def test_every_title_has_a_card_and_an_icon(self):
+        from ps3tools.shell import icons, registry
+        keys = {item.key for item in registry.screens()}
+        for key in titles.TITLES:
+            with self.subTest(title=key):
+                self.assertIn(key, keys)
+                self.assertTrue(icons.for_key(key))
+
+
 class WhatTheHeaderReadSaysWhenItCannotRead(unittest.TestCase):
     """A field that was printed and a field that was never there.
 

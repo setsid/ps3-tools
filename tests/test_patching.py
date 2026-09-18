@@ -4457,3 +4457,107 @@ class SpottingTheGameTheConsoleHasOpen(ScreenCase):
                           patcher.PatcherScreen.running_this_game)
             self.assertIs(screen_class._read_running_page,
                           patcher.PatcherScreen._read_running_page)
+
+
+class TheScanStopsWhenTheGameIsLoaded(ScreenCase):
+    """Detected, said so, and then read the files anyway.
+
+    The panel went up and the scan carried on: the status line read
+    "decrypting t5mp_ps3f.self" and the progress showed "0 of 3" underneath a
+    panel saying nothing could be patched. Every one of those files has to be
+    pulled off the console and decrypted, several megabytes of it, to reach an
+    answer that was already known.
+    """
+
+    PAGE = ("/dev_hdd0/game/{title_id}/USRDIR\n"
+            "/dev_hdd0/game/{title_id}/ICON0.PNG\npid=01060200")
+
+    def opened(self, running):
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        screen._read_running_page = lambda _host: (
+            self.PAGE.format(title_id=running) if running else "")
+        self.asked = []
+        original = screen._lister
+
+        def counted(host):
+            self.asked.append(host)
+            return original(host)
+
+        screen._lister = counted
+        return screen, services
+
+    def test_nothing_is_read_off_the_console(self):
+        screen, services = self.opened(BO2_ID)
+        screen.start_scan()
+        self.settle(services)
+        self.assertEqual(self.asked, [])
+
+    def test_no_scan_task_is_started_at_all(self):
+        screen, services = self.opened(BO2_ID)
+        self.assertIsNone(screen.start_scan())
+        self.settle(services)
+
+    def test_the_table_is_left_empty(self):
+        screen, services = self.opened(BO2_ID)
+        screen.start_scan()
+        self.settle(services)
+        self.assertEqual(screen._files.topLevelItemCount(), 0)
+
+    def test_the_screen_is_not_left_looking_busy(self):
+        screen, services = self.opened(BO2_ID)
+        screen.start_scan()
+        self.settle(services)
+        self.assertFalse(screen._patch.isEnabled())
+
+    def test_scan_again_is_the_way_back(self):
+        """Once the game has been quit and the console restarted."""
+        screen, services = self.opened(BO2_ID)
+        screen.start_scan()
+        self.settle(services)
+        self.assertTrue(screen._rescan.isEnabled())
+
+    def test_a_console_with_nothing_loaded_scans_as_before(self):
+        screen, services = self.opened("")
+        screen.start_scan()
+        self.settle(services)
+        self.assertTrue(self.asked, "the scan should have read the console")
+
+
+class TheRunningCheckIsAskedAfreshEveryScan(ScreenCase):
+    """Quit the game, pressed Scan again, still told it was running.
+
+    Two faults behind one symptom. The read joined webMAN's root page to
+    cpursx.ps3, and the root page lists what is installed, so the title ID
+    was on it whether the game was running or not. And an answer that is only
+    right at the moment it is read must never be remembered: cpursx.ps3 was
+    returning nothing at all while the screen still said Black Ops 1 was
+    running.
+    """
+
+    def test_only_the_page_that_says_what_is_open_is_read(self):
+        from ps3tools.shell.consolestats import RUNNING_PATHS
+        self.assertEqual(RUNNING_PATHS, ("/cpursx.ps3",))
+        self.assertNotIn("/", RUNNING_PATHS)
+
+    def test_the_figures_still_read_both_pages(self):
+        """The root page is where several of them live. Only the running
+        question had to stop looking at it."""
+        from ps3tools.shell.consolestats import PATHS
+        self.assertIn("/", PATHS)
+        self.assertIn("/cpursx.ps3", PATHS)
+
+    def test_nothing_is_remembered_between_scans(self):
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        answers = [f"/dev_hdd0/game/{BO2_ID}/USRDIR pid=01060200", ""]
+        screen._read_running_page = lambda _host: answers.pop(0)
+        self.assertEqual(screen.running_this_game(), BO2_ID)
+        # The game has been quit and the console restarted by now.
+        self.assertEqual(screen.running_this_game(), "")
+
+    def test_every_scan_asks_the_console_again(self):
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        asked = []
+        screen._read_running_page = lambda host: asked.append(host) or ""
+        for _ in range(3):
+            screen.running_this_game()
+        self.assertEqual(len(asked), 3)

@@ -107,18 +107,31 @@ def make_probe(host, timeout=TIMEOUT):
     return HttpProbe(host, timeout=timeout)
 
 
-def read_page_text(host, probe_factory=None, cancelled=lambda: False):
-    """webMAN's own pages as flattened text, or "".
+#: The one page that says what the console has open. Read on its own rather
+#: than with the root page beside it: the root page lists what is installed,
+#: so a title ID is on it whether the game is running or not, and joining the
+#: two reported a game as running for as long as it stayed installed. The user
+#: quit the game, pressed Scan again, was told it was still running, and found
+#: cpursx.ps3 returning nothing at all at that moment.
+RUNNING_PATHS = ("/cpursx.ps3",)
 
-    The same fetch read_console does, without the parsing. A caller looking
-    for a title ID on the page wants what the page says rather than the
-    figures taken out of it: the page carries the title ID of whatever the
-    console has open and nothing that labels it, so there is nothing for a
-    parser to turn it into.
+
+def read_page_text(host, probe_factory=None, cancelled=lambda: False,
+                   paths=RUNNING_PATHS):
+    """webMAN's pages as flattened text, or "".
+
+    The same fetch read_console does, without the parsing, and over one page
+    by default. A caller looking for a title ID wants what the page says
+    rather than the figures taken out of it: the page carries the title ID of
+    whatever the console has open and nothing that labels it, so there is
+    nothing for a parser to turn it into.
+
+    Nothing is remembered here. The answer changes while the screen is open,
+    which is the whole point of asking, so every call is a fresh request.
     """
     probe = (probe_factory or make_probe)(host, TIMEOUT)
     parts = []
-    for path in PATHS:
+    for path in paths:
         if cancelled():
             return ""
         response = probe.get(path)

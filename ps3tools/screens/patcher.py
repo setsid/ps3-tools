@@ -993,6 +993,24 @@ class PatcherScreen(Screen):
         # should be reading it while the scan runs rather than after it.
         self._running = self.running_this_game()
         self._show_running(self._running)
+        if self._running:
+            # Stop here. Every file the scan would read has to come off the
+            # console and be decrypted, several megabytes of it, and the
+            # answer is already known: nothing in this folder can be patched
+            # while the console has the game loaded. It used to say so in a
+            # panel and then spend the time anyway, with the status line
+            # reading "decrypting t5mp_ps3f.self" underneath it.
+            #
+            # Scan again is the way back, once the game has been quit and the
+            # console restarted, which is what the panel asks for.
+            self._clear_state()
+            self._files.clear()
+            self._set_busy(False, "")
+            self._rescan.setEnabled(True)
+            self._patch.setEnabled(False)
+            self._restore.setEnabled(False)
+            self._scan = None
+            return None
         self._clear_state()
         self._patch.setEnabled(False)
         self._rescan.setEnabled(False)

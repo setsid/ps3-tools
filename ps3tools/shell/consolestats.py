@@ -107,6 +107,26 @@ def make_probe(host, timeout=TIMEOUT):
     return HttpProbe(host, timeout=timeout)
 
 
+def read_page_text(host, probe_factory=None, cancelled=lambda: False):
+    """webMAN's own pages as flattened text, or "".
+
+    The same fetch read_console does, without the parsing. A caller looking
+    for a title ID on the page wants what the page says rather than the
+    figures taken out of it: the page carries the title ID of whatever the
+    console has open and nothing that labels it, so there is nothing for a
+    parser to turn it into.
+    """
+    probe = (probe_factory or make_probe)(host, TIMEOUT)
+    parts = []
+    for path in PATHS:
+        if cancelled():
+            return ""
+        response = probe.get(path)
+        if response.ok:
+            parts.append(html_to_text(response.body))
+    return "\n".join(parts)
+
+
 def read_console(host, probe_factory=None, cancelled=lambda: False):
     """Fetch and parse. Pure enough to call off the GUI thread, and it is.
 

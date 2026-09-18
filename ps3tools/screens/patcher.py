@@ -118,16 +118,15 @@ except ImportError:
     detect = None
 
 # The same defence, for the same reason: the console reader and this screen
-# are being written in parallel. running_title says which game the console has
-# loaded right now, and read_console is what puts the facts in front of it.
+# are being written in parallel. read_page hands over webMAN's own pages as
+# text, which is where the title ID of whatever the console has open appears.
 # Where they are not there yet the seam below answers "nothing is running",
 # which is the only safe direction: a reader this screen cannot reach must
 # never turn into a refusal to patch.
 try:
-    from ps3tools.shell.consolestats import read_console, running_title
+    from ps3tools.shell.consolestats import read_page_text as read_page
 except ImportError:
-    read_console = None
-    running_title = None
+    read_page = None
 
 # The first thing on the screen, before the scan and before the console is
 # read at all. It is a dialogue rather than a paragraph because of what it
@@ -1322,21 +1321,21 @@ class PatcherScreen(Screen):
             # as saying nothing. It must never become a guess.
             return "", ""
 
-    def _read_running_title(self, host):
-        """The title ID the console has loaded right now, or "". The seam.
+    def _read_running_page(self, host):
+        """webMAN's cpursx page as text, or "". The seam.
 
-        Written as its own method for the same reason _read_firmware is: it is
-        the one place this screen reaches the network for this answer, so a
-        test replaces it and nothing in a test goes near a console.
+        Written as its own method for the same reason _read_firmware is: it
+        is the one place this screen reaches the network for this answer, so
+        a test replaces it and nothing in a test goes near a console.
 
-        A console that will not answer has not said what it is running, and
-        silence must never become a refusal to patch. The scan that follows
-        reaches the same console and says in its own words what it found.
+        A console that will not answer has not said what it has loaded, and
+        silence must never become a refusal to patch. The dialogue on the way
+        in has already asked the question in words.
         """
-        if read_console is None or running_title is None:
+        if read_page is None:
             return ""
         try:
-            return running_title(read_console(host)) or ""
+            return read_page(host) or ""
         except Exception:                                   # noqa: BLE001
             return ""
 
@@ -1352,9 +1351,31 @@ class PatcherScreen(Screen):
         host = self.connection.host if self.connection else ""
         if not host:
             return ""
-        found = titles.normalise(self._read_running_title(host))
-        if not found or titles.KNOWN_TITLE_IDS.get(found) != self.title_key:
+        page = self._read_running_page(host)
+        if not page:
             return ""
+        # Asked of each release of this game in turn. The page carries the
+        # title ID of whatever is open and nothing that says which field is
+        # which, so the answerable question is whether one of ours is on it.
+        for title_id in self._releases_to_check():
+            if parsers.title_is_loaded(page, title_id):
+                return titles.normalise(title_id)
+        return ""
+
+    def _releases_to_check(self):
+        """The title IDs worth looking for, this screen's release first.
+
+        The release the scan settled on is the one about to be patched, so it
+        is asked about first. The rest of the game's releases follow, because
+        a console can have a copy this screen has not landed on yet and it is
+        the same game either way.
+        """
+        found = []
+        chosen = getattr(self, "_release", "") or ""
+        if chosen:
+            found.append(chosen)
+        found += [item for item in self.config.get("title_ids", ())
+                  if item not in found]
         return found
 
     def _show_running(self, title_id):

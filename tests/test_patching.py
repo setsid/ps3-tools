@@ -1140,7 +1140,7 @@ class ScreenCase(ConsoleCase):
 
     #: What the stubbed console says it has loaded. Nothing, for every test
     #: but the ones about a game that is running.
-    running = ""
+    running_page = ""
 
     def build(self, screen_class, host="127.0.0.1"):
         connection = ConnectionState(host)
@@ -1150,7 +1150,7 @@ class ScreenCase(ConsoleCase):
         # HTTP call, so it is answered here for every screen these build.
         screen._read_firmware = lambda _host: self.firmware
         # The same for the read that says which game the console has loaded.
-        screen._read_running_title = lambda _host: self.running
+        screen._read_running_page = lambda _host: self.running_page
         # Both dialogues are modal and there is no display here, so a real one
         # would hang the suite for ever. They are answered and recorded rather
         # than replaced one test at a time: every test that enters a screen
@@ -3850,7 +3850,7 @@ class TheDialogueBeforeAnythingHappens(ScreenCase):
             return ""
 
         screen._lister = counted
-        screen._read_running_title = read
+        screen._read_running_page = read
         return screen, services, done
 
     def test_the_dialogue_comes_before_the_scan_and_before_any_read(self):
@@ -4088,7 +4088,7 @@ class WhatIsLeftAboveTheFileTable(ScreenCase):
     def test_one_implementation_of_all_of_it_and_never_three(self):
         shared = ("ask_before_starting", "say_restart_needed",
                   "_notice_dialogue", "more_about_this_fix", "verdict_words",
-                  "_show_verdict", "running_this_game", "_read_running_title",
+                  "_show_verdict", "running_this_game", "_read_running_page",
                   "patch_allowed")
         for screen_class in ALL_THREE:
             for name in shared:
@@ -4220,7 +4220,12 @@ class RefusingToPatchAGameTheConsoleHasLoaded(ScreenCase):
     """
 
     def scanned(self, running):
-        self.running = running
+        # The page a real console serves with that game open: the title ID
+        # in a ver.xml link, a folder and an icon path, and a pid beside it.
+        self.running_page = (
+            f"https://a0.ww.np.dl.playstation.net/tpl/np/{running}/"
+            f"{running}-ver.xml\n/dev_hdd0/game/{running}/USRDIR\n"
+            f"pid=01060200") if running else ""
         self.start(BO2_ID, {name: self_file("bo2", name)
                             for name in BO2_SET})
         screen, services = self.build(patcher.BlackOpsTwoPatcher)
@@ -4291,7 +4296,7 @@ class RefusingToPatchAGameTheConsoleHasLoaded(ScreenCase):
         """
         screen, services = self.scanned(BO2_ID)
         self.assertFalse(screen._patch.isEnabled())
-        screen._read_running_title = lambda _host: ""
+        screen._read_running_page = lambda _host: ""
         screen._rescan.click()
         self.settle(services)
         self.assertTrue(screen._patch.isEnabled())
@@ -4310,29 +4315,29 @@ class RefusingToPatchAGameTheConsoleHasLoaded(ScreenCase):
         def silent(_host):
             raise OSError("the console stopped answering")
 
-        with mock.patch.object(patcher, "read_console", silent):
+        with mock.patch.object(patcher, "read_page", silent):
             self.assertEqual(
-                patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
+                patcher.PatcherScreen._read_running_page(screen, "127.0.0.1"),
                 "")
 
     def test_a_console_that_is_not_running_a_game_reads_as_the_xmb(self):
         screen, _services = self.build(patcher.BlackOpsTwoPatcher)
-        with mock.patch.object(patcher, "read_console", lambda _host: {}):
+        with mock.patch.object(patcher, "read_page", lambda _host: ""):
             self.assertEqual(
-                patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
+                patcher.PatcherScreen._read_running_page(screen, "127.0.0.1"),
                 "")
-        with mock.patch.object(patcher, "read_console",
-                               lambda _host: {"running_title": BO2_ID}):
+        page = f"/dev_hdd0/game/{BO2_ID}/USRDIR pid=01060200"
+        with mock.patch.object(patcher, "read_page", lambda _host: page):
             self.assertEqual(
-                patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
-                BO2_ID)
+                patcher.PatcherScreen._read_running_page(screen, "127.0.0.1"),
+                page)
 
     def test_the_read_goes_through_one_seam_and_nothing_else(self):
         screen, _services = self.build(patcher.BlackOpsTwoPatcher)
-        self.assertTrue(hasattr(patcher.PatcherScreen, "_read_running_title"))
-        screen._read_running_title = lambda host: "  bles-01717 "
-        # Normalised the way every other title ID on this screen is, because
-        # webMAN prints them in more than one shape.
+        self.assertTrue(hasattr(patcher.PatcherScreen, "_read_running_page"))
+        # Dashed and in lower case, because webMAN prints a title ID in more
+        # than one shape across the same page.
+        screen._read_running_page = lambda host: "/game/bles-01717/USRDIR"
         self.assertEqual(screen.running_this_game(), BO2_ID)
 
 
@@ -4385,3 +4390,70 @@ class TheKeyRevisionIsCheckedAgainstWhatWasAskedFor(unittest.TestCase):
                                         self.Item())
         self.assertNotEqual(wanted, "0019")
         self.assertEqual(wanted, "000A")
+
+
+class SpottingTheGameTheConsoleHasOpen(ScreenCase):
+    """Read off a real console rather than guessed at.
+
+    An earlier pass matched on labels such as "Running:" and "Game:". None of
+    those appear. With Black Ops 1 open, cpursx.ps3 prints the title ID three
+    times, as a link to Sony's ver.xml, as a folder name and in an ICON0.PNG
+    path, with a pid beside it and nothing naming the self that is loaded.
+    """
+
+    #: The page as a real console serves it, flattened.
+    PAGE = ("https://a0.ww.np.dl.playstation.net/tpl/np/BLES01031/"
+            "BLES01031-ver.xml\n"
+            "/dev_hdd0/game/BLES01031/USRDIR\n"
+            "/dev_hdd0/game/BLES01031/ICON0.PNG\n"
+            "pid=01060200")
+
+    def screen_showing(self, page, screen_class=None):
+        screen, _services = self.build(
+            screen_class or patcher.BlackOpsOnePatcher)
+        screen._read_running_page = lambda _host: page
+        return screen
+
+    def test_the_game_is_spotted_by_its_title_id(self):
+        screen = self.screen_showing(self.PAGE)
+        self.assertEqual(screen.running_this_game(), "BLES01031")
+
+    def test_the_pid_does_not_matter(self):
+        """01050200 is the main menu and 01060200 is multiplayer. The title
+        ID is the same for both, and either means the console has the game."""
+        for pid in ("01050200", "01060200"):
+            with self.subTest(pid=pid):
+                page = self.PAGE.replace("01060200", pid)
+                self.assertEqual(
+                    self.screen_showing(page).running_this_game(),
+                    "BLES01031")
+
+    def test_another_game_is_not_this_screen_s_business(self):
+        for screen_class in (patcher.BlackOpsTwoPatcher,
+                             patcher.ModernWarfareThreePatcher):
+            with self.subTest(screen=screen_class.__name__):
+                screen = self.screen_showing(self.PAGE, screen_class)
+                self.assertEqual(screen.running_this_game(), "")
+
+    def test_a_console_on_the_xmb_is_not_running_anything(self):
+        screen = self.screen_showing("webMAN MOD 1.47.42\nCPU 48 C")
+        self.assertEqual(screen.running_this_game(), "")
+
+    def test_a_page_that_could_not_be_read_is_not_a_refusal(self):
+        """Silence must never become a refusal. The dialogue on the way in
+        has already asked the question in words."""
+        screen = self.screen_showing("")
+        self.assertEqual(screen.running_this_game(), "")
+
+    def test_another_release_of_the_same_game_still_counts(self):
+        page = self.PAGE.replace("BLES01031", "BLES01032")
+        self.assertEqual(self.screen_showing(page).running_this_game(),
+                         "BLES01032")
+
+    def test_all_three_screens_share_the_one_implementation(self):
+        for screen_class in (patcher.BlackOpsTwoPatcher,
+                             patcher.ModernWarfareThreePatcher):
+            self.assertIs(screen_class.running_this_game,
+                          patcher.PatcherScreen.running_this_game)
+            self.assertIs(screen_class._read_running_page,
+                          patcher.PatcherScreen._read_running_page)

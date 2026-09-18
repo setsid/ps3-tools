@@ -382,6 +382,32 @@ RUNNING_LABEL = re.compile(
 TITLE_SHAPE = re.compile(r"(?i)\b[A-Z]{4}[-_]?\d{5}\b")
 
 
+def title_is_loaded(text, title_id):
+    """Whether this release's title ID appears on webMAN's cpursx page.
+
+    Read off a real console rather than guessed at. With Black Ops 1 open,
+    cpursx.ps3 prints BLES01031 three times, as a link to Sony's ver.xml, as
+    a folder name and in an ICON0.PNG path, alongside a pid= value. Nothing
+    on the page says "running" and nothing names the self that is loaded, so
+    there is no label to key on and the title ID is the whole of the signal.
+
+    The pid moves with what the game has loaded, 01050200 at the main menu
+    where the campaign binary is up and 01060200 in multiplayer, and the
+    title ID is the same for both. So the pid is ignored: the question is
+    whether the console has this game open at all, and either answer to that
+    means the same thing for patching it.
+
+    Asked per release rather than answered in general, because an unlabelled
+    identifier cannot say which of several it belongs to, while "is this one
+    here" is a question the page can answer.
+    """
+    wanted = (title_id or "").upper().replace("-", "").strip()
+    if not TITLE_SHAPE.fullmatch(wanted):
+        return False
+    body = (text or "").upper().replace("-", "")
+    return wanted in body
+
+
 def parse_running_title(text):
     """The title ID of the game the console is running, uppercase, or "".
 

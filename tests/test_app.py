@@ -23,9 +23,12 @@ try:
 except ImportError:
     QT = False
 
+#: The screen modules this file needs registered, each with one key it is
+#: known to register. The key is what says whether the module's cards are in
+#: the registry, which cannot be asked of a module without importing it.
 SCREEN_MODULES = (
-    "ps3tools.screens.diagnostics",
-    "ps3tools.screens.patcher",
+    ("ps3tools.screens.diagnostics", "diagnostics"),
+    ("ps3tools.screens.patcher", "bo2"),
 )
 
 
@@ -40,19 +43,24 @@ def load_screens():
     again. Another file that imported these and then emptied the registry
     would leave this one looking at a launcher with no cards in it and
     calling that a missing screen, which it did: this passed on its own and
-    failed after tests/test_shell.py. So where nothing is registered, a module
-    that was already loaded is loaded again to put its card back.
+    failed after tests/test_shell.py. So a module whose card is missing is
+    loaded again to put it back.
+
+    Asked per module rather than by whether the registry is empty at all. A
+    registry holding somebody else's card is not this file's cards: one test
+    module that imported a single screen was enough to make this return early
+    and report the diagnostics card as missing.
     """
     from ps3tools.shell import registry
-    if registry.screens():
-        return registry
-    for name in SCREEN_MODULES:
+    for name, key in SCREEN_MODULES:
+        if registry.screen_for(key) is not None:
+            continue
         cached = sys.modules.get(name)
         try:
             module = importlib.import_module(name)
         except ImportError:
             continue
-        if cached is not None:
+        if cached is not None and registry.screen_for(key) is None:
             importlib.reload(module)
     return registry
 

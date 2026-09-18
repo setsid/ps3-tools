@@ -207,7 +207,7 @@ def save_settings(settings):
 #: import statements as well, because the exe build's import analysis cannot
 #: follow a module name assembled at run time.
 KNOWN_SCREEN_MODULES = ("about", "diagnostics", "gameupdates",
-                        "installpkg", "patcher", "saves",
+                        "installpkg", "monitor", "patcher", "saves",
                         "transfer")
 
 
@@ -216,7 +216,7 @@ def _bundled_screens():
     statements and not strings; without it the screen modules are absent from
     the exe rather than merely undiscovered in it."""
     from ..screens import (about, diagnostics, gameupdates,  # noqa: F401
-                           installpkg, patcher, saves, transfer)
+                           installpkg, monitor, patcher, saves, transfer)
     return (about, diagnostics, patcher)
 
 

@@ -58,7 +58,7 @@ NETWORK_LINES = (
      "The patcher copies the game's binaries down, changes them on this PC "
      "and puts them back in that game's own folder. It touches nothing else "
      "on the console and nothing at all outside that folder."),
-    ("Checks GitHub for a newer version, once a day.",
+    ("Checks GitHub for a newer version every time it starts.",
      "One request to api.github.com asking what the latest release is. It "
      "sends the name and version of this program and nothing else. Your "
      "games and everything read from the console stay on this machine. "
@@ -133,10 +133,17 @@ DISCLAIMER_NOTICE = (
     "guarantee is given. Use it at your own risk. The app backs up the files "
     "it modifies; keep your own backups as well.")
 
-UPDATE_LABEL = "Check GitHub for a newer version once a day"
+UPDATE_LABEL = "Check GitHub for a newer version when this program starts"
+#: Says what the setting does rather than what it used to do. The check runs
+#: at every start whatever this says, because somebody on an old build hears
+#: about a fix that way and no other, so the old wording promised something
+#: the program no longer does: it said turning this off meant nothing left
+#: your network, and that is a claim people rely on.
 UPDATE_HINT = (
-    "Turn this off and the program never contacts anything outside your own "
-    "network. You would then need to look for new versions yourself.")
+    "One request to api.github.com, asking what the latest release is. It "
+    "sends the name and version of this program and nothing else.\n\n"
+    "The check at start-up runs whether this is ticked or not. Turning it "
+    "off stops the button below from asking.")
 
 CHECKING = "Asking GitHub..."
 UP_TO_DATE = "This is the newest version that was published."

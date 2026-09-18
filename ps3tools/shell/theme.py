@@ -348,6 +348,32 @@ QPushButton#themeButton { padding: 6px 9px; }
    read as a form control, and without a border it then read as plain text
    that happened to be clickable. A thin border at rest says it can be
    pressed, and the bolder state it already had on hover is kept. */
+/* The tab strip on the About screen. Unstyled it drew as bare white boxes
+   with the labels clipped, because the palette the rest of the window uses
+   does not reach a QTabBar on its own. */
+QTabWidget::pane {
+    border: 1px solid %(border)s;
+    border-radius: 6px;
+    background: %(surface)s;
+    top: -1px;
+}
+QTabBar { background: transparent; }
+QTabBar::tab {
+    background: %(surface_alt)s;
+    color: %(text_dim)s;
+    border: 1px solid %(border)s;
+    border-bottom: 0;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 7px 14px;
+    margin-right: 2px;
+}
+QTabBar::tab:selected {
+    background: %(surface)s;
+    color: %(text)s;
+}
+QTabBar::tab:hover:!selected { color: %(text)s; }
+
 QPushButton#consoleButton::menu-indicator { image: none; width: 0px; }
 QPushButton#consoleButton {
     border: 1px solid %(border)s;

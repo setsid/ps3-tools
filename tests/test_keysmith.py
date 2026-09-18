@@ -18,6 +18,7 @@ import hashlib
 import os
 import sys
 import unittest
+import zlib
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "sce"))
@@ -925,8 +926,10 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
         was true only while signing at another revision left the section
         bytes alone. A file signed for PS3HEN has its loaded sections
         compressed, so the bytes move and the per-section hashes in that
-        table move with them. The key and the counter are what this is about
-        and they are untouched.
+        table move with them, and it has its section table built from the
+        ELF, so it has sections the template never had and a table with room
+        for their keys. The key and the counter are what this is about and
+        they are untouched.
         """
         item = sample("mw2-eboot")
         klic = bytes.fromhex(item.klicensee)
@@ -938,29 +941,38 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
         second = after.decrypt_metadata(klic)
         self.assertEqual(first.info.key, second.info.key)
         self.assertEqual(first.start_iv, second.start_iv)
-        self.assertEqual(len(first.keys), len(second.keys))
+        self.assertGreater(len(second.keys), len(first.keys))
 
-    def test_signing_for_hen_compresses_the_loaded_sections(self):
+    def test_signing_for_hen_compresses_the_sections_worth_compressing(self):
         """The fourth thing that makes a file a PS3HEN file.
 
-        Every HEN build surveyed compresses every loaded section and every
-        custom firmware build compresses none, across twenty-eight files. It
-        was taken for a build choice, and a patch with the other three
-        differences right black screened a real console the moment the
-        patched binary loaded.
+        Every HEN build surveyed stores a section compressed wherever that
+        makes it smaller and stores it as it stands wherever it does not,
+        which is what the four uncompressed sections of their default_mp.self
+        have in common: 0, 4, 0x20 and 0x40 bytes, and only the last of those
+        is worth packing at all. Every custom firmware build compresses
+        nothing, across twenty-eight files. It was taken for a build choice,
+        and a patch with the other three differences right black screened a
+        real console the moment the patched binary loaded.
         """
         item = sample("mw2-eboot")
         klic = bytes.fromhex(item.klicensee)
         elf = keysmith.decrypt(item.path, item.klicensee)
-        for revision, want in ((0x000A, {2}), (None, {1})):
+        template = keysmith.read(item.path)
+        for revision in (0x000A, None):
             with self.subTest(key_revision=revision):
                 built = keysmith.read(keysmith.sign(
                     elf, item.path, item.klicensee, key_revision=revision))
-                loaded = [s.compressed for s
-                          in built.decrypt_metadata(klic).sections
-                          if s.section_type == 2 and s.data_size]
+                loaded = [s for s in built.decrypt_metadata(klic).sections
+                          if s.section_type == 2]
                 self.assertTrue(loaded)
-                self.assertEqual(set(loaded), want)
+                for section in loaded:
+                    phdr = template.program_headers[section.index]
+                    body = elf[phdr.offset:phdr.offset + phdr.filesz]
+                    helps = len(zlib.compress(
+                        body, signing.ZLIB_LEVEL)) < len(body)
+                    want = 2 if revision == 0x000A and helps else 1
+                    self.assertEqual(section.compressed, want, section.index)
 
     def test_a_hen_file_is_smaller_than_the_one_it_came_from(self):
         item = sample("mw2-mp")
@@ -1160,3 +1172,229 @@ class TheControlFlagsAHenBuildCarries(unittest.TestCase):
     def test_a_revision_nobody_has_surveyed_keeps_the_template_s(self):
         signing = sys.modules["ps3tools.keysmith.sign"]
         self.assertNotIn(0x0019, signing.CONTROL_FLAGS_FOR_REVISION)
+
+
+class TheSectionTableAHenBuildCarries(unittest.TestCase):
+    """The fifth difference, and the one a console found the hard way.
+
+    The custom firmware builds in the survey were made with scetool's
+    skip-sections option, so each one describes only some of its eight
+    program headers: five in default_mp.self and three in default.self.
+    Every one of the fourteen PS3HEN builds describes all eight. So a table
+    copied out of a custom firmware template does not describe the file a HEN
+    console has to be given, and at key revision 0x000A the table is built
+    from the ELF instead.
+
+    A patch with the other four differences right went on to a real HEN
+    console cleanly and black screened at the moment the patched binary
+    loaded, which is what sent the survey looking for a fifth.
+
+    The gate is the same as for the other four: the custom firmware build of
+    a pair, re-signed here at 0x000A, against the HEN build the same third
+    party shipped beside it.
+    """
+
+    PAIRED_BUILDS = os.path.join(corpus.HOME, "IW4-Binaries")
+
+    #: Two regions of the multiplayer binary and one of the campaign one. The
+    #: campaign pair is in there because its custom firmware build describes
+    #: three sections rather than five, so a rebuild fitted to the
+    #: multiplayer template would not fit it.
+    PAIRS = (
+        ("release", "blus30377", "default_mp.self"),
+        ("release", "bles00683", "default_mp.self"),
+        ("release-sp", "bles00687", "default.self"),
+    )
+
+    def paired(self, tree, region, kind, name):
+        need_keys()
+        path = os.path.join(self.PAIRED_BUILDS, tree, region, kind, name)
+        if not os.path.isfile(path):
+            self.skipTest(f"{path} is not on this machine")
+        return path
+
+    def resigned(self, tree, region, name):
+        """The custom firmware build of a pair, re-signed for PS3HEN."""
+        path = self.paired(tree, region, "cfw", name)
+        elf = keysmith.decrypt(path, corpus.IW_KLIC)
+        return keysmith.read(keysmith.sign(elf, path, corpus.IW_KLIC,
+                                           filename=name,
+                                           key_revision=0x000A))
+
+    def metadata_of(self, parsed):
+        return parsed.decrypt_metadata(bytes.fromhex(corpus.IW_KLIC))
+
+    def plaintext(self, parsed, metadata, section):
+        """One section's bytes with the encryption taken back off.
+
+        The ciphertext cannot match theirs and is not meant to: every
+        encrypted section here is encrypted under a key generated at random,
+        because the key travels in the file beside the data it covers and
+        nothing outside the file has to agree with it. What has to match is
+        what the console has after decrypting.
+        """
+        blob = parsed.raw[section.data_offset:
+                          section.data_offset + section.data_size]
+        if section.encrypted == 3:
+            blob = aes.ctr_crypt(metadata.key_at(section.key_index),
+                                 metadata.key_at(section.iv_index), blob)
+        return blob
+
+    def fields_of(self, parsed):
+        """Every field of a file that does not depend on random material.
+
+        The key table is left out because it is random by design, and the
+        signature is left out because it is carried rather than made; both
+        have tests of their own below. Everything else in the file is in
+        here, the section plaintexts included.
+        """
+        metadata = self.metadata_of(parsed)
+        fields = {"file size": len(parsed.raw)}
+        for name in ("key_revision", "header_type", "metadata_offset",
+                     "header_length", "data_length"):
+            fields["sce " + name] = getattr(parsed.sce, name)
+        for name in ("header_type", "app_info_offset", "elf_offset",
+                     "phdr_offset", "shdr_offset", "section_info_offset",
+                     "sce_version_offset", "control_info_offset",
+                     "control_info_size", "padding"):
+            fields["self header " + name] = getattr(parsed.self_header, name)
+        for name in ("auth_id", "vendor_id", "self_type", "version",
+                     "padding"):
+            fields["app info " + name] = getattr(parsed.app_info, name)
+        fields["elf header"] = parsed.elf_header.pack().hex()
+        fields["program headers"] = b"".join(
+            phdr.pack() for phdr in parsed.program_headers).hex()
+        fields["section headers"] = b"".join(
+            shdr.pack() for shdr in parsed.section_headers).hex()
+        fields["section infos"] = b"".join(
+            info.pack() for info in parsed.section_infos).hex()
+        fields["sce version"] = parsed.sce_version.pack().hex()
+        for block in parsed.control_infos:
+            fields[f"control info {block.info_type}"] = (
+                block.size, block.next, block.payload.hex())
+        for name in ("signature_input_length", "unknown1", "section_count",
+                     "key_count", "opt_header_size", "unknown2", "unknown3"):
+            fields["metadata " + name] = getattr(metadata.header, name)
+        fields["metadata optional"] = metadata.optional.hex()
+        fields["metadata length"] = metadata.raw_length
+        for index, section in enumerate(metadata.sections):
+            for name in ("data_offset", "data_size", "section_type", "index",
+                         "hashed", "sha1_index", "encrypted", "key_index",
+                         "iv_index", "compressed"):
+                fields[f"section {index} {name}"] = getattr(section, name)
+            fields[f"section {index} plaintext"] = hashlib.sha1(
+                self.plaintext(parsed, metadata, section)).hexdigest()
+        return fields
+
+    def test_the_two_builds_of_one_elf_describe_different_sections(self):
+        """The evidence the rest of this rests on, read off their files."""
+        cfw = self.metadata_of(keysmith.read(
+            self.paired("release", "blus30377", "cfw", "default_mp.self")))
+        hen = self.metadata_of(keysmith.read(
+            self.paired("release", "blus30377", "hen", "default_mp.self")))
+        self.assertEqual([s.index for s in cfw.sections
+                          if s.section_type == 2], [0, 1, 2, 3, 4])
+        self.assertEqual([s.index for s in hen.sections
+                          if s.section_type == 2], [0, 1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual((cfw.header.section_count, cfw.header.key_count),
+                         (6, 0x2E))
+        self.assertEqual((hen.header.section_count, hen.header.key_count),
+                         (9, 0x46))
+
+    def test_a_re_signed_custom_firmware_build_matches_theirs(self):
+        """Field for field, on three pairs, everything but the signature."""
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        ran = 0
+        for tree, region, name in self.PAIRS:
+            with self.subTest(region=region, name=name):
+                theirs = self.fields_of(keysmith.read(
+                    self.paired(tree, region, "hen", name)))
+                mine = self.fields_of(self.resigned(tree, region, name))
+                self.assertEqual(sorted(mine), sorted(theirs))
+                for field in sorted(mine):
+                    self.assertEqual(mine[field], theirs[field], field)
+                ran += 1
+        if not ran:
+            self.skipTest(f"{self.PAIRED_BUILDS} is not on this machine")
+
+    def test_every_program_header_gets_a_section_and_the_table_follows(self):
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        built = keysmith.read(keysmith.sign(elf, item.path, item.klicensee,
+                                            key_revision=0x000A))
+        metadata = built.decrypt_metadata(bytes.fromhex(item.klicensee))
+        loaded = [s for s in metadata.sections if s.section_type == 2]
+        self.assertEqual([s.index for s in loaded],
+                         list(range(built.elf_header.phnum)))
+        table = [s for s in metadata.sections if s.section_type == 1]
+        self.assertEqual(len(table), 1)
+        # One past the sections written, which is what both of their builds
+        # carry: 6 where five sections are written and 9 where eight are.
+        # Since every program header is written here the gap could as well be
+        # counted from the last index, and the two rules cannot be told apart
+        # from any file on hand.
+        self.assertEqual(table[0].index, len(loaded) + 1)
+        # The SELF header is the only place that says where the section
+        # header table is, and it has moved.
+        self.assertEqual(table[0].data_offset, built.self_header.shdr_offset)
+        self.assertEqual(
+            table[0].data_size,
+            built.elf_header.shnum * built.elf_header.shentsize)
+
+    def test_the_key_table_is_as_long_as_those_sections_need(self):
+        """Eight slots for an encrypted section and six for a plain one."""
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        built = keysmith.read(keysmith.sign(elf, item.path, item.klicensee,
+                                            key_revision=0x000A))
+        metadata = built.decrypt_metadata(bytes.fromhex(item.klicensee))
+        encrypted = [s for s in metadata.sections if s.encrypted == 3]
+        plain = [s for s in metadata.sections if s.encrypted != 3]
+        self.assertEqual(metadata.header.key_count,
+                         len(encrypted) * 8 + len(plain) * 6)
+        self.assertEqual(len(metadata.keys),
+                         metadata.header.key_count * signing.SLOT_BYTES)
+        for section in metadata.sections:
+            at = section.sha1_index * signing.SLOT_BYTES
+            self.assertNotEqual(metadata.keys[at:at + 20], bytes(20),
+                                section.index)
+
+    def test_the_header_is_as_long_as_the_new_table_makes_it(self):
+        """header_length has to move with the table, or the first section
+        lands inside the header that describes it."""
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        built = keysmith.read(keysmith.sign(elf, item.path, item.klicensee,
+                                            key_revision=0x000A))
+        metadata = built.decrypt_metadata(bytes.fromhex(item.klicensee))
+        self.assertGreater(built.sce.header_length,
+                           keysmith.read(item.path).sce.header_length)
+        self.assertEqual(metadata.sections[0].data_offset,
+                         built.sce.header_length)
+        self.assertEqual(built.sce.data_length,
+                         len(built.raw) - built.sce.header_length)
+
+    def test_the_signature_is_the_one_field_that_cannot_be_reproduced(self):
+        """It is carried from the template, and theirs is a real one.
+
+        The private key for revision 0x000A is in naehrwert's keys file,
+        which is why scetool signed their HEN builds for real and left the
+        custom firmware ones at zero. Signing is not implemented here, so the
+        template's field is carried through, and a file built from a custom
+        firmware template therefore carries zeros where theirs carries a
+        signature. Whether a HEN console checks it is not known here.
+        """
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        tree, region, name = self.PAIRS[0]
+        theirs = self.metadata_of(keysmith.read(
+            self.paired(tree, region, "hen", name)))
+        template = self.metadata_of(keysmith.read(
+            self.paired(tree, region, "cfw", name)))
+        mine = self.metadata_of(self.resigned(tree, region, name))
+        length = signing.SIGNATURE_BYTES
+        self.assertEqual(template.signature[:length], bytes(length))
+        self.assertNotEqual(theirs.signature[:length], bytes(length))
+        self.assertEqual(mine.signature[:length], bytes(length))
+        self.assertEqual(len(mine.signature), len(theirs.signature))

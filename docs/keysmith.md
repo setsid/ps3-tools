@@ -198,7 +198,7 @@ that is copied is only an assumption.
 
 ## What a PS3HEN build differs in
 
-Three fields, surveyed across a third party's paired builds of Modern
+Five things, surveyed across a third party's paired builds of Modern
 Warfare 2, seven regions in both the multiplayer and the campaign trees, and
 checked against every stock file here:
 
@@ -207,6 +207,8 @@ checked against every stock file here:
 | key revision | the file's own | 0x000A |
 | minimum firmware | the file's own | 35500, which is 3.55 |
 | control flags | zero | `40 00 ... 00 02` |
+| compression | none | wherever it makes a section smaller |
+| section table | the template's own | built from the ELF |
 
 All fourteen HEN builds carry the same control flags and all fourteen custom
 firmware builds are zero, as is every stock retail file, so the value is part
@@ -215,6 +217,50 @@ they are reproduced because the survey says they belong, which is a different
 thing from understanding them. A key revision the survey does not cover keeps
 the template's flags and its minimum firmware, because a field that decides
 what a console will load is never invented.
+
+The last two were each found the same way: a patch with the three fields
+above it right went on to a real HEN console and black screened at the moment
+the patched binary loaded, which said the list was not finished. The section
+table is the one that takes real work. The paired builds of BLUS30377
+`default_mp.self` are scetool's work from one eight-header ELF, and they do
+not describe the same file:
+
+|  | Custom firmware | PS3HEN |
+| --- | --- | --- |
+| sections | 6 | 9 |
+| program headers described | 0 to 4 | 0 to 7 |
+| key count | 0x2E | 0x46 |
+| header length | 0x980 | 0xB80 |
+
+That is scetool's skip-sections option. The campaign pair goes further: its
+custom firmware build describes three of the eight. So on the HEN path the
+table cannot be copied, and it is built from the ELF's own program headers
+instead: one type 2 section each, then the type 1 section header table, with
+a random AES key, counter and HMAC key for every section the template did not
+have. The key count follows from the sections, eight slots for an encrypted
+one and six for an unencrypted one, and the header length follows from the
+key count.
+
+`data_length` goes with it. Retail files put the length of the ELF inside
+there and the byte-identical round trip depends on that, so the custom
+firmware path keeps writing it. All twenty-eight paired builds put the file
+size less the header length, which is scetool's convention, so that is what
+the HEN path writes.
+
+Re-signing the custom firmware build of a pair at 0x000A here and comparing
+it against the HEN build shipped beside it gives the same file field for
+field, on three pairs across two regions and both trees: the same size, the
+same header and data lengths, the same nine sections with the same types,
+indices, offsets, sizes and compression flags, the same section plaintexts,
+and the same control blocks down to scetool's own `watermarktrololo` pad.
+
+**One field still differs, and it is the signature.** The private key for
+revision 0x000A is in naehrwert's keys file, which is the one revision it is
+in, so scetool signed their HEN builds for real and left their custom
+firmware builds at zero. Signing is not implemented here, so a file built
+from a custom firmware template carries that template's zeros. Whether a HEN
+console checks the signature is not known here, and it is the obvious thing
+to look at if a build that matches in every other field is still refused.
 
 ## Two findings worth writing down
 

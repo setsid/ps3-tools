@@ -82,7 +82,7 @@ class InstallPackagesScreen(Screen):
     blurb = "Copies package files from this computer to the console."
     tile = "PK"
     # Beside the game updates card; both of them end at the same install call.
-    order = 50
+    order = 40
 
     #: tell the shell something finished, for the line on the connection bar.
     #: Optional: a shell that has not wired it simply keeps no record of the

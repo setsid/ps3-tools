@@ -86,7 +86,7 @@ class TransferGamesScreen(Screen):
     title = "Transfer games"
     blurb = "Copies game disc images from this computer to the console."
     tile = "TR"
-    order = 60
+    order = 50
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)

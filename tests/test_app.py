@@ -90,8 +90,20 @@ class Registration(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)), keys)
 
     def test_the_cards_are_in_a_deliberate_order(self):
-        orders = [screen.order for screen in self.registry.screens()]
-        self.assertEqual(orders, sorted(orders))
+        """Within each section, because order is now a place in a section.
+
+        The home screen is two sections and each one starts its numbering
+        again, so the order across the whole registry rises and falls at the
+        section boundary. What has to hold is that a section's own cards are
+        in the order it declares.
+        """
+        from ps3tools.shell import registry
+        seen = 0
+        for group, items in registry.grouped(self.registry.screens()):
+            orders = [screen.order for screen in items]
+            self.assertEqual(orders, sorted(orders), group.key)
+            seen += len(items)
+        self.assertEqual(seen, len(self.registry.screens()))
 
     def test_no_screen_says_anything_in_an_emoji(self):
         for screen in self.registry.screens():

@@ -214,7 +214,7 @@ class GameUpdatesScreen(Screen):
     blurb = "Checks each game on the console for a newer version from Sony."
     tile = "GU"
     # After the two patch cards and well before About.
-    order = 40
+    order = 30
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)

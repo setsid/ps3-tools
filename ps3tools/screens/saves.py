@@ -203,7 +203,7 @@ class SavesScreen(Screen):
     # After both patchers and well before About. A user who has come to fix a
     # game is not looking for this, and a user looking for this knows it by
     # name.
-    order = 40
+    order = 60
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)

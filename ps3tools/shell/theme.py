@@ -231,6 +231,11 @@ QLabel#appTitle { font-size: 12pt; font-weight: 600; }
 QLabel#screenTitle { font-size: 11pt; color: %(text_dim)s; }
 QLabel#heading { font-size: 20pt; font-weight: 600; }
 QLabel#subheading { font-size: 11pt; color: %(text_dim)s; }
+/* A section heading on the home screen. Smaller than the page heading and
+   larger than the cards' own titles, so the page reads as one heading with
+   two groups under it rather than as two pages stacked. */
+QLabel#sectionHeading { font-size: 13pt; font-weight: 600; }
+QLabel#sectionBlurb { font-size: 10pt; color: %(text_dim)s; }
 QLabel#dim, QLabel#statusHint { color: %(text_dim)s; }
 
 /* The network search's own line. Set in behind a rule of its own so it is not

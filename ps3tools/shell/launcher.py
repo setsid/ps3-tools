@@ -39,7 +39,8 @@ def _wording(screen_class):
     """
     return (screen_class.key, screen_class.title, screen_class.blurb,
             getattr(screen_class, "badge", "") or "",
-            getattr(screen_class, "note", "") or "")
+            getattr(screen_class, "note", "") or "",
+            registry.group_of(screen_class).key)
 
 
 #: A tool being worked on, shown in the grid with the rest so that somebody
@@ -205,6 +206,63 @@ class CardGrid(QWidget):
         return (left, self.width() - left - block)
 
 
+class Section(QWidget):
+    """One heading, one line under it, and the grid of cards below.
+
+    A section rather than one grid of everything because the fixes and the
+    rest of the tools are two different offers. The fixes write to a console
+    and each one is for a single game; everything else is about the console
+    itself, and most of it only reads. That was said inside each tool and
+    nowhere on the page somebody chooses from.
+
+    A section with no cards in it hides itself entirely, heading and all, so
+    a build that ships only half the tools looks like a smaller program
+    instead of a broken one.
+    """
+
+    #: Between the bottom of one section's cards and the next heading. Wider
+    #: than the gap between rows of cards, because the whole point of the
+    #: heading is that the eye stops at it.
+    GAP_BELOW = 26
+
+    def __init__(self, group, parent=None):
+        super().__init__(parent)
+        self.group = group
+        self.setObjectName("launcherSection")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, self.GAP_BELOW)
+        layout.setSpacing(0)
+
+        self.heading = QLabel(group.heading, self)
+        self.heading.setObjectName("sectionHeading")
+        layout.addWidget(self.heading)
+
+        self.blurb = QLabel(group.blurb, self)
+        self.blurb.setObjectName("sectionBlurb")
+        self.blurb.setWordWrap(True)
+        # The same measure as the subheading above. A line of explanation run
+        # out to the full width of a wide window is one nobody's eye tracks
+        # back from.
+        self.blurb.setMaximumWidth(720)
+        self.blurb.setVisible(bool(group.blurb))
+        layout.addWidget(self.blurb)
+        layout.addSpacing(12)
+
+        self.grid = CardGrid(self)
+        layout.addWidget(self.grid)
+
+    @property
+    def cards(self):
+        return self.grid.cards
+
+    def set_cards(self, cards):
+        self.grid.set_cards(cards)
+        self.setVisible(bool(cards))
+
+    def sync_height(self):
+        self.grid.sync_height()
+
+
 class Launcher(QWidget):
     """Home. Knows the registry, the theme, and nothing about any one tool."""
 
@@ -285,9 +343,16 @@ class Launcher(QWidget):
         body.addWidget(self._subheading)
         body.addSpacing(22)
 
-        self._grid_host = CardGrid(host)
-        self._grid = self._grid_host
-        body.addWidget(self._grid_host)
+        # One per section, built once and shown or hidden as the tools in
+        # them come and go. Built up front so that a rebuild never creates a
+        # widget: a hidden card is the oldest bug this screen has had, and it
+        # came from widgets appearing while the layout was settling.
+        self._sections = []
+        for group in registry.groups():
+            section = Section(group, host)
+            section.setVisible(False)
+            body.addWidget(section)
+            self._sections.append(section)
 
         self._empty = QLabel(
             "No tools are registered. This build is incomplete; reinstall it "
@@ -409,41 +474,55 @@ class Launcher(QWidget):
         self._cards = []
         self._placeholders = []
 
-        for screen_class in screens:
-            card = ToolCard(screen_class.key, screen_class.title,
-                            screen_class.blurb, screen_class.tile,
-                            self._theme, self._grid_host,
-                            badge=getattr(screen_class, "badge", ""),
-                            note=getattr(screen_class, "note", ""))
-            card.activated.connect(self.open_screen)
-            # Shown by hand, and this is the fix for the empty home screen
-            # rather than a tidy-up. A widget built with a parent starts
-            # hidden, and a hidden card is a card the user cannot see however
-            # correctly it has been placed. The grid's height no longer
-            # depends on measuring these -- it is arithmetic on the count --
-            # but the cards themselves still have to be shown.
-            card.show()
-            self._cards.append(card)
-
-        # After the working tools, in the same grid. A placeholder off to one
-        # side is one nobody connects to the tools it belongs beside. Kept
-        # apart from _cards, which means the tools: a placeholder is not one,
-        # and counting it as one would make a build with no tools in it look
-        # as though it had one.
-        self._placeholders = []
-        for key, title, blurb, link_text, url, badge in COMING_SOON:
-            card = ComingSoonCard(key, title, blurb, link_text, url,
-                                  self._theme, self._grid_host, badge=badge)
-            card.show()
-            self._placeholders.append(card)
-
-        self._grid_host.set_cards(self._cards + self._placeholders)
+        # Per section, and the sections in registry order, so self._cards is
+        # in the order the page reads down. card_keys() is that order and the
+        # tab order follows it.
+        for section in self._sections:
+            mine = [item for item in screens
+                    if registry.group_of(item) is section.group]
+            cards = []
+            for screen_class in mine:
+                card = ToolCard(screen_class.key, screen_class.title,
+                                screen_class.blurb, screen_class.tile,
+                                self._theme, section.grid,
+                                badge=getattr(screen_class, "badge", ""),
+                                note=getattr(screen_class, "note", ""))
+                card.activated.connect(self.open_screen)
+                # Named on the card so that _drawn can tell a card that moved
+                # section from one that merely changed its wording.
+                card.group = section.group.key
+                # Shown by hand, and this is the fix for the empty home screen
+                # rather than a tidy-up. A widget built with a parent starts
+                # hidden, and a hidden card is a card the user cannot see
+                # however correctly it has been placed. The grid's height no
+                # longer depends on measuring these -- it is arithmetic on the
+                # count -- but the cards themselves still have to be shown.
+                card.show()
+                cards.append(card)
+                self._cards.append(card)
+            if section is self._sections[-1]:
+                # The placeholders go at the end of the last section, in the
+                # same grid as the tools. A placeholder off to one side is one
+                # nobody connects to the tools it belongs beside. Kept apart
+                # from _cards, which means the tools: a placeholder is not one,
+                # and counting it as one would make a build with no tools in
+                # it look as though it had one.
+                for key, title, blurb, link_text, url, badge in COMING_SOON:
+                    card = ComingSoonCard(key, title, blurb, link_text, url,
+                                          self._theme, section.grid,
+                                          badge=badge)
+                    card.group = section.group.key
+                    card.show()
+                    self._placeholders.append(card)
+                    cards.append(card)
+            section.set_cards(cards)
         self._apply_count(len(self._cards))
 
     def _apply_count(self, count):
         """Everything that follows from how many cards there are."""
         self._empty.setVisible(count == 0)
-        self._grid_host.setVisible(count > 0)
+        for section in self._sections:
+            section.setVisible(bool(section.cards))
         self._subheading.setText(
             "Each one works on the console at the address above."
             if count else "")
@@ -460,10 +539,28 @@ class Launcher(QWidget):
     def _drawn(self):
         """What the cards on screen are currently saying."""
         return [(card.key, card.text(), card.accessibleDescription(),
-                 card.badge, card.note) for card in self._cards]
+                 card.badge, card.note, getattr(card, "group", ""))
+                for card in self._cards]
+
+    @property
+    def sections(self):
+        """Every section, in page order, shown and hidden alike."""
+        return list(self._sections)
+
+    @property
+    def grids(self):
+        """Every section's grid, in page order."""
+        return [section.grid for section in self._sections]
+
+    def section_for(self, key):
+        for section in self._sections:
+            if section.group.key == key:
+                return section
+        return None
 
     def _sync_grid(self):
-        self._grid_host.sync_height()
+        for section in self._sections:
+            section.sync_height()
         self.updateGeometry()
 
     def showEvent(self, event):

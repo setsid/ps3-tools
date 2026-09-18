@@ -507,6 +507,11 @@ def _human(count):
 class PatcherScreen(Screen):
     """Scan an installed title, and repair it once the user agrees."""
 
+    #: Every patcher is in the same section of the home screen, set here so
+    #: that a fourth one is in it without being told. It is the one section
+    #: whose tools write to a console.
+    group = "fixes"
+
     #: What a tick box beside Apply has to say before Apply will do anything,
     #: for a fix that is wrong for some consoles and right for others. Empty
     #: for a screen whose fix suits everybody its scan will offer it to, which
@@ -2819,7 +2824,7 @@ class BlackOpsTwoPatcher(PatcherScreen):
     blurb = ("Stops the freeze that happens whenever a PSN session becomes "
              "active.")
     tile = "B2"
-    order = 20
+    order = 10
 
 
 @register
@@ -2830,7 +2835,7 @@ class ModernWarfareThreePatcher(PatcherScreen):
     blurb = ("Stops multiplayer lobbies dropping you back to the menu on a "
              "newer PSN account.")
     tile = "M3"
-    order = 30
+    order = 20
     # Two things wrong rather than one. The HEN reports are not understood yet
     # and saying so is better than a card that looks clean to somebody who is
     # about to hit it.
@@ -2933,9 +2938,8 @@ class BlackOpsOnePatcher(PatcherScreen):
          "This is being looked into, and the aim is a fix that leaves the "
          "map packs alone."),
     )
-    # Between Diagnostics and the other two fixes, so the three game fixes sit
-    # together and the card most people are here for is not behind them.
-    order = 15
+    # Last of the three fixes, which is the order the README lists them in.
+    order = 30
 
     def __init__(self, services, parent=None):
         super().__init__(services, parent)

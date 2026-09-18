@@ -189,7 +189,7 @@ class MonitorScreen(Screen):
     tile = "MO"
     # Next to the diagnostics card. Both of them answer "what is this console
     # doing", one as a snapshot and one over time.
-    order = 15
+    order = 20
 
     #: A line for the shell's event strip, when the shell has wired it.
     event_noted = Signal(str)

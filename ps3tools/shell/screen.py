@@ -324,8 +324,15 @@ class Screen(QWidget):
     blurb = ""
     #: two or three letters for the card's tile. Letters only, never an emoji.
     tile = ""
-    #: card order on the home screen, lowest first
+    #: card order on the home screen, lowest first, within the section below
     order = 100
+
+    #: Which section of the home screen the card sits in. The sections and
+    #: the order they come in are registry.GROUPS; a screen says which one it
+    #: is in and nothing about where that one goes, so a new tool cannot
+    #: rearrange the page. An unknown name is refused at registration rather
+    #: than filed somewhere nobody looks.
+    group = "tools"
 
     #: One or two words for a pill on the card saying what state the tool is
     #: in, "Beta" being the one that has been used. Empty for a tool that is

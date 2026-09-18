@@ -166,6 +166,91 @@ class LauncherCase(unittest.TestCase):
         return [label.text() for label in self.launcher.findChildren(QLabel)]
 
 
+class FixScreen(FirstScreen):
+    key = "fix"
+    title = "A fix"
+    blurb = "A screen that says it belongs with the game fixes."
+    tile = "FX"
+    group = "fixes"
+    order = 10
+
+
+class TheSections(LauncherCase):
+    """The home screen is sections, and a screen says which one it is in.
+
+    The three fixes are the only part of this program that writes to a
+    console and each one is for a single game; the rest is about the console
+    itself. That was said inside each tool and nowhere on the page somebody
+    chooses from, so the page says it now.
+    """
+
+    def visible_sections(self):
+        """Sections not hidden, asked in a way that works off screen.
+
+        isVisible is False for every child of a launcher that has not been
+        shown, so it cannot tell a hidden section from one on an unshown
+        page. isHidden answers what this is about, which is whether the
+        section was hidden on purpose.
+        """
+        return [section.group.key for section in self.launcher.sections
+                if not section.isHidden()]
+
+    def test_the_default_on_the_published_screen_is_a_section_that_exists(self):
+        """A default that drifted would file every new tool nowhere."""
+        self.assertEqual(Screen.group, registry.DEFAULT_GROUP)
+        self.assertIsNotNone(registry.group_for(Screen.group))
+
+    def test_a_screen_goes_in_the_section_it_names(self):
+        self.launcher.rebuild([FixScreen, FirstScreen])
+        fixes = self.launcher.section_for("fixes")
+        tools = self.launcher.section_for("tools")
+        self.assertEqual([card.key for card in fixes.cards], ["fix"])
+        self.assertEqual([card.key for card in tools.cards], ["first"])
+
+    def test_a_section_with_nothing_in_it_is_not_drawn_at_all(self):
+        """A heading over a hole reads as half the program failing to load."""
+        self.launcher.rebuild([FirstScreen, SecondScreen])
+        self.assertEqual(self.visible_sections(), ["tools"])
+        self.launcher.rebuild([FixScreen])
+        self.assertEqual(self.visible_sections(), ["fixes"])
+
+    def test_the_fixes_come_first_down_the_page(self):
+        self.launcher.rebuild([FirstScreen, FixScreen])
+        self.assertEqual([section.group.key
+                          for section in self.launcher.sections],
+                         ["fixes", "tools"])
+        self.assertEqual(self.launcher.card_keys(), ["fix", "first"])
+
+    def test_each_section_says_what_it_is(self):
+        self.launcher.rebuild([FirstScreen, FixScreen])
+        words = self.labels()
+        for group in registry.groups():
+            self.assertIn(group.heading, words)
+            if group.blurb:
+                self.assertIn(group.blurb, words)
+
+    def test_moving_a_card_to_another_section_rebuilds_the_grid(self):
+        """The rebuild is skipped when nothing on a card's face changed, and
+        which section it is in has to count as changed."""
+        self.launcher.rebuild([FirstScreen])
+        before = self.launcher.cards[0]
+        moved = type("MovedScreen", (FirstScreen,), {"group": "fixes"})
+        self.launcher.rebuild([moved])
+        self.assertIsNot(self.launcher.cards[0], before)
+        self.assertEqual([card.key for card
+                          in self.launcher.section_for("fixes").cards],
+                         ["first"])
+
+    def test_a_section_nobody_declared_is_refused_at_registration(self):
+        bad = type("BadScreen", (FirstScreen,),
+                   {"key": "bad", "group": "nowhere"})
+        with self.assertRaises(ValueError) as caught:
+            registry.register(bad)
+        self.assertIn("nowhere", str(caught.exception))
+        self.assertIn("fixes", str(caught.exception))
+        self.assertIsNone(registry.screen_for("bad"))
+
+
 class LauncherTests(LauncherCase):
 
     def test_a_card_per_screen_passed_in(self):
@@ -261,11 +346,16 @@ class LauncherOnScreenTests(LauncherCase):
             application.processEvents()
 
     def drawn(self):
-        """Cards with somewhere inside the grid host to be painted in."""
-        area = self.launcher._grid_host.rect()
+        """Cards with somewhere inside their own section's grid to be painted.
+
+        Each card's parent is the grid of the section it is in, so the area a
+        card has to fall inside is asked of the card rather than of one grid
+        the launcher no longer has.
+        """
         return [card for card in self.launcher.cards
                 if card.isVisible()
-                and not card.geometry().intersected(area).isEmpty()]
+                and not card.geometry().intersected(
+                    card.parent().rect()).isEmpty()]
 
     def test_cards_added_to_a_launcher_on_screen_are_drawn(self):
         self.launcher.rebuild([FirstScreen, SecondScreen])
@@ -276,7 +366,7 @@ class LauncherOnScreenTests(LauncherCase):
     def test_the_grid_host_is_as_tall_as_the_cards_in_it(self):
         self.launcher.rebuild([FirstScreen, SecondScreen])
         self.settle()
-        host = self.launcher._grid_host
+        host = self.launcher.section_for("tools").grid
         self.assertGreaterEqual(host.height(),
                                 self.launcher.cards[0].sizeHint().height())
 
@@ -290,7 +380,7 @@ class LauncherOnScreenTests(LauncherCase):
     def test_the_grid_grabs_as_something_rather_than_nothing(self):
         self.launcher.rebuild([FirstScreen, SecondScreen])
         self.settle()
-        pixmap = self.launcher._grid_host.grab()
+        pixmap = self.launcher.section_for("tools").grid.grab()
         self.assertGreater(pixmap.height(), 0)
         self.assertGreater(
             len({colour.name() for colour in ink_pixels(pixmap)}), 3)
@@ -311,7 +401,8 @@ class LauncherOnScreenTests(LauncherCase):
         self.launcher.rebuild([])
         self.settle()
         self.assertEqual(self.drawn(), [])
-        self.assertFalse(self.launcher._grid_host.isVisible())
+        self.assertFalse(any(section.isVisible()
+                                 for section in self.launcher.sections))
         self.assertTrue(any("No tools are registered" in text
                             for text in self.labels()))
 
@@ -356,7 +447,7 @@ class CardGridTests(LauncherCase):
             application.processEvents()
 
     def grid(self):
-        return self.launcher._grid_host
+        return self.launcher.section_for("tools").grid
 
     def shape(self, tools):
         """Row lengths for this many tools, with the placeholders counted.

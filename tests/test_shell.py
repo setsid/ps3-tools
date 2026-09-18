@@ -1207,11 +1207,10 @@ class LauncherRoundTripTests(ShellCase):
         because the host it sits in has been squeezed to nothing around it.
         Only the part of the card that falls inside its host is ever painted.
         """
-        host = self.window.launcher._grid_host
-        area = host.rect()
         return [card for card in self.window.launcher.cards
                 if card.isVisible()
-                and not card.geometry().intersected(area).isEmpty()]
+                and not card.geometry().intersected(
+                    card.parent().rect()).isEmpty()]
 
     def test_the_cards_are_drawn_before_anyone_goes_anywhere(self):
         self.assertEqual(len(self._drawn_cards()), 2)
@@ -1232,7 +1231,7 @@ class LauncherRoundTripTests(ShellCase):
         # The failure itself: the host was pinned to a fixed height of nought
         # because it was measured while the new cards were still hidden, and
         # nothing ever measured it again.
-        host = self.window.launcher._grid_host
+        host = self.window.launcher.section_for("tools").grid
         before = host.height()
         self.assertGreater(before, 0)
         self._round_trip()
@@ -1244,7 +1243,7 @@ class LauncherRoundTripTests(ShellCase):
         # Rendered rather than reasoned about. An empty grid grabs as either
         # nothing at all or one flat colour.
         self._round_trip()
-        pixmap = self.window.launcher._grid_host.grab()
+        pixmap = self.window.launcher.section_for("tools").grid.grab()
         self.assertGreaterEqual(pixmap.height(),
                                 self.window.launcher.cards[0].height())
         image = pixmap.toImage()
@@ -1284,7 +1283,8 @@ class LauncherRoundTripTests(ShellCase):
         self._settle()
         drawn = self._drawn_cards()
         self.assertEqual([card.key for card in drawn], ["late"])
-        self.assertGreater(self.window.launcher._grid_host.height(), 0)
+        self.assertGreater(
+            self.window.launcher.section_for("tools").grid.height(), 0)
 
 
 # --- which network the search looks at -------------------------------------

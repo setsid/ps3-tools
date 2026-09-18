@@ -46,6 +46,14 @@ _BODIES = {
         '<path d="M7.9 10.7v2.8"/><path d="M6.5 12.1h2.8"/>'
         '<circle cx="15.7" cy="11.2" r="1.05" ' + _SOLID + '/>'
         '<circle cx="17.9" cy="13.4" r="1.05" ' + _SOLID + '/>'),
+    # A graph: two axes and a line over them. Deliberately unlike the
+    # diagnostics icon, which is a screen with a trace inside it; this one is
+    # the trace itself, because the tool is the readings over time rather than
+    # the console they came off.
+    "monitor": (
+        '<path d="M3.8 4.3v13.3a2 2 0 0 0 2 2h14.4"/>'
+        '<path d="M7 15.3l3.5-4.6 3 2.5 4.3-6"/>'
+        '<circle cx="17.8" cy="7.2" r="1.15" ' + _SOLID + '/>'),
     "console": (
         '<rect x="2.4" y="7" width="19.2" height="10" rx="2.6"/>'
         '<path d="M6 12h5.4"/>'
@@ -202,6 +210,7 @@ def clear_cache():
 # key to drawing lives here rather than on the screens.
 _BY_KEY = {
     "diagnostics": "diagnostics",
+    "monitor": "monitor",
     "bo1": "gamepad",
     "bo2": "gamepad",
     "mw3": "gamepad",

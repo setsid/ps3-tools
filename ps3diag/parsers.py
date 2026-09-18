@@ -14,6 +14,8 @@ work with a blank and cannot work with a wrong answer that looks right.
 import html as html_module
 import re
 
+from .regioncodes import find_title_id
+
 SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3,
               "TB": 1024 ** 4, "PB": 1024 ** 5}
 
@@ -352,6 +354,61 @@ def parse_firmware_line(text):
         kind = "ofw"
     facts["firmware_kind"] = kind
     return facts
+
+
+# --- the game the console has loaded ---------------------------------------
+
+# Why this is read at all: the console keeps hold of a game's modules once it
+# has loaded them, so writing to those files while the game is up changes
+# nothing whatsoever. Quitting to the XMB does not release them either; the
+# console itself has to be restarted. Somebody spent an evening patching a
+# game that was running and got no result from any of it, so the running
+# title is read and the patcher stops rather than prints a warning nobody
+# reads.
+#
+# The label is matched loosely because webMAN's wording for it has moved
+# between versions, and the identifier is matched strictly because the cost
+# of the two mistakes is not the same. Missing a running game leaves things
+# as they were before this existed. Naming the wrong game refuses to patch a
+# console that is sitting ready, which looks like the tool being broken.
+RUNNING_LABEL = re.compile(
+    r"(?i)\b(?:game(?:\s*id)?|now\s+playing|playing|running|process|pid)"
+    r"\b\s*[:=]")
+
+#: Four letters and five digits, with the dash some pages print inside it.
+#: This is the shape alone. find_title_id decides whether a shape is really a
+#: title ID, which is what keeps a serial number or a model code printed
+#: after one of these labels from being reported as a game.
+TITLE_SHAPE = re.compile(r"(?i)\b[A-Z]{4}[-_]?\d{5}\b")
+
+
+def parse_running_title(text):
+    """The title ID of the game the console is running, uppercase, or "".
+
+    A console sitting on the XMB and a page that never mentions a game both
+    come back empty, and nothing here tells those two apart. That is the
+    trade this parser is built around: an empty answer leaves the caller
+    where it would have been anyway, and a confident wrong answer stops
+    somebody patching a console that has nothing loaded.
+
+    Only text after one of the labels is looked at, so the disc in the tray,
+    a link that would start a game and a folder listing are all ignored. They
+    say what is installed rather than what is loaded.
+    """
+    found = set()
+    for line in (text or "").splitlines():
+        label = RUNNING_LABEL.search(line)
+        if label is None:
+            continue
+        for shape in TITLE_SHAPE.findall(line[label.end():]):
+            title_id = find_title_id(shape)
+            if title_id:
+                found.add(title_id)
+    # Two different games named on the same page is a list of what is
+    # installed rather than a report of what is running, and there is no way
+    # to tell from here which of them the console has loaded.
+    return found.pop() if len(found) == 1 else ""
+
 
 # --- temperatures, clocks, fan --------------------------------------------
 

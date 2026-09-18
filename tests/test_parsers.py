@@ -277,6 +277,73 @@ class FirmwareLine(FixtureCase):
             self.assertIsInstance(self.read(value), dict)
 
 
+class RunningTitle(FixtureCase):
+    def read(self, text):
+        return parsers.parse_running_title(text)
+
+    def test_the_game_label_on_its_own_names_the_running_title(self):
+        self.assertEqual(self.read("Game: BLES01031"), "BLES01031")
+
+    def test_the_running_label_with_the_name_in_front_of_the_id(self):
+        self.assertEqual(
+            self.read("Running: Call of Duty: Black Ops (BLES01031)"),
+            "BLES01031")
+
+    def test_a_playing_line_with_the_id_in_brackets_is_read(self):
+        self.assertEqual(self.read("Playing: Uncharted 3 [BCES01175]"),
+                         "BCES01175")
+        self.assertEqual(self.read("Now playing: NPEB02143"), "NPEB02143")
+
+    def test_the_process_and_pid_wording_on_a_cpursx_page_is_read(self):
+        text = ("CPU: 61.0 C\n"
+                "PID: 0x0000001A Process: BLES01031 Black Ops\n")
+        self.assertEqual(self.read(text), "BLES01031")
+
+    def test_a_title_id_written_with_a_dash_comes_back_normalised(self):
+        self.assertEqual(self.read("Game ID: bles-01031"), "BLES01031")
+
+    def test_a_console_sitting_on_the_xmb_reports_no_game(self):
+        for line in ("Game: XMB", "Running: none", "Playing: -",
+                     "Game: /dev_hdd0/game"):
+            self.assertEqual(self.read(line), "", line)
+
+    def test_a_page_that_says_nothing_about_a_game_reports_no_game(self):
+        for name in ("root_147.html", "root_180.html", "cpursx_147.html",
+                     "root_minimal.html"):
+            text = parsers.html_to_text(self.fixture("http", name))
+            self.assertEqual(self.read(text), "", name)
+
+    def test_a_malformed_title_id_is_never_reported(self):
+        # Four digits and six digits. Either is a line this tool cannot read
+        # rather than a game, and half of an identifier patches nothing.
+        self.assertEqual(self.read("Game: BLES0103"), "")
+        self.assertEqual(self.read("Game: BLES010311"), "")
+
+    def test_something_shaped_like_a_title_id_is_not_taken_for_one(self):
+        # Four letters and five digits, and still not an identifier any PS3
+        # game has ever had.
+        self.assertEqual(self.read("Game: ABCD12345"), "")
+        self.assertEqual(self.read("Running: CECH25030"), "")
+
+    def test_a_title_id_with_no_label_in_front_of_it_is_left_alone(self):
+        # The disc in the tray and a link that would start a game both say
+        # what is installed rather than what the console has loaded.
+        self.assertEqual(self.read("dev_bdvd BLES01031"), "")
+        self.assertEqual(self.read("/play.ps3?BLES01031"), "")
+
+    def test_two_games_named_on_one_page_report_neither_of_them(self):
+        # A list of what is installed, and nothing here can say which of them
+        # is running, so a guess would be right half the time at best.
+        self.assertEqual(self.read("Game: BLES01031\nGame: BLUS40015"), "")
+
+    def test_the_word_games_is_not_the_label(self):
+        self.assertEqual(self.read("Games: 42 BLES01031"), "")
+
+    def test_never_raises_on_rubbish(self):
+        for value in ("", None, "\x00\x01", "<<<>>>", "Game:", "Game: "):
+            self.assertEqual(self.read(value), "")
+
+
 class Storage(FixtureCase):
     def test_free_and_total_with_used_derived(self):
         devices = parsers.parse_storage(

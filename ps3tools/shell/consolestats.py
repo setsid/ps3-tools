@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel,
 
 from ps3diag.parsers import (html_to_text, human_size, parse_cpursx,
                             parse_hdd_free, parse_identity,
-                            parse_storage)
+                            parse_running_title, parse_storage)
 from ps3diag.transport import HttpProbe
 
 from ..updates import free_bytes_for
@@ -139,6 +139,13 @@ def read_console(host, probe_factory=None, cancelled=lambda: False):
     free = parse_hdd_free(text)
     if free is not None:
         facts["hdd_free_bytes"] = free
+    # The console keeps hold of a game's modules from the moment it loads
+    # them, so patching a game that is running does nothing at all and
+    # restarting the game does not release them either. Read here, off the
+    # pages that were being fetched anyway, so that whatever is about to
+    # write to a game can stop before it writes rather than leave somebody
+    # patching all evening with nothing to show for it.
+    facts["running_title"] = parse_running_title(text)
     return facts
 
 
@@ -203,6 +210,17 @@ def firmware_text(facts):
     if kind == "ofw":
         return f"OFW {version}".strip()
     return ""
+
+
+def running_title(facts):
+    """The title ID of the game the console has loaded, or "".
+
+    Here so that a caller asking whether it is safe to patch reads a name
+    rather than a key out of the facts dictionary, and so that the empty
+    string stays the one answer meaning no game was reported. A console on
+    the XMB and a page that never mentioned a game both give that.
+    """
+    return (facts or {}).get("running_title") or ""
 
 
 def _number(value):

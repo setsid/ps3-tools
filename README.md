@@ -139,6 +139,36 @@ to, and checks added later can be run against a report collected months ago.
 
 ---
 
+## Monitor
+
+Press **Start** and it reads the console's status page every few seconds,
+graphing the CPU and RSX temperatures, the fan and the free space against time.
+The current figure sits above each graph with the lowest and highest of the
+window beside it, and holding the pointer over a line reads that moment out.
+
+It is for the questions a single reading cannot answer. Whether the fan that
+climbed through an hour of multiplayer ever came back down. Whether a console
+that shuts itself off is warm for a while first or drops from sixty degrees to
+nothing. How much of the drive each installed game actually costs.
+
+| | |
+| --- | --- |
+| Interval | Two seconds to one minute. A console that cannot answer as fast as the interval asks is noticed and said so, and a longer one suggested |
+| Window | Five minutes, fifteen, an hour, or everything recorded this session |
+| Save | Writes every reading to a CSV on your Desktop, one row each, with both the epoch and the local time |
+
+It polls only while it is the screen in front of you. Leaving it stops the
+reading, and the page it asks for is the one the diagnostic already reads.
+Nothing is recorded to disk unless you press Save, and the readings are
+forgotten when the program closes.
+
+A console that stops answering leaves a break in the line rather than a
+straight line drawn across the gap, and the footer counts the readings that
+went unanswered. Changing the address starts a new graph, because two consoles
+on one line would be a graph that lied.
+
+---
+
 ## The patchers
 
 Each game misbehaves because of a fault in the game binary, not because of your

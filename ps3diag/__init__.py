@@ -21,7 +21,7 @@ APP_NAME = "ps3-diag"
 #: Tags are compared against this, so keep it as plain dotted numbers -- "0.9",
 #: "1.0", "1.0.1". A suffix like "1.0-rc1" is deliberately unreadable to the
 #: update check and would silently stop it offering anything.
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 
 # Shown on the front page of the window and repeated at the top of summary.txt,
 # because the whole reason a nervous owner runs a stranger's tool is that they

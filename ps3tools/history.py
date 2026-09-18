@@ -29,6 +29,29 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.4.4",
+        date="2026-09-18",
+        summary="A new tool: Monitor, which graphs what the console is doing "
+                "while it does it.",
+        changes=(
+            "Monitor is a new tool on the home screen. It reads the "
+            "console's status page every few seconds while it is open and "
+            "graphs the temperatures, the fan and the free space over time, "
+            "with the figures above each graph and the pointer reading any "
+            "moment off the line. Everywhere else in this program reads the "
+            "console once; this is for the questions that only a trend "
+            "answers, such as whether a fan that climbed during an hour of "
+            "play ever came back down.",
+            "It reads only while it is the screen in front of you, and only "
+            "the one page the diagnostic already reads. Nothing is written "
+            "anywhere unless you press Save, which writes the readings as a "
+            "CSV to your Desktop.",
+            "A console that stops answering leaves a break in the line "
+            "rather than a straight line across the gap, and the footer "
+            "counts how many readings went unanswered.",
+        ),
+    ),
+    Release(
         version="1.4.3",
         date="2026-09-18",
         summary="A file signed for PS3HEN is compressed, which is the fourth "

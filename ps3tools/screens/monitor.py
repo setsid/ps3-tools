@@ -13,7 +13,11 @@ written down rather than left to the reader.
 It polls only while it is the screen in front of somebody. Entering starts it,
 leaving stops it, and a window left on another tool has nothing on the wire.
 Polling a console for a graph nobody is looking at costs the console something
-and buys nobody anything.
+and buys nobody anything. The one exception is a tick box that says plainly
+what it does: with it on the reading carries on after somebody leaves, which
+is what watching a console through a session of play needs. It is off by
+default, it is not saved, and the shell's event line is told when it keeps
+going.
 
 It polls only the console's own status page, which is the same page the
 diagnostics collector reads and is on the transport's read-only allowlist. The
@@ -33,9 +37,9 @@ import os
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QPushButton, QSizePolicy,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QPushButton,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from ps3diag.parsers import (html_to_text, parse_cpursx, parse_hdd_free,
                              parse_identity, parse_running_title,
@@ -43,7 +47,7 @@ from ps3diag.parsers import (html_to_text, parse_cpursx, parse_hdd_free,
 
 from ps3tools import telemetry
 from ps3tools.shell import widgets
-from ps3tools.shell.chart import Chart
+from ps3tools.shell.chart import Chart, TitleBand
 from ps3tools.shell.consolestats import (firmware_text, free_space_text,
                                          make_probe, running_title,
                                          temperature_token, TIMEOUT)
@@ -53,13 +57,40 @@ from ps3tools.shell.screen import Screen
 WHAT_THIS_IS = (
     "Reads the console's status page every few seconds while this screen is "
     "open, and graphs what it says. Nothing is recorded anywhere unless you "
-    "save it.")
+    "save it, and nothing is read once you leave unless you ask below.")
 
 NOT_CONNECTED = (
     "Type the console's address into the bar at the top of the window, then "
     "come back here.")
 
 WAITING = "Waiting for the first reading."
+
+#: The heading over the list of what crossed a threshold, and what it says
+#: when nothing has. Said as a fact about the recording rather than as
+#: reassurance: a console that has been read for ten seconds has not proved
+#: anything about its temperature.
+EVENTS_HEADING = "Heat"
+
+NOTHING_CROSSED = "Nothing has crossed {level} in what has been recorded."
+
+#: How many episodes are listed per figure. The newest, because a console
+#: that has been above eighty forty times this afternoon needs a line saying
+#: so rather than forty lines.
+EPISODE_LIMIT = 4
+
+#: Which graph carries the band saying what was loaded. The temperatures,
+#: because the reason for having it is that a climb and the launch that
+#: caused it are the same moment.
+BAND_ON = "temperature"
+
+#: Where a readings file is looked for, and what the dialogue filters to.
+CSV_FILTER = "Readings (*.csv);;All files (*)"
+
+KEEP_RECORDING = "Keep recording when I leave this screen"
+
+KEEP_RECORDING_HINT = (
+    "With it on, the console is still being read while you are using another "
+    "tool. It is forgotten when the program closes.")
 
 #: The page every reading comes off. One page rather than two: it carries the
 #: temperatures, the fan, the clocks and the firmware, and it is the cheapest
@@ -213,6 +244,11 @@ class MonitorScreen(Screen):
         self._overlaps = 0
         #: The last facts, for the lines that are text rather than a graph.
         self._facts = {}
+        #: The file whose readings are on the graphs, when they came from a
+        #: file rather than a console. Recording again empties it, because a
+        #: file's readings and a live console's on one graph would be a graph
+        #: that lied about when any of it happened.
+        self._loaded_from = ""
         #: Replaceable so a test never touches a network.
         self.sampler = read_sample
         self._timer = QTimer(self)
@@ -247,11 +283,15 @@ class MonitorScreen(Screen):
         layout.addWidget(blurb)
 
         layout.addLayout(self._build_controls())
+        layout.addLayout(self._build_keep_row())
         layout.addWidget(self._build_readouts())
 
         self.charts = {}
+        self.band = None
         for key, title, keys in telemetry.GRAPHS:
             layout.addWidget(self._build_chart(key, title, keys), 1)
+
+        layout.addWidget(self._build_events())
 
         self.status = QLabel(WAITING)
         self.status.setWordWrap(True)
@@ -283,6 +323,10 @@ class MonitorScreen(Screen):
 
         row.addStretch(1)
 
+        self.open_button = QPushButton("Open readings")
+        self.open_button.clicked.connect(self._on_open_pressed)
+        row.addWidget(self.open_button)
+
         self.save_button = QPushButton("Save readings")
         self.save_button.clicked.connect(self._on_save_pressed)
         row.addWidget(self.save_button)
@@ -290,6 +334,24 @@ class MonitorScreen(Screen):
         self.clear_button = QPushButton("Clear")
         self.clear_button.clicked.connect(self._on_clear_pressed)
         row.addWidget(self.clear_button)
+        return row
+
+    def _build_keep_row(self):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self.keep_box = QCheckBox(KEEP_RECORDING)
+        self.keep_box.setToolTip(KEEP_RECORDING_HINT)
+        # Not saved with the settings, on purpose. Everything else in this
+        # tool reads the console only while somebody is looking at it, and an
+        # opt-out of that which came back by itself on the next launch would
+        # be a program polling a console nobody asked it to.
+        self.keep_box.setChecked(False)
+        row.addWidget(self.keep_box)
+        hint = QLabel(KEEP_RECORDING_HINT)
+        hint.setWordWrap(True)
+        hint.setObjectName("dim")
+        hint.setMaximumWidth(620)
+        row.addWidget(hint, 1)
         return row
 
     def _build_readouts(self):
@@ -343,6 +405,40 @@ class MonitorScreen(Screen):
         box.addWidget(chart, 1)
         self.charts[key] = chart
         chart.legend_label = legend
+        if key == BAND_ON:
+            # In this panel rather than one of its own, so that the blocks
+            # and the part of the line above them are the same pixels wide:
+            # every graph here has the same margins, and a band in a frame
+            # with different ones would point at the wrong minute.
+            self.band = TitleBand(frame)
+            self.band.set_history(self.history)
+            self.band.set_span(self._span)
+            self.band.set_interval(self._interval)
+            box.addWidget(self.band)
+        return frame
+
+    def _build_events(self):
+        """The list of what crossed a threshold, under the graphs.
+
+        A list rather than a colour on a figure. A temperature that was above
+        eighty for six minutes while somebody was playing is the answer to
+        why the console turned itself off, and it is gone from the figures
+        the moment it comes back down.
+        """
+        frame = QFrame()
+        frame.setObjectName("statepanel")
+        box = QVBoxLayout(frame)
+        box.setContentsMargins(16, 12, 16, 12)
+        box.setSpacing(4)
+        heading = QLabel(EVENTS_HEADING)
+        font = heading.font()
+        font.setBold(True)
+        heading.setFont(font)
+        box.addWidget(heading)
+        self.events_label = QLabel("")
+        self.events_label.setWordWrap(True)
+        self.events_label.setTextFormat(Qt.RichText)
+        box.addWidget(self.events_label)
         return frame
 
     # -- theme
@@ -352,8 +448,11 @@ class MonitorScreen(Screen):
             return
         for chart in getattr(self, "charts", {}).values():
             chart.set_theme(self.theme)
+        if getattr(self, "band", None) is not None:
+            self.band.set_theme(self.theme)
         self._paint_readouts()
         self._paint_legends()
+        self._paint_events()
 
     def _colour(self, token, fallback="#888888"):
         if self.theme is None:
@@ -368,7 +467,10 @@ class MonitorScreen(Screen):
     def on_enter(self):
         self._entered = True
         self._forget_other_console()
-        if self.connection.connected:
+        # A file on the graphs is left alone. Coming back to a screen that
+        # was showing a saved afternoon and finding it replaced by a fresh
+        # reading of the console would throw away the thing being looked at.
+        if self.connection.connected and not self._loaded_from:
             self.start()
         else:
             self._update_status()
@@ -376,6 +478,14 @@ class MonitorScreen(Screen):
 
     def on_leave(self):
         self._entered = False
+        if self._running and self.keep_box.isChecked():
+            # Asked for, explicitly, by somebody who ticked a box that is off
+            # by default. The shell's event line is told, because a program
+            # reading a console while its screen is elsewhere should say so
+            # somewhere the person can see.
+            self.event_noted.emit("Monitor is still recording")
+            self.status_message.emit("Monitor is still recording.")
+            return
         self.stop()
 
     def start(self):
@@ -387,6 +497,11 @@ class MonitorScreen(Screen):
         """
         if not self.connection.connected or not self.connection.host:
             return
+        if self._loaded_from:
+            # The file goes when recording starts. Said in the footer rather
+            # than asked about: the readings are still in the file they came
+            # from, so nothing is lost by this.
+            self._fresh_history()
         self._host = self.connection.host
         self._running = True
         self._timer.setInterval(self._interval * 1000)
@@ -426,7 +541,7 @@ class MonitorScreen(Screen):
                 self._update_controls()
                 self._update_status()
             return
-        if self._entered and not self._running:
+        if self._entered and not self._running and not self._loaded_from:
             self.start()
 
     def _forget_other_console(self):
@@ -436,16 +551,13 @@ class MonitorScreen(Screen):
         nothing on the graph that says which console a point came from.
         """
         host = self.connection.host
-        if host == self._host:
+        if host == self._host or self._loaded_from:
+            # A file belongs to no console, so a change of address says
+            # nothing about whether its readings are still worth showing.
             return
         self._host = host
         if len(self.history):
-            self.history = telemetry.History()
-            self._facts = {}
-            self._reads = 0
-            self._overlaps = 0
-            for chart in self.charts.values():
-                chart.set_history(self.history)
+            self._fresh_history()
             self._refresh()
 
     # -- one reading
@@ -505,8 +617,11 @@ class MonitorScreen(Screen):
     def _refresh(self, problem=""):
         for chart in self.charts.values():
             chart.refresh()
+        if self.band is not None:
+            self.band.refresh()
         self._paint_readouts()
         self._paint_legends()
+        self._paint_events()
         # Save and Clear are about whether there are any readings, so they
         # move when a reading arrives. Without this the first reading landed
         # on a screen whose Save button was still disabled.
@@ -550,7 +665,10 @@ class MonitorScreen(Screen):
             lines.append(f"Firmware {firmware}")
         game = running_title(self._facts)
         if game:
-            lines.append(f"Running {game}")
+            # Named where this program knows the game, the same way the band
+            # under the graphs names it, so the two do not read as two
+            # different things being reported.
+            lines.append(f"Running {telemetry.title_words(game) or game}")
         free = free_space_text(self._facts)
         if free:
             # free_space_text says "566.9 GB free" already.
@@ -559,6 +677,91 @@ class MonitorScreen(Screen):
         if uptime:
             lines.append(f"Up {uptime}")
         return "\n".join(lines)
+
+    def event_lines(self):
+        """[(token, sentence)] for the heat list, worst first.
+
+        Episodes rather than a count of readings: a console that touched 81
+        once and a console that sat above eighty for six minutes cross the
+        same line, and only one of them explains a console that switched
+        itself off. Only the highest level a figure crossed is listed, so an
+        afternoon above seventy does not bury the four minutes above eighty.
+
+        Returned as words so a test can read the sentence rather than watch a
+        label change, and so the same sentences can go in a report later.
+        """
+        gap = self._interval * telemetry.GAP_FACTOR
+        lines = []
+        for series in telemetry.SERIES:
+            if not series.levels:
+                continue
+            points = self.history.points(series.key, self._span)
+            if not points:
+                continue
+            for value, token in reversed(series.levels):
+                found = telemetry.episodes(points, value, gap)
+                if not found:
+                    continue
+                newest = self.history.last_at
+                for start, end, peak in found[-EPISODE_LIMIT:]:
+                    lines.append((token, self._episode_words(
+                        series, value, start, end, peak, newest)))
+                if len(found) > EPISODE_LIMIT:
+                    lines.append((token, f"{len(found) - EPISODE_LIMIT} "
+                                  f"earlier spells above "
+                                  f"{telemetry.format_value(value, series)} "
+                                  f"are not listed."))
+                break
+        if not lines:
+            lowest = min(value for series in telemetry.SERIES
+                         for value, _token in series.levels)
+            series = telemetry.series_for("cpu")
+            lines.append(("text_dim", NOTHING_CROSSED.format(
+                level=telemetry.format_value(lowest, series))))
+        peak = self._peak_words()
+        if peak:
+            lines.append(("text_dim", peak))
+        return lines
+
+    def _episode_words(self, series, level, start, end, peak, newest):
+        """One episode as a sentence, with the times a person can act on."""
+        words = telemetry.format_value(level, series)
+        top = telemetry.format_value(peak, series)
+        from_at = time.strftime("%H:%M:%S", time.localtime(start))
+        lasted = telemetry.duration_words(end - start)
+        if newest is not None and end >= newest:
+            # Still going: the console is above the line as this is read, and
+            # saying it ended at the time of the last reading would be a
+            # statement about a console that has not stopped doing it.
+            return (f"{series.label} has been above {words} since {from_at}, "
+                    f"{lasted} so far, peaking at {top}.")
+        to_at = time.strftime("%H:%M:%S", time.localtime(end))
+        return (f"{series.label} was above {words} from {from_at} to "
+                f"{to_at}, {lasted}, peaking at {top}.")
+
+    def _peak_words(self):
+        """The highest each temperature reached, which is worth saying even
+        when nothing crossed a line."""
+        parts = []
+        for series in telemetry.SERIES:
+            if not series.levels:
+                continue
+            _low, high = self.history.extremes(series.key, self._span)
+            if high is None:
+                continue
+            parts.append(f"{series.label} "
+                         f"{telemetry.format_value(high, series)}")
+        if not parts:
+            return ""
+        return "Highest recorded: " + ", ".join(parts) + "."
+
+    def _paint_events(self):
+        dim = self._colour("text_dim")
+        rows = []
+        for token, words in self.event_lines():
+            colour = dim if token == "text_dim" else self._colour(token)
+            rows.append(f'<div style="color:{colour}">{words}</div>')
+        self.events_label.setText("".join(rows))
 
     def _paint_legends(self):
         """The line colours, named, above each graph.
@@ -597,6 +800,15 @@ class MonitorScreen(Screen):
         Built as a string by a method so that a test can read the sentence
         rather than watch for a label changing.
         """
+        if self._loaded_from and len(self.history):
+            count = len(self.history)
+            words = "reading" if count == 1 else "readings"
+            first = self.history.first_at
+            when = time.strftime("%d %b %Y, %H:%M",
+                                 time.localtime(first)) if first else ""
+            return (f"Showing {count} {words} from "
+                    f"{os.path.basename(self._loaded_from)}, recorded "
+                    f"{when}. Press Start to record from the console again.")
         if not self.connection.connected and not len(self.history):
             return NOT_CONNECTED
         parts = []
@@ -640,6 +852,8 @@ class MonitorScreen(Screen):
         self._interval = self.interval_box.currentData()
         for chart in self.charts.values():
             chart.set_interval(self._interval)
+        if self.band is not None:
+            self.band.set_interval(self._interval)
         if self._running:
             self._timer.setInterval(self._interval * 1000)
         self._update_status()
@@ -648,17 +862,31 @@ class MonitorScreen(Screen):
         self._span = self.span_box.currentData()
         for chart in self.charts.values():
             chart.set_span(self._span)
+        if self.band is not None:
+            self.band.set_span(self._span)
         self._paint_readouts()
+        self._paint_events()
 
     def _on_clear_pressed(self):
-        self.history = telemetry.History()
+        self._fresh_history()
+        self._refresh()
+        self._update_controls()
+
+    def _fresh_history(self, history=None):
+        """Start again, and hand the new history to everything drawing it.
+
+        One place, because a history handed to the graphs and not to the band
+        is a band still showing the game from the console before last.
+        """
+        self.history = history if history is not None else telemetry.History()
         self._facts = {}
         self._reads = 0
         self._overlaps = 0
+        self._loaded_from = ""
         for chart in self.charts.values():
             chart.set_history(self.history)
-        self._refresh()
-        self._update_controls()
+        if self.band is not None:
+            self.band.set_history(self.history)
 
     def _on_hover(self, reading):
         """The readout follows the pointer over a graph.
@@ -680,6 +908,48 @@ class MonitorScreen(Screen):
             readout.show_reading(value, None, None,
                                  self._value_colour(series, value), dim)
             readout.range.setText(f"at {stamp}")
+
+    def _on_open_pressed(self):
+        path, _filter = QFileDialog.getOpenFileName(
+            self, "Open readings", os.path.dirname(default_csv_path()),
+            CSV_FILTER)
+        if not path:
+            return
+        self.load_csv(path)
+
+    def load_csv(self, path):
+        """Graphs a saved file. Separate from the dialogue so a test can call it.
+
+        Recording stops. A file's readings and a live console's on one graph
+        would be one line made of two afternoons, and the time axis would
+        have nothing to say about either.
+        """
+        try:
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+        except OSError as error:
+            self.status.setText(
+                f"Could not read {path}: {error.strerror or error}.")
+            return False
+        try:
+            history = telemetry.History.from_csv(text, path=path)
+        except telemetry.ReadingsFileError as error:
+            # The message names the file, the field and what was expected,
+            # which is the whole reason for that exception carrying them.
+            self.status.setText(str(error))
+            return False
+        self.stop()
+        self._fresh_history(history)
+        self._loaded_from = path
+        self._refresh()
+        self._update_controls()
+        self.status_message.emit(f"Opened {os.path.basename(path)}.")
+        return True
+
+    @property
+    def loaded_from(self):
+        """The file on the graphs, or "" when these came off a console."""
+        return self._loaded_from
 
     def _on_save_pressed(self):
         if not len(self.history):

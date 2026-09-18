@@ -155,12 +155,17 @@ nothing. How much of the drive each installed game actually costs.
 | --- | --- |
 | Interval | Two seconds to one minute. A console that cannot answer as fast as the interval asks is noticed and said so, and a longer one suggested |
 | Window | Five minutes, fifteen, an hour, or everything recorded this session |
+| Heat | Seventy and eighty degrees are marked on the graph, and every spell above them is listed with the times and the peak |
+| Game | A band under the temperatures says what the console had loaded, so a climb and the launch that caused it are the same moment |
 | Save | Writes every reading to a CSV on your Desktop, one row each, with both the epoch and the local time |
+| Open | Loads a saved CSV back and graphs it with no console present |
+| Keep recording | A tick box that carries on while you use another tool. Off by default, and forgotten when the program closes |
 
-It polls only while it is the screen in front of you. Leaving it stops the
-reading, and the page it asks for is the one the diagnostic already reads.
-Nothing is recorded to disk unless you press Save, and the readings are
-forgotten when the program closes.
+It polls only while it is the screen in front of you, unless you tick **Keep
+recording**, which is off by default and forgotten when the program closes.
+The page it asks for is the one the diagnostic already reads. Nothing is
+recorded to disk unless you press Save, and the readings are forgotten when
+the program closes.
 
 A console that stops answering leaves a break in the line rather than a
 straight line drawn across the gap, and the footer counts the readings that

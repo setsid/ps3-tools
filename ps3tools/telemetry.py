@@ -61,6 +61,10 @@ class Series:
     least_span: float = 5.0     #: smallest axis range, so flat is flat
     decimals: int = 0
     scale: float = 1.0          #: what the fact is multiplied by
+    #: Levels worth drawing a line at and recording a crossing of, lowest
+    #: first, each with the theme token it is drawn in. Empty for a figure
+    #: where no particular number means anything.
+    levels: tuple = ()
 
 
 #: The temperatures share a graph, so they share an axis and the same bounds.
@@ -68,11 +72,18 @@ class Series:
 #: in the top third of the graph.
 TEMPERATURE_FLOOR = 40.0
 
+#: The two temperatures worth knowing about, and they are the strip's own
+#: figures rather than new ones: a PS3 idles in the fifties and works in the
+#: sixties, seventy is where somebody should notice, and eighty is where the
+#: console itself starts to mind. A reading above eighty for any length of
+#: time is the usual reason a console turns itself off mid-game.
+LEVELS = ((70.0, "warn"), (80.0, "error"))
+
 SERIES = (
     Series("cpu", "CPU", "°C", "accent", "cpu_temp_c",
-           floor=TEMPERATURE_FLOOR, least_span=10.0),
+           floor=TEMPERATURE_FLOOR, least_span=10.0, levels=LEVELS),
     Series("rsx", "RSX", "°C", "info", "rsx_temp_c",
-           floor=TEMPERATURE_FLOOR, least_span=10.0),
+           floor=TEMPERATURE_FLOOR, least_span=10.0, levels=LEVELS),
     Series("fan", "Fan", "%", "warn", "fan_speed_percent",
            floor=0.0, ceiling=100.0, least_span=100.0),
     # Divided the way human_size divides, so the figure on the graph and the
@@ -120,12 +131,53 @@ def value_of(facts, series):
     return float(raw) * series.scale
 
 
+#: The CSV's columns, in order. The title column is last so that a file from
+#: the version before it existed reads correctly: from_csv works by column
+#: name, and a name it does not find is simply absent.
+CSV_HEAD = (["epoch", "time"]
+            + [f"{series.key} ({series.unit})" for series in SERIES]
+            + ["title"])
+
+
+class ReadingsFileError(Exception):
+    """A readings file that could not be read, and exactly why.
+
+    The message names the file, the field and what was expected, which is
+    what every other failure in this program does. A dialogue saying "could
+    not open file" of a file somebody has in front of them is no help.
+    """
+
+    def __init__(self, message, path="", field="", expected=None,
+                 found=None):
+        self.path = path
+        self.field = field
+        self.expected = expected
+        self.found = found
+        parts = [message]
+        if field:
+            parts.append(f"field: {field}")
+        if expected is not None:
+            parts.append(f"expected: {expected}")
+        if found is not None:
+            parts.append(f"found: {found}")
+        if path:
+            parts.append(f"file: {path}")
+        super().__init__("; ".join(str(part) for part in parts))
+
+
 @dataclass(frozen=True)
 class Reading:
-    """What one sample of the console said, and when it was taken."""
+    """What one sample of the console said, and when it was taken.
+
+    title is the title ID the console had loaded at that moment, or "" when
+    it had nothing loaded or did not say. It is kept beside the figures
+    rather than in them because it is what makes a temperature climb mean
+    something: the climb and the launch that caused it are the same moment.
+    """
 
     at: float
     values: dict
+    title: str = ""
 
     def value(self, key):
         return self.values.get(key)
@@ -190,7 +242,8 @@ class History:
             self.misses += 1
             self.last_miss_at = at
             return None
-        reading = Reading(at, values)
+        title = str((facts or {}).get("running_title") or "")
+        reading = Reading(at, values, title)
         self._readings.append(reading)
         # Oldest first out. The cap is a window length rather than a budget,
         # so the recent end is the end worth keeping.
@@ -242,23 +295,107 @@ class History:
     def to_csv(self):
         """The whole history as text, one row per reading.
 
-        Written for a spreadsheet and for an issue report. The epoch column
-        is there because the local time column loses an hour twice a year and
-        a graph drawn from the file should not have a step in it.
+        Written for a spreadsheet, for an issue report, and to be read back
+        by from_csv. The epoch column is there because the local time column
+        loses an hour twice a year and a graph drawn from the file should not
+        have a step in it; the local time column is there because the epoch
+        one means nothing to a person.
         """
-        keys = [series.key for series in SERIES]
-        head = ["epoch", "time"] + [
-            f"{series.key} ({series.unit})" for series in SERIES]
-        rows = [",".join(head)]
+        rows = [",".join(CSV_HEAD)]
         for item in self._readings:
             stamp = time.strftime("%Y-%m-%d %H:%M:%S",
                                   time.localtime(item.at))
             cells = [f"{item.at:.3f}", stamp]
-            for key in keys:
-                value = item.values.get(key)
+            for series in SERIES:
+                value = item.values.get(series.key)
                 cells.append("" if value is None else f"{value:g}")
+            cells.append(item.title)
             rows.append(",".join(cells))
         return "\n".join(rows) + "\n"
+
+    @classmethod
+    def from_csv(cls, text, path=""):
+        """A history read back out of what to_csv wrote.
+
+        Read by column name rather than by position, so a file from a version
+        that wrote a column this one does not know still loads, and a file
+        with the columns in another order loads correctly instead of silently
+        graphing the fan as a temperature.
+
+        A row that carries none of the figures is skipped rather than counted
+        as a miss: a miss is a console that did not answer, and a file is not
+        a console.
+        """
+        lines = [line for line in (text or "").splitlines() if line.strip()]
+        if not lines:
+            raise ReadingsFileError(
+                "the file is empty", path=path, field="the whole file",
+                expected="a header row and one row per reading")
+        head = [cell.strip().lower() for cell in lines[0].split(",")]
+        if "epoch" not in head:
+            raise ReadingsFileError(
+                "the first row does not name the columns", path=path,
+                field="header", expected="a column called epoch",
+                found=lines[0][:80])
+        at_column = head.index("epoch")
+        columns = {}
+        for series in SERIES:
+            for index, name in enumerate(head):
+                # Written "cpu (°C)", and matched on the key alone so that a
+                # file whose unit is spelled differently still loads.
+                if name == series.key or name.startswith(series.key + " "):
+                    columns[series.key] = index
+                    break
+        if not columns:
+            raise ReadingsFileError(
+                "none of the columns hold a figure this program graphs",
+                path=path, field="header",
+                expected=", ".join(series.key for series in SERIES),
+                found=", ".join(head)[:120])
+        title_column = head.index("title") if "title" in head else None
+
+        history = cls()
+        for number, line in enumerate(lines[1:], start=2):
+            cells = line.split(",")
+            if at_column >= len(cells):
+                raise ReadingsFileError(
+                    "a row is too short to hold the time it was read",
+                    path=path, field=f"row {number}",
+                    expected=f"{at_column + 1} columns", found=len(cells))
+            try:
+                at = float(cells[at_column])
+            except ValueError:
+                raise ReadingsFileError(
+                    "a row's time is not a number", path=path,
+                    field=f"row {number}, epoch",
+                    expected="seconds since 1970",
+                    found=cells[at_column][:40]) from None
+            values = {}
+            for key, index in columns.items():
+                if index >= len(cells) or not cells[index].strip():
+                    continue
+                try:
+                    values[key] = float(cells[index])
+                except ValueError:
+                    raise ReadingsFileError(
+                        "a reading is not a number", path=path,
+                        field=f"row {number}, {key}", expected="a number",
+                        found=cells[index][:40]) from None
+            if not values:
+                continue
+            title = ""
+            if title_column is not None and title_column < len(cells):
+                title = cells[title_column].strip()
+            history._readings.append(Reading(at, values, title))
+        if not history._readings:
+            raise ReadingsFileError(
+                "the file holds no readings", path=path, field="rows",
+                expected="at least one row with a figure on it",
+                found=f"{len(lines) - 1} rows, none of them usable")
+        # Sorted because a file may have been edited, and every window and
+        # every gap in here is worked out from the order.
+        history._readings.sort(key=lambda item: item.at)
+        return history
 
 
 def runs(points, gap):
@@ -278,6 +415,87 @@ def runs(points, gap):
     if current:
         out.append(tuple(current))
     return tuple(out)
+
+
+def episodes(points, level, gap):
+    """[(start, end, peak)] for every run of readings at or above a level.
+
+    An episode is what a threshold is actually about. A console that touched
+    81 degrees for one reading and a console that sat above eighty for six
+    minutes both cross the same line, and only one of them is a reason to
+    stop playing.
+
+    A break in the readings ends an episode. What the console did while it
+    was not answering is not known, and an episode reported as lasting four
+    minutes because the console was silent for three of them would be this
+    program inventing the worst of it.
+    """
+    out = []
+    start = None
+    last = None
+    peak = None
+    for at, value in points:
+        broken = last is not None and at - last > gap
+        if value >= level and not broken:
+            if start is None:
+                start = at
+                peak = value
+            else:
+                peak = max(peak, value)
+        else:
+            if start is not None:
+                out.append((start, last, peak))
+            start = at if value >= level else None
+            peak = value if value >= level else None
+        last = at
+    if start is not None:
+        out.append((start, last, peak))
+    return tuple(out)
+
+
+def title_spans(readings, gap):
+    """[(start, end, title)] for what the console had loaded, merged.
+
+    Consecutive readings naming the same title are one span. A reading with
+    nothing loaded ends the span, and so does a break: a game that was
+    running before the console went quiet cannot be assumed to have been
+    running while it was quiet.
+    """
+    out = []
+    start = None
+    current = ""
+    last = None
+    for reading in readings:
+        broken = last is not None and reading.at - last > gap
+        title = reading.title
+        if title != current or broken:
+            if current and start is not None:
+                out.append((start, last, current))
+            current = title
+            start = reading.at if title else None
+        last = reading.at
+    if current and start is not None:
+        out.append((start, last, current))
+    return tuple(out)
+
+
+def title_words(title_id):
+    """A title ID as somebody would say it, or the ID itself.
+
+    The three games this program fixes have short names worth showing. Every
+    other ID is shown as it came off the console, because a guessed name is
+    worse than the ID for somebody trying to work out what was running.
+    """
+    if not title_id:
+        return ""
+    # Imported here rather than at the top: the title table is a large module
+    # and everything else in this file is arithmetic that must stay cheap to
+    # import.
+    from .titles import config_for
+    config = config_for(title_id)
+    if not config:
+        return title_id
+    return f"{config.get('short') or config.get('name')} ({title_id})"
 
 
 def bounds(values, floor=None, ceiling=None, least_span=1.0, pad=0.1):

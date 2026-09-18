@@ -42,13 +42,26 @@ RELEASES = (
             "console once; this is for the questions that only a trend "
             "answers, such as whether a fan that climbed during an hour of "
             "play ever came back down.",
-            "It reads only while it is the screen in front of you, and only "
-            "the one page the diagnostic already reads. Nothing is written "
-            "anywhere unless you press Save, which writes the readings as a "
-            "CSV to your Desktop.",
+            "It reads only while it is the screen in front of you, unless "
+            "you tick the box that keeps it going, and only the one page the "
+            "diagnostic already reads. Nothing is written anywhere unless "
+            "you press Save, which writes the readings as a CSV to your "
+            "Desktop.",
             "A console that stops answering leaves a break in the line "
             "rather than a straight line across the gap, and the footer "
             "counts how many readings went unanswered.",
+            "Monitor marks seventy and eighty degrees on the graph and "
+            "keeps a list of every spell above them, with the times and the "
+            "peak. A console that switched itself off an hour ago is still "
+            "answered for, which a figure that has since come back down "
+            "cannot do.",
+            "Under the temperatures is a band saying which game the console "
+            "had loaded, so a climb and the launch that caused it are the "
+            "same moment on the page.",
+            "Open readings loads a saved CSV back and graphs it with no "
+            "console present, so somebody can send you their afternoon.",
+            "A tick box keeps the recording going while you use another "
+            "tool. Off by default, and forgotten when the program closes.",
         ),
     ),
     Release(

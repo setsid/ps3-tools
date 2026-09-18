@@ -1,5 +1,10 @@
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
 
+[![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
+[![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)
+![platform](https://img.shields.io/badge/platform-PS3-003791)
+
 <table>
   <tr>
     <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops-ii"><img src="docs/cards/black-ops-2.svg" alt="Black Ops II, fixed" width="180"></a></td>
@@ -23,10 +28,6 @@ That is separate from the fixes above and is not yet addressed.
 
 ---
 
-[![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
-[![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
-[![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)
-![platform](https://img.shields.io/badge/platform-PS3-003791)
 
 Tools for a PS3 running custom firmware, in one Windows program. A diagnostic
 that reads the console and writes everything a helper needs into one file; the

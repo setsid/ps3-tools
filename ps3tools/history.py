@@ -29,6 +29,23 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.4.3",
+        date="2026-09-18",
+        summary="A file signed for PS3HEN is compressed, which is the fourth "
+                "thing that makes it a HEN file.",
+        changes=(
+            "A file signed for PS3HEN has its loaded sections compressed. "
+            "That was taken for a choice the tool that built them happened "
+            "to make, and it is not: a patch with everything else right went "
+            "on to a HEN console cleanly and the console black screened the "
+            "moment the patched binary loaded. Surveyed across twenty-eight "
+            "paired builds, every HEN one compresses and every custom "
+            "firmware one does not, with no exceptions.",
+            "Nothing changes for a custom firmware console, which follows "
+            "the file it started from section by section as before.",
+        ),
+    ),
+    Release(
         version="1.4.2",
         date="2026-09-18",
         summary="The three patch screens are the same screen now, and the "

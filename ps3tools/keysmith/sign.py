@@ -13,10 +13,15 @@ What is recomputed is what genuinely depends on the payload: section sizes and
 offsets, the per-section HMACs, the ELF digest, the lengths in the headers, and
 both NPDRM hashes. See npdrm.py for the two of those.
 
+The signature is made where a private key is to hand and carried where it is
+not. The keys file holds a real private key for four NPDRM revisions, 0x0001,
+0x0004, 0x0007 and 0x000A, and 0x000A is the one PS3HEN wants, so a file built
+for HEN is signed here the way scetool signs one. Every other revision in the
+file ships zeros for the private key, which is why a retail rebuild carries
+the template's signature through. See ecdsa.py.
+
 What is carried through unchanged, because it cannot be derived:
 
-  * The signature. These files are signed with a private key nobody outside
-    Sony has, and the keys file ships zeros for it. scetool cannot sign either.
   * The type 3 metadata section. It holds a build comment table that is not in
     the decrypted ELF at all, so a rebuild that worked from the ELF alone would
     silently drop it. scetool does drop it.
@@ -66,6 +71,7 @@ import os
 import zlib
 
 from . import aes
+from . import ecdsa
 from . import keys as keymod
 from . import npdrm as npdrm_hash
 from .errors import SigningFailed
@@ -267,7 +273,13 @@ HEADER_ALIGN = 0x80
 #: in 21 bytes looks like, and the 0x2A bytes together account for exactly
 #: the gap between where the metadata says the signature starts and where the
 #: header ends once the alignment above is allowed for.
-SIGNATURE_BYTES = 0x2A
+#:
+#: Read off their files rather than assumed: signature_input_length is 0xB40
+#: and header_length is 0xB80 on all fourteen PS3HEN builds, and the 0x40
+#: bytes between them are 0x2A of signature followed by 0x16 of zero. Both
+#: halves of all twenty-nine real signatures read here verify against the
+#: public key when they are taken this way round, r first.
+SIGNATURE_BYTES = ecdsa.SIGNATURE_BYTES
 
 
 def copy_compression(metadata_value):
@@ -535,10 +547,16 @@ def _rebuild_from_elf(template, elf, metadata, klicensee, store, filename,
                           metadata.header.opt_header_size,
                           metadata.header.unknown2, metadata.header.unknown3)
     metadata_at = _metadata_at(template)
+    # The field starts out zero where this can sign, and the signature goes
+    # in once the header it covers is finished. Where it cannot, the
+    # template's own is carried and nothing is computed over the header at
+    # all.
+    room = header_length - signature_at
+    signable = can_sign(keyset)
+    field = (bytes(room) if signable
+             else _signature_field(metadata, signature_at, header_length))
     blob = _metadata_blob(head, sections, key_table, metadata.optional,
-                          _signature_field(metadata, signature_at,
-                                           header_length),
-                          header_length - metadata_at)
+                          field, header_length - metadata_at)
 
     # scetool writes the file size less the header where a retail file writes
     # the length of the ELF inside. Both conventions are in the corpus: all
@@ -553,7 +571,8 @@ def _rebuild_from_elf(template, elf, metadata, klicensee, store, filename,
                      klicensee, store, data_length=end - header_length,
                      key_revision=revision, keyset=keyset,
                      header_length=header_length,
-                     shdr_offset=_shdr_offset(sections))
+                     shdr_offset=_shdr_offset(sections),
+                     sign_at=signature_at if signable else None)
     out = bytearray(header)
     for offset, blob_bytes in zip(offsets, stored):
         if offset > len(out):
@@ -647,19 +666,84 @@ def _header_geometry(template, metadata, section_count, key_count):
     return signature_at, length
 
 
+def can_sign(keyset):
+    """Whether this keyset can sign rather than only check a signature.
+
+    Four NPDRM revisions in the keys file carry a real private key, 0x0001,
+    0x0004, 0x0007 and 0x000A, and PS3HEN wants 0x000A. Every other revision
+    carries zeros there, so asking the keyset is the whole test and no table
+    of revisions is needed: a keys file that gains a private key gains the
+    ability to sign with it.
+
+    Each of those four was checked the only way that settles it, which is
+    that the private key times the base point is the public key the same
+    keyset carries. ecdsa.py has the figures.
+    """
+    private = bytes(getattr(keyset, "private", b"") or b"")
+    return any(private)
+
+
 def _signature_field(metadata, signature_at, header_length):
     """The signature, carried through, padded out to fill the header.
 
-    Carried because nothing here can produce another. These files are signed
-    with a private key nobody outside Sony has for most revisions, and the
-    template is what the file's own signature has to come from. scetool does
-    sign a 0x000A build, because the private key for that revision is in
-    naehrwert's keys file, so a file built here carries the template's
-    signature where scetool's carries a fresh one. Whether a HEN console
-    checks it is not known here.
+    This is the path for a keyset with no private key, which is every
+    revision a retail file is signed at. The template is then the only place
+    the file's signature can come from, and a rebuild of a file nobody has
+    touched carries the one it came with, which is what makes the round trip
+    byte-identical.
     """
     carried = bytes(metadata.signature[:SIGNATURE_BYTES])
     return carried.ljust(header_length - signature_at, b"\x00")
+
+
+def _signed_metadata(head, blob, run_at, sign_at, keyset, path):
+    """The metadata run with a real signature written into it.
+
+    head holds the whole header with the metadata run and the metadata info
+    block still in the clear, which is the form the signature covers.
+    scetool builds the header, signs it, writes the signature at the end of
+    the metadata run and encrypts the run afterwards, so the bytes that were
+    hashed are never the bytes on disk. Checked by verifying real
+    signatures both ways round: the plaintext form verifies on all fifteen
+    retail files here and on all fourteen PS3HEN builds in the survey, and
+    the on-disk form verifies on none of them.
+
+    The signature sits at sign_at, which is signature_input_length, so
+    everything the hash covers is in front of it and writing it afterwards
+    cannot disturb it.
+
+    The result is verified against the keyset's own public key before it is
+    returned. That costs one scalar multiplication and it catches the one
+    failure that would otherwise leave here quietly: a keyset whose private
+    key and ctype do not belong together would sign with one curve's key on
+    another curve's arithmetic, and the file would be refused by a console
+    with nothing on screen to say why.
+    """
+    curve = ecdsa.curve(keyset.curve_type)
+    digest = ecdsa.digest_of(bytes(head[:sign_at]))
+    signature = ecdsa.sign(curve, keyset.private, digest)
+    if len(signature) != SIGNATURE_BYTES:
+        raise SigningFailed(
+            "the signature came out the wrong length", path=path,
+            field="signature", expected=SIGNATURE_BYTES,
+            found=len(signature))
+    at = sign_at - run_at
+    if at < 0 or at + SIGNATURE_BYTES > len(blob):
+        raise SigningFailed(
+            "the metadata run has no room for a signature where the header "
+            "says one goes", path=path, field="signature input length",
+            expected=f"{at + SIGNATURE_BYTES} bytes of metadata",
+            found=len(blob))
+    if not ecdsa.verify(curve, keyset.public, digest, signature):
+        raise SigningFailed(
+            "the signature this keyset produced does not verify against the "
+            "public key the same keyset carries, so the private key and the "
+            "curve its ctype names do not belong together",
+            path=path, field="signature",
+            found=f"ctype 0x{keyset.curve_type:02X}")
+    out = bytearray(blob)
+    out[at:at + SIGNATURE_BYTES] = signature
+    return bytes(out)
 
 
 def _shdr_offset(sections):
@@ -900,7 +984,7 @@ def _metadata_blob(header, sections, key_table, optional, signature,
 
 def _header(template, control_infos, section_infos, metadata, blob, klicensee,
             store, data_length=None, key_revision=None, keyset=None,
-            header_length=None, shdr_offset=None):
+            header_length=None, shdr_offset=None, sign_at=None):
     """Everything up to the first section's bytes.
 
     header_length and shdr_offset are for the path that builds its own
@@ -908,6 +992,11 @@ def _header(template, control_infos, section_infos, metadata, blob, klicensee,
     template's and the section header table lands somewhere else. Left out,
     both stay as the template had them, which is what a rebuild that keeps
     the layout wants.
+
+    sign_at is where the signature goes, and giving it is what asks for one
+    to be made over the header this builds. Left out, whatever the blob
+    already carries there is written as it stands, which is the template's
+    own signature.
     """
     sce = template.sce
     keyset = keyset or template.keyset
@@ -963,15 +1052,25 @@ def _header(template, control_infos, section_infos, metadata, blob, klicensee,
     # them changes.
     info = MetadataInfo(metadata.info.key, b"\x00" * 16, metadata.start_iv,
                         b"\x00" * 16)
+    info_at = sce.metadata_offset + SceHeader.SIZE
+    run_at = info_at + MetadataInfo.SIZE
+
+    # Both go in unencrypted first, because that is the form the signature
+    # covers: the whole header with the metadata info block and the metadata
+    # run in the clear. Signing then encrypting is scetool's order, and the
+    # bytes that were hashed are never the bytes on disk.
+    head[info_at:info_at + MetadataInfo.SIZE] = info.pack()
+    head[run_at:run_at + len(blob)] = blob
+    if sign_at is not None:
+        blob = _signed_metadata(head, blob, run_at, sign_at, keyset,
+                                template.path)
+
     wrapped = aes.cbc_encrypt(keyset.erk, keyset.riv, info.pack())
     if template.is_npdrm:
         klic = bytes(klicensee) or store.named_key("NP_klic_free")
         per_title = aes.ecb_decrypt(store.named_key("NP_klic_key"), klic)
         wrapped = aes.cbc_encrypt(per_title, b"\x00" * 16, wrapped)
-    at = sce.metadata_offset + SceHeader.SIZE
-    head[at:at + MetadataInfo.SIZE] = wrapped
-
-    at += MetadataInfo.SIZE
+    head[info_at:info_at + MetadataInfo.SIZE] = wrapped
     encrypted = aes.ctr_crypt(metadata.info.key, metadata.start_iv, blob)
-    head[at:at + len(encrypted)] = encrypted
+    head[run_at:run_at + len(encrypted)] = encrypted
     return bytes(head)

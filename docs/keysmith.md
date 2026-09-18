@@ -91,8 +91,10 @@ Revision 0x000A has exactly one NPDRM keyset, so that does not arise here.
 
 An earlier version of this program fake-signed for HEN, on the reasoning that
 a retail re-sign carries a signature that cannot be regenerated and that HEN
-checks it. The paired binaries say otherwise, and that reasoning is not in the
-tree any more.
+checks it. The paired binaries say otherwise on the first half of that, and
+the second half turned out to be wrong as well: the keys file holds the
+private key for revision 0x000A, so the signature can be regenerated and now
+is. Neither part of that reasoning is in the tree any more.
 
 ## Layout
 
@@ -102,20 +104,23 @@ tree any more.
         fself.py      fake-signed SELFs, which need no keys at all
         keys.py       the keyset file, and where it is found
         sign.py       rebuilding a SELF from a template and an ELF
+        ecdsa.py      the curve table, and signing and checking a signature
         structs.py    the on-disk structures
         aes.py        AES-128/192/256, ECB, CBC, CTR and OMAC1
         npdrm.py      the two NPDRM control block hashes
         report.py     the description, laid out the way scetool laid it out
         errors.py     failures that name the file and the field
         data/keys     the keyset, inside the package but not in the repo
+        data/*curves  the ECDSA curve tables, from the same folder
 
 Nothing in the package imports the rest of the application, so it can be lifted
 into a repository of its own.
 
 `data/keys` is naehrwert's and is not redistributed with this source, the same
-as scetool never was. Put a copy of scetool's `data` folder there. Everything
-that needs it says where it goes when it is missing, and the tests that need it
-skip rather than fail.
+as scetool never was. Put a copy of scetool's `data` folder there, which brings
+`ldr_curves` and `vsh_curves` with it: signing needs the curve table as well as
+the keyset. Everything that needs either says where it goes when it is missing,
+and the tests that need one skip rather than fail.
 
 ## How it is checked
 
@@ -128,6 +133,7 @@ package's own parser would prove nothing.
 | Decrypt | the ELF, byte for byte | `scetool -d`, and a known-good SHA1 |
 | Re-sign | the whole file, byte for byte | the user's own unmodified retail files |
 | fself | the whole file, byte for byte | the file itself, and `unfself.exe` |
+| Signing | the signature, checked against the public key | Sony's own signature on fifteen retail files, and scetool's on fourteen |
 
 The retail files are not in the repository. Tests that need one skip with the
 path in the message. `KEYSMITH_CORPUS=1` runs the large samples as well as the
@@ -155,11 +161,17 @@ Ops 2 Eboot-Self Builder writes application type 0x00 and key revision 0x0010
 over a file whose own values are 0x20 and 0x001C. Both produce a file that is
 structurally valid and answers 8001000F on a console that checks licences.
 
+Recomputed where a private key is to hand:
+
+- **The signature.** The keys file holds a real private key for NPDRM key
+  revisions 0x0001, 0x0004, 0x0007 and 0x000A, and 0x000A is the one PS3HEN
+  wants, so a file built for HEN is signed here. Every retail revision ships
+  zeros for it, so a retail rebuild carries the template's own signature,
+  which is part of what makes that round trip byte-identical. The section on
+  signing below has the detail.
+
 Carried through because it cannot be derived:
 
-- **The signature.** These files are signed with a private key nobody outside
-  Sony has, and the public keyset ships zeros for it. scetool cannot sign
-  either.
 - **The type 3 metadata section.** It holds a build comment table that is not
   in the decrypted ELF at all. A rebuild working from the ELF alone drops it,
   which is what scetool does.
@@ -254,13 +266,70 @@ same header and data lengths, the same nine sections with the same types,
 indices, offsets, sizes and compression flags, the same section plaintexts,
 and the same control blocks down to scetool's own `watermarktrololo` pad.
 
-**One field still differs, and it is the signature.** The private key for
-revision 0x000A is in naehrwert's keys file, which is the one revision it is
-in, so scetool signed their HEN builds for real and left their custom
-firmware builds at zero. Signing is not implemented here, so a file built
-from a custom firmware template carries that template's zeros. Whether a HEN
-console checks the signature is not known here, and it is the obvious thing
-to look at if a build that matches in every other field is still refused.
+The signature is the one field that is made rather than matched, and the
+section on signing below says why matching it is not possible and not needed.
+
+## Signing, which the 0x000A path does for real
+
+A SELF ends its metadata run with a 0x2A byte ECDSA signature, and until
+recently nothing here could make one: the field was carried from the template
+whatever the template held. On the PS3HEN path that meant carrying zeros,
+because the custom firmware build a HEN build is made from carries zeros
+itself, and a console that checks signatures would refuse such a file.
+
+**The keys file holds real private keys.** NPDRM key revisions 0x0001, 0x0004,
+0x0007 and 0x000A each carry one, and 0x000A is the revision PS3HEN wants,
+which is very likely why it wants it. Every one of the twenty-seven keysets in
+the file with a private key was checked the only way that settles it: the
+private key times the curve's base point is the public key the same keyset
+carries. That is also the check `sign()` runs on its own output before it
+returns, one verification against the keyset's public key, because a private
+key and a `ctype` that did not belong together would otherwise leave here as a
+file a console refuses with nothing on screen to say why.
+
+**The curve table is stored complemented.** `data/ldr_curves` is 7744 bytes,
+which is 64 entries of 121, and a keyset's `ctype` picks one. An entry is p, a
+and b at twenty bytes each, then the order at twenty-one, then the base point
+as two twenty byte halves. Read as it stands the file holds no prime anywhere:
+every twenty and twenty-one byte window of all sixty-four entries was tested
+at every offset and none is one, so nothing in it can be a prime field. With
+every byte flipped, all sixty-four have a prime p, an a that is exactly p - 3,
+a base point on the curve and a prime order that takes that point to infinity.
+Four checks on sixty-four entries, and then the twenty-seven private keys.
+The flip also accounts for the 0xFF the raw file carries at 0x3C of every
+entry: it is the high byte of a twenty-one byte order whose real value is
+zero. `data/vsh_curves` is the same encoding with the order one byte shorter;
+nothing here reads it, because every `ctype` in the keys file resolves against
+the loader table.
+
+**What is signed** is `signature_input_length` bytes from the start of the
+file, hashed with SHA-1, with the metadata run and the metadata info block in
+the clear. That is scetool's order of work: build the header, sign it, write
+the signature at the end of the metadata run, encrypt the run afterwards. So
+the bytes that were hashed are never the bytes on disk. Both readings were
+tried against real files: the plaintext form verifies on all fifteen retail
+files here and on all fourteen PS3HEN builds in the survey, and the on-disk
+form verifies on none of them. The 0x2A bytes are r and s as two twenty-one
+byte halves, r first, and the leading zero byte each one carries is simply a
+160 bit value in twenty-one bytes.
+
+**Their signatures verify here.** All fifteen retail files, which are Sony's
+work across three key revisions, four titles and both regions, and all
+fourteen PS3HEN builds, which are scetool's. That is the gate that says the
+scheme, the curve, the hash and the bytes going into it are all right, and it
+is entirely external: nothing in this package made any of those signatures.
+
+**A byte-for-byte match with their signature is not possible.** ECDSA takes a
+nonce, and PS3 tooling has a habit of fixing it, which would have made one
+possible. scetool does not: with the private key to hand the nonce comes
+straight back out of each signature, and all fourteen builds used a different
+one. A handful of obvious derivations from the hash were tried against them
+and none holds either. The nonce here is drawn from the system generator, the
+same as scetool's, and in any case the two builds are not signing the same
+input: what the signature covers includes the key table, whose per-section
+keys are random by design in their build and in this one. So the gate for a
+signature made here is that it verifies against the public key, which it does
+on the three pairs and on every file the tests build.
 
 ## Two findings worth writing down
 

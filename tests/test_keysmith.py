@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 import corpus                                             # noqa: E402
 from ps3tools import keysmith                             # noqa: E402
-from ps3tools.keysmith import aes, fself, keys, npdrm      # noqa: E402
+from ps3tools.keysmith import aes, ecdsa, fself, keys, npdrm  # noqa: E402
 from ps3tools.keysmith.self import SelfFile                # noqa: E402
 
 # keysmith.sign is the public function, so the name of the module it lives in
@@ -42,6 +42,10 @@ HAVE_KEYS = os.path.isfile(keys.default_path())
 #: Small enough to round trip in a tenth of a second, so they run every time.
 QUICK = ("mw3-eboot", "mw2-eboot")
 
+#: Where the curve table lives, which is beside the keys file and is not
+#: redistributed either. Everything that reads it skips without it.
+HAVE_CURVES = os.path.isfile(ecdsa.default_path())
+
 #: The paired PS3HEN and custom firmware binaries the survey was run
 #: against, cloned beside the rest of the user's files. Published by a
 #: third party; the folder name is simply where they sit on this machine.
@@ -54,6 +58,37 @@ def need_keys():
     if not HAVE_KEYS:
         raise unittest.SkipTest(
             f"no keyset at {keys.default_path()}; see docs/keysmith.md")
+
+
+def need_curves():
+    need_keys()
+    if not HAVE_CURVES:
+        raise unittest.SkipTest(
+            f"no curve table at {ecdsa.default_path()}; see docs/keysmith.md")
+
+
+def signature_input(parsed, klicensee):
+    """(the bytes a SELF's signature covers, the signature itself).
+
+    What is covered is signature_input_length bytes from the start of the
+    file with the metadata run and the metadata info block in the clear,
+    which is the form the header has when scetool signs it and before it
+    encrypts the run. Built here from the file's own parts rather than asked
+    of this package's signing code, so that a test of a signature is not a
+    test of the thing that made it.
+    """
+    from ps3tools.keysmith.structs import MetadataInfo, SceHeader
+    metadata = parsed.decrypt_metadata(bytes.fromhex(klicensee))
+    run_at = parsed.sce.metadata_offset + SceHeader.SIZE + MetadataInfo.SIZE
+    plain = bytearray(parsed.raw[:parsed.sce.header_length])
+    plain[run_at - MetadataInfo.SIZE:run_at] = metadata.info.pack()
+    blob = (metadata.header.pack()
+            + b"".join(section.pack() for section in metadata.sections)
+            + bytes(metadata.keys) + bytes(metadata.optional)
+            + bytes(metadata.signature))
+    plain[run_at:run_at + len(blob)] = blob
+    covered = bytes(plain)[:metadata.header.signature_input_length]
+    return covered, bytes(metadata.signature)
 
 
 def sample(key):
@@ -1244,7 +1279,8 @@ class TheSectionTableAHenBuildCarries(unittest.TestCase):
         """Every field of a file that does not depend on random material.
 
         The key table is left out because it is random by design, and the
-        signature is left out because it is carried rather than made; both
+        signature is left out because it covers that table and is made
+        with a random nonce, so neither build signs the same input; both
         have tests of their own below. Everything else in the file is in
         here, the section plaintexts included.
         """
@@ -1375,15 +1411,16 @@ class TheSectionTableAHenBuildCarries(unittest.TestCase):
         self.assertEqual(built.sce.data_length,
                          len(built.raw) - built.sce.header_length)
 
-    def test_the_signature_is_the_one_field_that_cannot_be_reproduced(self):
-        """It is carried from the template, and theirs is a real one.
+    def test_the_signature_is_the_one_field_that_cannot_be_copied(self):
+        """It is made rather than matched, and the field is the same size.
 
-        The private key for revision 0x000A is in naehrwert's keys file,
-        which is why scetool signed their HEN builds for real and left the
-        custom firmware ones at zero. Signing is not implemented here, so the
-        template's field is carried through, and a file built from a custom
-        firmware template therefore carries zeros where theirs carries a
-        signature. Whether a HEN console checks it is not known here.
+        The custom firmware template carries zeros there, because scetool
+        left it at zero on a revision it has no private key for. Theirs
+        carries a real signature and so does the rebuild, and the two cannot
+        be the same bytes: what is signed includes the key table, which is
+        random by design in their build and in this one, so the two builds
+        are not even signing the same input. The test that matters is that
+        each verifies, and it is in TheSignatureAFileCarries below.
         """
         if not FULL:
             self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
@@ -1396,5 +1433,391 @@ class TheSectionTableAHenBuildCarries(unittest.TestCase):
         length = signing.SIGNATURE_BYTES
         self.assertEqual(template.signature[:length], bytes(length))
         self.assertNotEqual(theirs.signature[:length], bytes(length))
-        self.assertEqual(mine.signature[:length], bytes(length))
+        self.assertNotEqual(mine.signature[:length], bytes(length))
         self.assertEqual(len(mine.signature), len(theirs.signature))
+
+
+class TheCurveTable(unittest.TestCase):
+    """data/ldr_curves, and the reading of it that the arithmetic confirms.
+
+    The file is 7744 bytes, which is 64 entries of 121, and a keyset's ctype
+    selects one. Every byte of it is stored complemented, which is the part
+    that costs an evening and is not a thing to take on trust. These are the
+    checks that settled it, and they are all external: the numbers are
+    naehrwert's file and the tests are arithmetic on them.
+    """
+
+    def primes(self):
+        """Miller-Rabin over the small bases, which is decisive at 160 bits.
+
+        Deterministic for these sizes with the bases below in practice, and
+        a composite slipping through would only make the test pass where it
+        should fail, never the reverse.
+        """
+        def prime(number):
+            if number < 2:
+                return False
+            for small in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+                if number % small == 0:
+                    return number == small
+            odd, twos = number - 1, 0
+            while odd % 2 == 0:
+                odd //= 2
+                twos += 1
+            for base in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+                witness = pow(base, odd, number)
+                if witness in (1, number - 1):
+                    continue
+                for _ in range(twos - 1):
+                    witness = witness * witness % number
+                    if witness == number - 1:
+                        break
+                else:
+                    return False
+            return True
+        return prime
+
+    def test_every_entry_is_a_curve_once_the_bytes_are_complemented(self):
+        """Four checks on all sixty-four, and every one of them passes.
+
+        The prime field is prime, a is exactly p - 3 the way a curve of this
+        family has it, the base point satisfies the curve equation, and the
+        order is prime as well and takes the base point to infinity.
+        """
+        need_curves()
+        prime = self.primes()
+        curves = ecdsa.load()
+        self.assertEqual(len(curves), 64)
+        for index, curve in enumerate(curves):
+            with self.subTest(ctype=f"0x{index:02X}"):
+                self.assertTrue(prime(curve.p))
+                self.assertEqual(curve.a, (curve.p - 3) % curve.p)
+                self.assertTrue(curve.holds(curve.g))
+                self.assertTrue(prime(curve.order))
+                self.assertIsNone(
+                    ecdsa.multiply(curve, curve.order, curve.g))
+
+    def test_no_offset_in_the_raw_file_holds_a_prime_field(self):
+        """The other half of the evidence, which is that the raw bytes hold
+        no curve anywhere.
+
+        Read as they stand, the six field offsets are composite in all but a
+        handful of the sixty-four entries, which is what chance gives: two
+        entries at offset 20 and two at offset 101, and nothing anywhere else.
+        Complemented, offset 0 is prime in all sixty-four and so is the
+        order. Every twenty and twenty-one byte window at every byte offset
+        was tested the same way while this was being worked out and no offset
+        in the file does better than three.
+        """
+        need_curves()
+        prime = self.primes()
+        raw = open(ecdsa.default_path(), "rb").read()
+        entries = len(raw) // ecdsa.LDR_CURVE_BYTES
+        found = {}
+        for index in range(entries):
+            entry = raw[index * ecdsa.LDR_CURVE_BYTES:
+                        (index + 1) * ecdsa.LDR_CURVE_BYTES]
+            for at, length in ((0, 20), (20, 20), (40, 20), (60, 21),
+                               (81, 20), (101, 20)):
+                if prime(int.from_bytes(entry[at:at + length], "big")):
+                    found[at] = found.get(at, 0) + 1
+        self.assertEqual(entries, 64)
+        self.assertLessEqual(max(found.values(), default=0), 3)
+        self.assertEqual(sum(1 for curve in ecdsa.load() if prime(curve.p)),
+                         entries)
+
+    def test_the_high_byte_of_every_order_is_zero_once_complemented(self):
+        """Which is why the raw file carries 0xFF there.
+
+        The field is twenty-one bytes and every order in the table fits in
+        twenty, so the byte in front of it is zero and the raw file shows
+        its complement. The vsh table has no such byte and its entries are
+        one shorter.
+        """
+        need_curves()
+        raw = open(ecdsa.default_path(), "rb").read()
+        for index in range(len(raw) // ecdsa.LDR_CURVE_BYTES):
+            with self.subTest(ctype=f"0x{index:02X}"):
+                self.assertEqual(raw[index * ecdsa.LDR_CURVE_BYTES + 60],
+                                 0xFF)
+        for curve in ecdsa.load():
+            self.assertLessEqual(curve.order.bit_length(), 160)
+
+    def test_every_private_key_in_the_keys_file_matches_its_public_key(self):
+        """The check that ties the two files together.
+
+        The private key times the base point of the curve the same keyset's
+        ctype names is the public key that keyset carries. Twenty-seven
+        keysets in the file have a private key and all twenty-seven of them
+        pass, which is the strongest statement available that both the
+        table's layout and its complement are read right.
+        """
+        need_curves()
+        store = keys.load()
+        ran = 0
+        for keyset in store.keysets:
+            if not signing.can_sign(keyset):
+                continue
+            with self.subTest(keyset=repr(keyset)):
+                curve = ecdsa.curve(keyset.curve_type)
+                private = int.from_bytes(keyset.private, "big")
+                self.assertLess(private, curve.order)
+                self.assertEqual(ecdsa.multiply(curve, private, curve.g),
+                                 ecdsa.point(keyset.public))
+                ran += 1
+        self.assertGreater(ran, 20)
+
+    def test_the_four_npdrm_revisions_with_a_private_key_are_named(self):
+        """0x000A is the one PS3HEN wants and it is not the only one.
+
+        The keys file holds a real private key for NPDRM revisions 0x0001,
+        0x0004, 0x0007 and 0x000A, and zeros for every other. This is what
+        decides whether a rebuild signs or carries, so it is read off the
+        file rather than written down in the code.
+        """
+        need_keys()
+        store = keys.load()
+        signable = sorted(keyset.revision for keyset in store.keysets
+                          if keyset.type == "SELF"
+                          and keyset.self_type == "NPDRM"
+                          and signing.can_sign(keyset))
+        self.assertEqual(signable, [0x0001, 0x0004, 0x0007, 0x000A])
+
+    def test_a_ctype_past_the_end_of_the_table_is_refused(self):
+        """Rather than masked down into it, which would sign against a curve
+        nobody chose."""
+        need_curves()
+        with self.assertRaises(keysmith.SigningFailed) as caught:
+            ecdsa.curve(64)
+        self.assertIn("64", str(caught.exception))
+
+
+class TheSignatureAFileCarries(unittest.TestCase):
+    """Signing, checked against signatures this package did not make.
+
+    Two external gates. Sony signed every retail file in the corpus, and
+    scetool signed all fourteen PS3HEN builds in the survey with the private
+    key the keys file holds for revision 0x000A. Both verify here, which is
+    what says the scheme, the curve, the hash and the bytes that go into it
+    are all right. Only then is a signature made here worth anything.
+    """
+
+    PAIRED_BUILDS = os.path.join(corpus.HOME, "IW4-Binaries")
+
+    def hen_builds(self):
+        found = []
+        for tree in ("release", "release-sp"):
+            base = os.path.join(self.PAIRED_BUILDS, tree)
+            if not os.path.isdir(base):
+                continue
+            for region in sorted(os.listdir(base)):
+                folder = os.path.join(base, region, "hen")
+                if not os.path.isdir(folder):
+                    continue
+                for name in sorted(os.listdir(folder)):
+                    found.append(os.path.join(folder, name))
+        if not found:
+            self.skipTest(f"{self.PAIRED_BUILDS} is not on this machine")
+        return found
+
+    def verifies(self, path, klicensee):
+        parsed = keysmith.read(path)
+        covered, signature = signature_input(parsed, klicensee)
+        curve = ecdsa.curve(parsed.keyset.curve_type)
+        return ecdsa.verify(curve, parsed.keyset.public,
+                            ecdsa.digest_of(covered), signature)
+
+    def test_the_signature_scetool_wrote_on_a_hen_build_verifies(self):
+        """All fourteen of them, seven regions across both trees."""
+        need_curves()
+        for path in self.hen_builds():
+            with self.subTest(build=os.path.relpath(path,
+                                                    self.PAIRED_BUILDS)):
+                self.assertTrue(self.verifies(path, corpus.IW_KLIC))
+
+    def test_the_signature_sony_wrote_on_a_retail_file_verifies(self):
+        """Across three key revisions, four titles and both regions.
+
+        Nothing in this package made these and nothing in it can: the
+        private key is Sony's. What it can do is check them, and a checker
+        that accepts fifteen real signatures is a checker.
+        """
+        need_curves()
+        ran = 0
+        for item in chosen():
+            if item.kind != "self":
+                continue
+            with self.subTest(sample=item.key):
+                self.assertTrue(self.verifies(item.path, item.klicensee))
+                ran += 1
+        if not ran:
+            self.skipTest("none of the corpus is on this machine")
+
+    def test_a_signature_over_a_header_that_moved_does_not_verify(self):
+        """Otherwise the check above would pass on anything."""
+        need_curves()
+        item = sample("mw2-eboot")
+        parsed = keysmith.read(item.path)
+        covered, signature = signature_input(parsed, item.klicensee)
+        curve = ecdsa.curve(parsed.keyset.curve_type)
+        self.assertTrue(ecdsa.verify(curve, parsed.keyset.public,
+                                     ecdsa.digest_of(covered), signature))
+        for at in (0, len(covered) // 2, len(covered) - 1):
+            with self.subTest(byte=at):
+                moved = bytearray(covered)
+                moved[at] ^= 0x01
+                self.assertFalse(ecdsa.verify(
+                    curve, parsed.keyset.public,
+                    ecdsa.digest_of(bytes(moved)), signature))
+
+    def test_a_signature_with_a_half_of_zero_does_not_verify(self):
+        """Which is what a custom firmware build carries, and it is what a
+        console checking signatures would refuse."""
+        need_curves()
+        item = sample("mw2-eboot")
+        parsed = keysmith.read(item.path)
+        covered, _ = signature_input(parsed, item.klicensee)
+        curve = ecdsa.curve(parsed.keyset.curve_type)
+        self.assertFalse(ecdsa.verify(
+            curve, parsed.keyset.public, ecdsa.digest_of(covered),
+            bytes(signing.SIGNATURE_BYTES)))
+
+    def test_a_file_signed_here_for_hen_verifies_against_the_public_key(self):
+        """The gate this whole path exists for.
+
+        Built from a retail template at key revision 0x000A and checked the
+        same way their builds are checked, against the public key in the
+        keyset the file names.
+        """
+        need_curves()
+        item = sample("mw2-eboot")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        built = keysmith.sign(elf, item.path, item.klicensee,
+                              key_revision=0x000A)
+        parsed = keysmith.read(built)
+        self.assertEqual(parsed.sce.key_revision, 0x000A)
+        covered, signature = signature_input(parsed, item.klicensee)
+        self.assertNotEqual(signature[:signing.SIGNATURE_BYTES],
+                            bytes(signing.SIGNATURE_BYTES))
+        self.assertTrue(ecdsa.verify(
+            ecdsa.curve(parsed.keyset.curve_type), parsed.keyset.public,
+            ecdsa.digest_of(covered), signature))
+
+    def test_a_re_signed_custom_firmware_build_verifies_like_theirs(self):
+        """Their HEN build and this rebuild of the custom firmware one it
+        ships beside, both checked against the same public key."""
+        need_curves()
+        if not FULL:
+            self.skipTest("set KEYSMITH_CORPUS=1 for the large samples")
+        for tree, region, name in TheSectionTableAHenBuildCarries.PAIRS:
+            path = os.path.join(self.PAIRED_BUILDS, tree, region, "cfw", name)
+            if not os.path.isfile(path):
+                self.skipTest(f"{path} is not on this machine")
+            with self.subTest(region=region, name=name):
+                elf = keysmith.decrypt(path, corpus.IW_KLIC)
+                built = keysmith.read(keysmith.sign(
+                    elf, path, corpus.IW_KLIC, filename=name,
+                    key_revision=0x000A))
+                covered, signature = signature_input(built, corpus.IW_KLIC)
+                self.assertTrue(ecdsa.verify(
+                    ecdsa.curve(built.keyset.curve_type),
+                    built.keyset.public, ecdsa.digest_of(covered),
+                    signature))
+
+    def test_the_nonce_scetool_signed_with_is_a_different_one_every_time(
+            self):
+        """Which is why a signature made here cannot match one of theirs.
+
+        ECDSA takes a nonce and a signature says nothing about which one was
+        used, unless the private key is to hand. Here it is, so the nonce
+        comes straight back out of each signature, and all fourteen builds
+        used a different one. A fixed nonce is a known habit of PS3 tooling
+        and it would have made a byte-for-byte match possible; this says
+        plainly that scetool does not have it.
+
+        The input differs between their build and a rebuild here in any case,
+        because both put random per-section keys in the table that the
+        signature covers.
+        """
+        need_curves()
+        store = keys.load()
+        keyset = [item for item in store.keysets
+                  if item.type == "SELF" and item.self_type == "NPDRM"
+                  and item.revision == 0x000A][0]
+        curve = ecdsa.curve(keyset.curve_type)
+        private = int.from_bytes(keyset.private, "big")
+        nonces = set()
+        for path in self.hen_builds():
+            parsed = keysmith.read(path)
+            covered, signature = signature_input(parsed, corpus.IW_KLIC)
+            r, s = ecdsa.split(signature)
+            value = int.from_bytes(ecdsa.digest_of(covered), "big")
+            # k comes out of the signing equation, s = (z + r * d) / k, once
+            # d is known.
+            nonces.add((value + r * private)
+                       * pow(s, -1, curve.order) % curve.order)
+        self.assertEqual(len(nonces), len(self.hen_builds()))
+        self.assertNotIn(0, nonces)
+
+    def test_the_same_nonce_gives_the_same_signature_twice(self):
+        """The nonce is the only thing that moves, so fixing it fixes the
+        signature. This is what makes the arithmetic testable at all."""
+        need_curves()
+        store = keys.load()
+        keyset = [item for item in store.keysets
+                  if item.type == "SELF" and item.self_type == "NPDRM"
+                  and item.revision == 0x000A][0]
+        curve = ecdsa.curve(keyset.curve_type)
+        digest = ecdsa.digest_of(b"a header that is not one")
+        first = ecdsa.sign(curve, keyset.private, digest, nonce=0x1234)
+        second = ecdsa.sign(curve, keyset.private, digest, nonce=0x1234)
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), signing.SIGNATURE_BYTES)
+        self.assertTrue(ecdsa.verify(curve, keyset.public, digest, first))
+
+    def test_two_signatures_over_one_digest_differ_and_both_verify(self):
+        """Because the nonce is drawn fresh each time, the way scetool's
+        is."""
+        need_curves()
+        store = keys.load()
+        keyset = [item for item in store.keysets
+                  if item.type == "SELF" and item.self_type == "NPDRM"
+                  and item.revision == 0x000A][0]
+        curve = ecdsa.curve(keyset.curve_type)
+        digest = ecdsa.digest_of(b"the same input twice")
+        made = {ecdsa.sign(curve, keyset.private, digest) for _ in range(4)}
+        self.assertEqual(len(made), 4)
+        for signature in made:
+            self.assertTrue(ecdsa.verify(curve, keyset.public, digest,
+                                         signature))
+
+    def test_a_retail_rebuild_carries_the_signature_it_came_with(self):
+        """The retail path does not sign and must not start.
+
+        No keyset for a retail key revision has a private key, and the
+        byte-identical round trip depends on the field coming back out as it
+        went in.
+        """
+        need_curves()
+        item = sample("mw2-eboot")
+        template = keysmith.read(item.path)
+        self.assertFalse(signing.can_sign(template.keyset)
+                         if template.keyset else False)
+        before = template.decrypt_metadata(
+            bytes.fromhex(item.klicensee)).signature
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        rebuilt = keysmith.read(keysmith.sign(elf, item.path,
+                                              item.klicensee))
+        after = rebuilt.decrypt_metadata(
+            bytes.fromhex(item.klicensee)).signature
+        self.assertEqual(bytes(after), bytes(before))
+
+    def test_a_keyset_with_no_private_key_says_so_rather_than_signing(self):
+        need_curves()
+        store = keys.load()
+        retail = store.require_candidates("NPDRM", 0x0010)[0]
+        self.assertFalse(signing.can_sign(retail))
+        with self.assertRaises(keysmith.SigningFailed) as caught:
+            ecdsa.sign(ecdsa.curve(retail.curve_type), retail.private,
+                       ecdsa.digest_of(b"anything"))
+        self.assertIn("private key", str(caught.exception))

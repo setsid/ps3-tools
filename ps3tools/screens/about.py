@@ -65,8 +65,8 @@ NETWORK_LINES = (
      "GitHub sees the address any web request would show it. "
      "If you ask for the update, the file is fetched "
      "from GitHub and saved to your Desktop; it is never run for you and it "
-     "never replaces this program while it is running. The checkbox below "
-     "turns all of it off."),
+     "never replaces this program while it is running. The Updates tab has "
+     "a button to check on demand."),
 )
 
 NOTHING_ELSE = (

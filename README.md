@@ -1,3 +1,12 @@
+<img src="logo.png" width="420" alt="PS3 Tools by setsid">
+
+[![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
+[![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
+[![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)
+![platform](https://img.shields.io/badge/platform-PS3-003791)
+
+---
+
 <table>
   <tr>
     <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops-ii"><img src="docs/cards/black-ops-2.svg" alt="Black Ops II, fixed" width="180"></a></td>
@@ -13,37 +22,7 @@
   </tr>
 </table>
 
-Click a title for every release of it that has been tested, region by region.
-Black Ops II, Modern Warfare 3 and Black Ops are fixed and in the app.
-
-Several titles also stop finding matches once their map packs are installed.
-That is separate from the fixes above and is not yet addressed.
-
----
-
-<img src="logo.png" width="420" alt="PS3 Tools by setsid">
-
-> ### HEN consoles are signed for differently
->
-> The program reads which firmware your console is running off webMAN's own
-> page and signs for it. A HEN console gets the file re-signed against the
-> 3.55-era keyset, which is what the advice to "resign to 3.55" means, and a
-> custom firmware console keeps its own key revision as before. Where the
-> console does not say which it is, the program asks rather than guessing,
-> because signing for the wrong one gives a game that will not start.
->
-> The three fields that differ between the two forms were measured across
-> twenty-eight paired binaries rather than assumed. What has not happened yet
-> is somebody watching a file this program built load on a HEN console, so if
-> you are on HEN, say how it went in
-> [the Discord](https://discord.gg/PDrSPNgeNj).
-
 # PS3 Tools
-
-[![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
-[![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
-[![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)
-![platform](https://img.shields.io/badge/platform-PS3-003791)
 
 Tools for a PS3 running custom firmware, in one Windows program. A diagnostic
 that reads the console and writes everything a helper needs into one file; the

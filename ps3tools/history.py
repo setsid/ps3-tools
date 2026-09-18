@@ -38,11 +38,10 @@ RELEASES = (
             "so patching a game that has been played since the console was "
             "switched on does nothing at all, and closing the game is not "
             "enough. Somebody lost an evening to that. The screen now says "
-            "so before it does anything, and it checks: if the game is "
-            "running, it says to quit it and restart the console rather than "
-            "letting the patch go ahead and do nothing.",
-            "Every patch screen asks you to fully restart the console after "
-            "a patch or a restore, in one place rather than in two panels "
+            "so before it does anything, and it checks: a game the console "
+            "still has loaded is refused, with what to do about it.",
+            "Every patch screen asks for a full power cycle once a patch or "
+            "a restore has finished, in one place rather than in two panels "
             "that could both appear.",
             "The patch screens carried several banners and a good deal of "
             "explanation above the file list, and nobody read any of it. "

@@ -1577,8 +1577,8 @@ class PatcherScreen(Screen):
         # read-back of a patch this session applied, which came back with every
         # file on the console already fixed. Anything else -- a file still
         # needing fixing, one this program could not recognise, one it never
-        # managed to read -- leaves both the panel and the notice where they
-        # are, hidden, and the wording underneath says what is actually known.
+        # managed to read -- leaves the green panel hidden and shows no
+        # dialogue, and the wording underneath says what is actually known.
         confirmed = bool(self._reading_back and self._patch_message
                          and _all_fixed(report))
         if confirmed:

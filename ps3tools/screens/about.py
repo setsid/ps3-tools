@@ -99,6 +99,12 @@ CREDITS = (
      "Tested these fixes on his own console and reported back on what they "
      "did there. The Black Ops II patch took the shape it has because of "
      "those reports, and he has kept testing on real hardware since."),
+    ("Sam",
+     "Everything this program knows about PS3HEN came out of testing on his "
+     "console. The signing a HEN console actually wants was worked out that "
+     "way, one attempt at a time, and he has answered every odd question and "
+     "tried every odd build he has been sent without once running out of "
+     "patience."),
     ("OpenResty",
      "Worked out that Demonware derives the XUID from the account ID "
      "rather than from the PSN online ID, which is the fault the Black Ops "

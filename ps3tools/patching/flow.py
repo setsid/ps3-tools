@@ -128,7 +128,16 @@ SIGN_FIELDS = ("key_revision", "self_type", "app_type", "licence_type",
 # The five fields that must come back unchanged on a rebuilt file. CID_FN is a
 # hash of the name given to -g, and a file with the wrong one is perfectly
 # valid and will not load, which is the failure that looks like nothing at all.
-CARRIED_FIELDS = ("key_revision", "self_type", "app_type", "licence_type",
+#: Fields that must come back exactly as they went in. The key revision is
+#: not among them: it is the one field the program changes on purpose, to
+#: 0x000A when signing for PS3HEN, and comparing the output against the input
+#: refused every HEN patch there was. It is checked against what was intended
+#: instead, which is what the check was always for.
+#:
+#: The minimum firmware and the control flags move with the key revision on
+#: that same path. Neither was ever in this list, so neither was rejecting
+#: anything, and both are covered by keysmith's own round trip tests.
+CARRIED_FIELDS = ("self_type", "app_type", "licence_type",
                   "content_id", "cid_fn_hash")
 
 
@@ -1021,6 +1030,19 @@ def _build_all(tool, chosen, saved, kind, module, workdir, progress, out,
     return built
 
 
+def _intended_key_revision(tool, item):
+    """The key revision the rebuilt file is meant to carry, as text.
+
+    The signer changes it on purpose when signing for PS3HEN, so the original
+    file cannot be the thing it is checked against. Where the signer is not
+    changing it, the original is exactly right.
+    """
+    wanted = getattr(tool, "key_revision", None)
+    if wanted is None:
+        return item.info.get("key_revision")
+    return f"{wanted:04X}"
+
+
 def _verify_build(tool, item, source, destination, patched, klicensee,
                   workdir, kind):
     """A rebuilt file has to decrypt back to exactly what went into it."""
@@ -1037,6 +1059,14 @@ def _verify_build(tool, item, source, destination, patched, klicensee,
     rebuilt = tool.info(destination, klicensee)
     changed = [name for name in CARRIED_FIELDS
                if item.info.get(name) and rebuilt.get(name) != item.info[name]]
+    # Checked against what was asked for. On PS3HEN the program signs at
+    # 0x000A deliberately, so the original file is the wrong thing to compare
+    # against and every HEN patch was being rolled back for doing exactly what
+    # it was told. A revision that is neither the original nor the intended
+    # one is still a fault and still stops the run.
+    wanted = _intended_key_revision(tool, item)
+    if wanted and rebuilt.get("key_revision") != wanted:
+        changed = ["key_revision"] + changed
     if changed:
         words = ", ".join(FIELD_TITLES[name] for name in changed)
         raise PatchFailed(

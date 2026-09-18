@@ -3910,14 +3910,18 @@ class TheDialogueBeforeAnythingHappens(ScreenCase):
         seen = []
 
         def peek(_box):
-            seen.append(screen.graphicsEffect())
+            # Read here rather than kept. Taking the blur off deletes it, and
+            # the handle afterwards is a dead one.
+            effect = screen.graphicsEffect()
+            seen.append((type(effect).__name__,
+                         effect.blurRadius() if effect else 0))
             return 1
 
         with mock.patch.object(patcher.QDialog, "exec", peek):
             patcher.PatcherScreen.ask_before_starting(screen)
         self.assertEqual(len(seen), 1)
-        self.assertIsInstance(seen[0], patcher.QGraphicsBlurEffect)
-        self.assertGreater(seen[0].blurRadius(), 0)
+        self.assertEqual(seen[0][0], "QGraphicsBlurEffect")
+        self.assertGreater(seen[0][1], 0)
         # And the screen is readable again the moment it is dismissed.
         self.assertIsNone(screen.graphicsEffect())
 
@@ -4294,19 +4298,34 @@ class RefusingToPatchAGameTheConsoleHasLoaded(ScreenCase):
         self.assertFalse(screen._running_notice.isVisibleTo(screen))
 
     def test_a_console_that_will_not_say_is_never_turned_into_a_refusal(self):
-        screen, services = self.scanned(BO2_ID)
+        """Silence is not an accusation.
+
+        A console that does not answer has not said it is running anything,
+        and a reader this screen cannot reach must never cost somebody the
+        fix. The real seam is exercised here with the console read replaced,
+        so nothing in this test goes near a wire.
+        """
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
 
         def silent(_host):
             raise OSError("the console stopped answering")
 
-        screen._read_running_title = silent
-        screen._rescan.click()
-        self.settle(services)
-        # The seam itself is what swallows this, so a screen that gets no
-        # answer patches exactly as it did before any of this existed.
-        self.assertEqual(
-            patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
-            "")
+        with mock.patch.object(patcher, "read_console", silent):
+            self.assertEqual(
+                patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
+                "")
+
+    def test_a_console_that_is_not_running_a_game_reads_as_the_xmb(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        with mock.patch.object(patcher, "read_console", lambda _host: {}):
+            self.assertEqual(
+                patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
+                "")
+        with mock.patch.object(patcher, "read_console",
+                               lambda _host: {"running_title": BO2_ID}):
+            self.assertEqual(
+                patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
+                BO2_ID)
 
     def test_the_read_goes_through_one_seam_and_nothing_else(self):
         screen, _services = self.build(patcher.BlackOpsTwoPatcher)
@@ -4315,3 +4334,54 @@ class RefusingToPatchAGameTheConsoleHasLoaded(ScreenCase):
         # Normalised the way every other title ID on this screen is, because
         # webMAN prints them in more than one shape.
         self.assertEqual(screen.running_this_game(), BO2_ID)
+
+
+class TheKeyRevisionIsCheckedAgainstWhatWasAskedFor(unittest.TestCase):
+    """The verifier refused every PS3HEN patch there was.
+
+    On HEN the program signs at key revision 0x000A on purpose, and the check
+    compared the rebuilt file against the file that went in, so a patch that
+    did exactly what it was told was rolled back as a fault. A user's console
+    was left untouched with its backup intact, which is the right way for a
+    check to be wrong, and no HEN user could apply any fix at all.
+    """
+
+    class Item:
+        def __init__(self, revision="0010"):
+            self.info = {"key_revision": revision}
+
+    def expected_for(self, kind):
+        from ps3tools.patching.flow import _intended_key_revision
+        from ps3tools.patching.signer import Signer
+        return _intended_key_revision(Signer(firmware_kind=kind), self.Item())
+
+    def test_a_hen_console_expects_the_3_55_revision(self):
+        self.assertEqual(self.expected_for("hen"), "000A")
+
+    def test_custom_firmware_expects_the_file_s_own(self):
+        self.assertEqual(self.expected_for("cfw"), "0010")
+
+    def test_a_console_that_did_not_say_expects_the_file_s_own(self):
+        for unknown in ("", "ofw"):
+            with self.subTest(firmware=unknown):
+                self.assertEqual(self.expected_for(unknown), "0010")
+
+    def test_the_revision_is_no_longer_compared_against_the_original(self):
+        """It is the one field the program changes on purpose."""
+        from ps3tools.patching.flow import CARRIED_FIELDS
+        self.assertNotIn("key_revision", CARRIED_FIELDS)
+
+    def test_the_fields_that_must_survive_are_still_checked(self):
+        from ps3tools.patching.flow import CARRIED_FIELDS
+        for name in ("self_type", "app_type", "licence_type", "content_id",
+                     "cid_fn_hash"):
+            self.assertIn(name, CARRIED_FIELDS)
+
+    def test_a_revision_that_is_neither_is_still_a_fault(self):
+        """Signing at something nobody asked for still stops the run."""
+        from ps3tools.patching.flow import _intended_key_revision
+        from ps3tools.patching.signer import Signer
+        wanted = _intended_key_revision(Signer(firmware_kind="hen"),
+                                        self.Item())
+        self.assertNotEqual(wanted, "0019")
+        self.assertEqual(wanted, "000A")

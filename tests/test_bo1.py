@@ -447,6 +447,17 @@ class TheScreenSaysWhatIsKnown(unittest.TestCase):
         return " ".join(body + " " + emphasis
                         for body, emphasis, _token in self.notices())
 
+    def background(self):
+        """What moved behind "More about this fix".
+
+        The map packs are not this fix's doing and not something it cures, so
+        they are worth saying and they do not change what somebody does at
+        the screen. They read as background now rather than as one more
+        banner above the table that nobody got to.
+        """
+        return " ".join(body + " " + emphasis for body, emphasis
+                        in self.screen_class().BACKGROUND)
+
     # -- the one that decides whether to go any further
     def test_the_first_thing_said_is_who_should_not_apply_it(self):
         """It comes first because it decides whether to read on.
@@ -473,16 +484,16 @@ class TheScreenSaysWhatIsKnown(unittest.TestCase):
 
     # -- the map packs
     def test_it_says_the_map_packs_are_the_cause(self):
-        said = self.joined()
+        said = self.background()
         self.assertIn("map packs", said)
         self.assertIn("public", said)
         self.assertIn("rather than this fix", said)
 
     def test_it_says_what_to_do_about_it(self):
-        self.assertIn("Renaming or removing", self.joined())
+        self.assertIn("Renaming or removing", self.background())
 
     def test_it_says_what_the_evidence_is_and_claims_no_more(self):
-        self.assertIn("two consoles", self.joined())
+        self.assertIn("two consoles", self.background())
 
     def test_the_work_being_done_is_said_apart_from_the_facts(self):
         # Drawn bold and in the accent colour, so the half that decides what

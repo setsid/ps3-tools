@@ -403,6 +403,11 @@ Without that test it would have shipped fixing two thirds of the game. He has
 kept testing against real hardware since, and most of what this gets right about
 a real console was found that way.
 
+**Sam** — everything this program knows about PS3HEN came out of testing on his
+console. What a HEN console actually wants from a signed file was worked out
+that way, one attempt at a time, and he has answered every odd question and
+tried every odd build he has been sent without once running out of patience.
+
 **OpenResty** — worked out that Demonware derives the XUID from the account ID
 rather than from the PSN online ID. That is the fault behind every account made
 after 2018 opening Black Ops at rank 1, and the fix follows straight from it.

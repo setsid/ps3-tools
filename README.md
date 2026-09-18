@@ -2,8 +2,6 @@
 
 ---
 
-# PS3 Tools
-
 [![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
 [![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)

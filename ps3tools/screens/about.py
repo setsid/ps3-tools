@@ -18,7 +18,7 @@ import time
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
-from PySide6.QtWidgets import (QCheckBox, QFrame, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QSizePolicy,
                                QTabWidget, QVBoxLayout, QWidget)
 
@@ -133,17 +133,12 @@ DISCLAIMER_NOTICE = (
     "guarantee is given. Use it at your own risk. The app backs up the files "
     "it modifies; keep your own backups as well.")
 
-UPDATE_LABEL = "Check GitHub for a newer version when this program starts"
-#: Says what the setting does rather than what it used to do. The check runs
-#: at every start whatever this says, because somebody on an old build hears
-#: about a fix that way and no other, so the old wording promised something
-#: the program no longer does: it said turning this off meant nothing left
-#: your network, and that is a claim people rely on.
+#: One line. There was a tick box here, and once the check was made to run
+#: at every start whatever it said, the box controlled almost nothing and the
+#: paragraph explaining that was longer than the thing it explained.
 UPDATE_HINT = (
-    "One request to api.github.com, asking what the latest release is. It "
-    "sends the name and version of this program and nothing else.\n\n"
-    "The check at start-up runs whether this is ticked or not. Turning it "
-    "off stops the button below from asking.")
+    "This program checks GitHub for a newer version when it starts, or "
+    "click below to check now.")
 
 CHECKING = "Asking GitHub..."
 UP_TO_DATE = "This is the newest version that was published."
@@ -332,10 +327,6 @@ class AboutScreen(Screen):
 
     def _build_update(self):
         self._heading("Updates")
-        self.update_box = QCheckBox(UPDATE_LABEL)
-        self.update_box.setChecked(update.enabled(self.settings))
-        self.update_box.toggled.connect(self._update_setting_changed)
-        self.column.addWidget(self.update_box)
         self._body(UPDATE_HINT)
 
         row = QHBoxLayout()
@@ -445,10 +436,14 @@ class AboutScreen(Screen):
     # -- the update setting
 
     def _update_setting_changed(self, checked):
+        """Kept for anything still calling it. There is no tick box now.
+
+        The setting stopped deciding anything once the check at start-up was
+        made to run whatever it said, so the box came off the screen rather
+        than sitting there implying otherwise.
+        """
         update.set_enabled(self.settings, checked)
         if checked:
-            # Turning it back on should mean a check happens, not that the
-            # cache from before it was switched off keeps it quiet for a day.
             update.clear_cache(self.settings)
             self.check_status.setText("")
         else:

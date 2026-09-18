@@ -152,8 +152,9 @@ class RegistrationTests(AboutCase):
 
 class ContentTests(AboutCase):
     def test_it_builds(self):
+        from PySide6.QtWidgets import QLabel
         screen = self.build()
-        self.assertTrue(screen.findChildren(type(screen.update_box)))
+        self.assertTrue(screen.findChildren(QLabel))
 
     def test_shows_the_version_and_a_build_date(self):
         screen = self.build()
@@ -260,48 +261,36 @@ class ContentTests(AboutCase):
 
 # --- the setting -------------------------------------------------------------
 
-class SettingTests(AboutCase):
-    def test_on_by_default(self):
-        self.assertTrue(self.build().update_box.isChecked())
+class TheUpdatesSection(AboutCase):
+    """One line and a button. There used to be a tick box.
 
-    def test_unticking_it_reaches_the_settings(self):
-        screen = self.build()
-        screen.update_box.setChecked(False)
-        self.assertIs(self.settings[update.SETTING_ENABLED], False)
-        self.assertFalse(update.enabled(self.settings))
+    Once the check at start-up was made to run whatever the setting said, the
+    box decided almost nothing, and the paragraph explaining that was longer
+    than the thing it explained. The line that replaced it says when the
+    program looks and how to make it look now.
+    """
 
-    def test_the_setting_round_trips_through_a_rebuild(self):
-        screen = self.build()
-        screen.update_box.setChecked(False)
-        stored = json.loads(json.dumps(self.settings))
-        self.settings.clear()
-        self.settings.update(stored)
-        self.assertFalse(self.build().update_box.isChecked())
-        self.build().update_box.setChecked(True)
-        self.assertTrue(update.enabled(self.settings))
+    def test_it_says_the_check_happens_at_start_up(self):
+        from ps3tools.screens.about import UPDATE_HINT
+        self.assertIn("when it starts", UPDATE_HINT)
 
-    def test_switching_it_back_on_forgets_the_cache(self):
-        # Otherwise yesterday's answer keeps it quiet for a day after the user
-        # has just asked for it back.
-        screen = self.build()
-        self.settings[update.SETTING_CACHE] = {"checked": 1.0, "release": None}
-        screen.update_box.setChecked(False)
-        screen.update_box.setChecked(True)
-        self.assertNotIn(update.SETTING_CACHE, self.settings)
+    def test_it_points_at_the_button(self):
+        from ps3tools.screens.about import UPDATE_HINT
+        self.assertIn("below", UPDATE_HINT)
 
-    def test_check_now_refuses_while_it_is_switched_off(self):
-        seen = []
-        screen = self.build(fetcher=json_fetcher(
-            release_payload("v9.9"), seen))
-        screen.update_box.setChecked(False)
-        screen.check_now()
-        self.pump()
-        self.assertEqual(seen, [])
-        self.assertEqual(screen.check_status.text(), about.DISABLED_NOTE)
-        self.assertFalse(self.on_show(screen.banner))
+    def test_there_is_no_tick_box_any_more(self):
+        self.assertFalse(hasattr(self.build(), "update_box"))
 
+    def test_the_button_is_still_there(self):
+        self.assertTrue(self.build().check_button.isEnabled())
 
-# --- checking ----------------------------------------------------------------
+    def test_it_no_longer_claims_nothing_leaves_your_network(self):
+        """It said turning the box off meant nothing left your network, and
+        that stopped being true when the start-up check was made
+        unconditional. It is a claim people rely on."""
+        from ps3tools.screens.about import UPDATE_HINT
+        self.assertNotIn("never contacts", UPDATE_HINT)
+        self.assertNotIn("once a day", UPDATE_HINT)
 
 class CheckNowTests(AboutCase):
     def test_a_newer_version_shows_the_banner(self):

@@ -25,10 +25,11 @@ from what the patch set out to do. The screen stays blocked until that read
 finishes: a stale table is how a user concludes the fix did nothing.
 
 Nothing is called a success until that read-back has come back with every file
-already fixed. The green panel and the restart notice are the screen saying
-"this worked", and the only thing that entitles it to say so is having read the
-files off the console afterwards. A patch that wrote its bytes and then could
-not be confirmed says exactly that instead, and is not dressed up.
+already fixed. The green panel and the dialogue telling somebody to restart the
+console are the screen saying "this worked", and the only thing that entitles
+it to say so is having read the files off the console afterwards. A patch that
+wrote its bytes and then could not be confirmed says exactly that instead, and
+is not dressed up.
 
 Undoing sits beside applying, on the same screen and the same row of buttons.
 The backups on the Desktop were described everywhere as the only way back, and
@@ -36,8 +37,16 @@ the only way back was a hand-typed FTP session; a patcher whose undo needs a
 command line is not one a non-technical person should be asked to run. The
 restore takes the same route as the patch -- checked before anything is sent,
 uploaded, read back off the console, then the table redrawn from what is
-actually there -- and ends in the same restart notice, because the console goes
-on running the module it loaded whichever direction the files moved in.
+actually there -- and ends in the same dialogue, because the console goes on
+running the module it loaded whichever direction the files moved in.
+
+Two dialogues carry the whole of what a user has to do about that module, one
+before the screen does anything and one after the files have moved, and both
+of them are built once on the base class. The rest of what this screen used to
+say above the file table is now a verdict line under the game's name and one
+expander. An evening was lost to a screen that had all of it on the page at
+once: the sentence that would have saved the evening was there, among the
+others, and was read past.
 
 The fix is offered only on the build it was checked on. The change it makes is
 at one exact place inside a binary and that place moves between versions, so
@@ -68,7 +77,8 @@ import tempfile
 from PySide6.QtCore import QMetaMethod, Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QDialog,
-                               QDialogButtonBox, QFrame, QHBoxLayout,
+                               QDialogButtonBox, QFrame,
+                               QGraphicsBlurEffect, QHBoxLayout,
                                QListWidget,
                                QInputDialog, QLabel, QMessageBox, QProgressBar,
                                QSizePolicy,
@@ -107,26 +117,52 @@ try:
 except ImportError:
     detect = None
 
-# Said word for word, because it is the difference between a fix that worked
-# and a fix that looks like it bricked the game. The console keeps hold of the
-# module it loaded, so the files written a moment ago do not take effect until
-# it has been off and on again; a user who starts the game first sees a hang
-# and concludes this program broke it.
-RESTART_NOTICE = (
-    "Restart your PlayStation 3 before launching the game. The patched files "
-    "will not take effect until you do, and the game will hang on launch if "
-    "you try it first.")
+# The same defence, for the same reason: the console reader and this screen
+# are being written in parallel. running_title says which game the console has
+# loaded right now, and read_console is what puts the facts in front of it.
+# Where they are not there yet the seam below answers "nothing is running",
+# which is the only safe direction: a reader this screen cannot reach must
+# never turn into a refusal to patch.
+try:
+    from ps3tools.shell.consolestats import read_console, running_title
+except ImportError:
+    read_console = None
+    running_title = None
 
-# Said only after the console has been read back and every file on it came back
-# already fixed. Two sentences: what happened, and how this program knows.
-# The same instruction, for the other direction. The console holds the module
-# it loaded either way, so a restore needs the restart as much as a patch does
-# -- and this is the one people will hit in a panic, having just watched a game
-# fail to start, so it must not be left for them to work out.
-RESTART_AFTER_RESTORE = (
-    "Restart your PlayStation 3 before launching the game. The original files "
-    "will not take effect until you do, and the game will hang on launch if "
-    "you try it first.")
+# The first thing on the screen, before the scan and before the console is
+# read at all. It is a dialogue rather than a paragraph because of what it
+# costs to miss it.
+#
+# The console loads a game's module when the game starts and keeps hold of it.
+# Patching a game the console has loaded writes the files to the hard drive
+# and changes nothing whatsoever about what is running, and restarting the
+# game does not shake the module loose either: the console has to be restarted
+# for that. Somebody spent an entire evening on this. The game was running on
+# the console the whole time, every file came back "already fixed" on every
+# scan, and the fault he was patching out sat there unchanged all evening.
+# Nothing on the screen was wrong. The sentence that would have saved the
+# evening was on it, among the other sentences, and he read past it.
+BEFORE_NOTICE = (
+    "Before you start, make sure the game has not been run since the console "
+    "was last switched on. If you have played it, restart your PlayStation 3 "
+    "and leave it sitting on the XMB.")
+
+# The other half of the same fact, after the files have moved. The console
+# goes on running the module it loaded whichever direction they moved in, so a
+# restore needs this as much as a patch does, and this is the one people reach
+# in a panic having just watched a game fail to start.
+#
+# One sentence. Its predecessor was a three-line framed panel saying the same
+# thing twice, which is a panel people learn the shape of and stop reading.
+RESTART_NOTICE = ("Now fully restart your PlayStation 3 before running "
+                  "the game.")
+
+#: How far the screen behind a dialogue is blurred. Far enough that the words
+#: under it stop being readable, which is the whole point: both of these say
+#: something that has to be done before the next thing happens, and a dialogue
+#: over a screen somebody can still read is one they dismiss while reading
+#: past it.
+NOTICE_BLUR = 9
 
 # A release the title table does not name, said as the warning it is. The
 # table decides which releases somebody has watched the fix work on, and it
@@ -134,21 +170,11 @@ RESTART_AFTER_RESTORE = (
 # patch site is found by the code around it, so a title ID this tool has not
 # written down is a reason to say so and nothing more. This used to be a
 # refusal, and it refused people whose game the fix would have suited.
-UNTESTED_HEADING = "This release has not been tested"
-
-UNTESTED_BODY = (
-    "{title_id} is not one of the releases this fix has been tested on.\n\n"
-    "The files are read and checked before anything is written, and the fix "
-    "finds its own patch site by the code around it rather than at a fixed "
-    "address, so a release this tool has not seen before is usually fine.\n\n"
-    "Your original files are copied to the Desktop first, exactly as they are "
-    "on every other release.\n\n"
-    "If the patch site is not in these files the fix is refused, and this "
-    "screen names the file it was missing from.")
-
-#: The same fact in one line, for the places the screen names the release it
-#: is about to write to. The panel is read once on the way in; this is what is
-#: in front of somebody at the moment they decide.
+#: The fact in one line, for the places the screen names the release it is
+#: about to write to. There was a framed panel of four paragraphs here as
+#: well. It said at length what this says in a sentence, it sat between the
+#: user and the state of their own game, and the state of their own game is
+#: what they came for, so it is now a clause on the verdict line instead.
 UNTESTED_LINE = "This release has not been tested."
 
 #: What the box asking for the folder says. The example is a real title ID
@@ -174,6 +200,54 @@ SUCCESS_HEADING = "The fix is on the console"
 SUCCESS_BODY = (
     "The files were replaced and then read back off the console. Every one of "
     "them came back already fixed, so this is confirmed rather than assumed.")
+
+# The verdict line, one form for each way a console can stand. It goes under
+# the game's name and above everything else on the screen.
+#
+# Until now the answer to "is my game fixed" was a small green "already fixed"
+# in the fourth column of a table, under a stack of banners. Somebody read
+# that whole screen and then asked for the feature it had already told him he
+# had. The information was there and the screen was arranged so that it was
+# not the thing he saw.
+VERDICT_FIXED = "{name} on this console is already fixed. Nothing to do."
+VERDICT_NOT_FIXED = "{name} on this console has not been fixed yet."
+VERDICT_MIXED = "Some of {name}'s files are fixed and some are not."
+
+# The two cases that have no answer to give about the fix at all. Said on the
+# same line rather than in a panel of their own, because a user reading down
+# the screen should find the state of their game in one place whatever that
+# state turns out to be.
+VERDICT_STRANGE = ("{name} on this console has files that are not what the "
+                   "fix expects.")
+VERDICT_UNREAD = "{name} on this console could not be checked."
+
+#: Added to whichever line above applies. Both of these were a framed
+#: paragraph further down the page, which is the same fault the line itself
+#: exists to fix.
+VERDICT_SOME_STRANGE = "Some of its files are not what the fix expects."
+VERDICT_UNTESTED = "Nobody has reported back on this release yet."
+
+#: The colour each verdict is drawn in, as a theme token and never a colour.
+VERDICT_TOKENS = {
+    VERDICT_FIXED: "ok",
+    VERDICT_NOT_FIXED: "warn",
+    VERDICT_MIXED: "warn",
+    VERDICT_STRANGE: "error",
+    VERDICT_UNREAD: "warn",
+}
+
+# Said when the console has this screen's own game loaded. It names the
+# release so that somebody with two copies installed can see which one the
+# console means, and it says both halves of what has to happen: quitting the
+# game is not enough on its own, because the module stays loaded until the
+# console restarts.
+RUNNING_NOTICE = (
+    "{name} is running on the console now, as {title_id}. Nothing can be "
+    "patched while the console has the game loaded: the files would be "
+    "replaced on the hard drive and the console would carry on running the "
+    "copy it already has.\n\n"
+    "Quit the game, restart your PlayStation 3, leave it sitting on the XMB "
+    "and press Scan again.")
 
 STATE_TOKENS = {
     flow.PATCHED: "ok",
@@ -372,6 +446,30 @@ def _all_fixed(report):
                for item in report.files)
 
 
+def _fix_state(report):
+    """The files of a report, sorted into what the verdict line says of them.
+
+    Returns (fixed, stock, strange, unread). NO_SITE is deliberately in none
+    of the four: it is a file the fix does not touch at all, MW3's default.self
+    among them, and counting it anywhere would have the line describe a file
+    nobody is being asked to decide about.
+
+    A state this program has never heard of falls out of all four as well, so
+    a verdict is only ever given on files that were actually recognised.
+    """
+    fixed, stock, strange, unread = [], [], [], []
+    for item in report.files:
+        if item.state == flow.PATCHED:
+            fixed.append(item)
+        elif item.state == flow.NOT_PATCHED:
+            stock.append(item)
+        elif item.state in (flow.UNRECOGNISED, flow.REPLACED):
+            strange.append(item)
+        elif item.state in (flow.CANNOT_DECRYPT, flow.NOT_EXAMINED):
+            unread.append(item)
+    return fixed, stock, strange, unread
+
+
 def _listening(owner, name):
     """Whether anything is connected to a signal, by name. False if not sure.
 
@@ -416,13 +514,29 @@ class PatcherScreen(Screen):
     #: is most of them.
     CONFIRM_WITH = ""
 
-    #: Framed notes under the explanation, in the order they are shown. Each
-    #: is (body, emphasis, colour token). The emphasis is drawn bold and in
-    #: the token's colour, so the half that decides what somebody does is the
-    #: half that catches the eye; pass "" for a note with no such half.
+    #: Framed notes under the one-line summary, in the order they are shown.
+    #: Each is (body, emphasis, colour token). The emphasis is drawn bold and
+    #: in the token's colour, so the half that decides what somebody does is
+    #: the half that catches the eye; pass "" for a note with no such half.
+    #:
+    #: Only a warning that changes what somebody does belongs here. Every one
+    #: of these costs the verdict line above it some of its weight, and the
+    #: screen this replaced had so many of them that the state of the user's
+    #: own game was off the bottom of what anybody read. Anything worth having
+    #: and not worth that goes in BACKGROUND.
     #:
     #: Empty for a screen with nothing to add, which is most of them.
     NOTICES = ()
+
+    #: What the expander holds beyond the fault this fix addresses. Each is
+    #: (body, emphasis), joined into one paragraph. True and worth keeping,
+    #: and none of it changes what somebody does next, so none of it earns a
+    #: frame between the user and the answer they came for.
+    BACKGROUND = ()
+
+    #: The one line on the expander. The same on all three screens, because
+    #: what is behind it is the same kind of thing on all three.
+    MORE_SUMMARY = "More about this fix"
 
     #: which entry in ps3tools.titles this card is for
     title_key = ""
@@ -487,6 +601,11 @@ class PatcherScreen(Screen):
         #: The folder on the console the user typed, for a game the search did
         #: not find. Empty for every scan that found the game itself.
         self._folder = ""
+        #: The release of this screen's own game the console had loaded when
+        #: the last scan started, or "". Read again on every scan rather than
+        #: kept per host: unlike the firmware, this is the one fact on the
+        #: screen that the user is being asked to change.
+        self._running = ""
         self._build()
         if self.theme is not None:
             try:
@@ -509,7 +628,26 @@ class PatcherScreen(Screen):
         self._heading.setFont(font)
         layout.addWidget(self._heading)
 
-        self._symptom = QLabel(self.config.get("symptom", ""))
+        # Directly under the game's name, above every banner and above the
+        # table, and large enough that it is the thing somebody reads first.
+        # It is hidden until a scan has actually read the console: a verdict
+        # on a game nobody has looked at yet is a guess with a big font.
+        self._verdict_line = QLabel("")
+        self._verdict_line.setWordWrap(True)
+        verdict_font = self._verdict_line.font()
+        verdict_font.setPointSize(verdict_font.pointSize() + 3)
+        verdict_font.setBold(True)
+        self._verdict_line.setFont(verdict_font)
+        self._verdict_token = ""
+        self._verdict_line.hide()
+        layout.addWidget(self._verdict_line)
+
+        # One line saying what the fix does, and nothing else. The card's own
+        # blurb, so the sentence on the tile somebody pressed to get here is
+        # the sentence waiting for them when they arrive. The paragraphs that
+        # used to be here describe the fault at length and are in the
+        # expander below.
+        self._symptom = QLabel(self.blurb or self.config.get("symptom", ""))
         self._symptom.setWordWrap(True)
         layout.addWidget(self._symptom)
 
@@ -548,6 +686,14 @@ class PatcherScreen(Screen):
         # be unstyled rectangles until the user changed theme.
         self._paint_notice()
 
+        # Everything that was explained at length above the table, behind one
+        # line and closed. It is here to be found rather than to be read, and
+        # its height is what pushed the state of the user's own game off the
+        # part of the screen anybody looks at.
+        self._more = widgets.Disclosure(self.MORE_SUMMARY)
+        self._more.setText(self.more_about_this_fix())
+        layout.addWidget(self._more)
+
         self._where = QLabel("")
         self._where.setWordWrap(True)
         layout.addWidget(self._where)
@@ -582,27 +728,21 @@ class PatcherScreen(Screen):
         self._success.hide()
         layout.addWidget(self._success)
 
-        # The one thing a user must do after a successful patch, in a frame of
-        # its own at the top of the screen. It is deliberately not a paragraph
-        # in the detail text underneath: that text is several paragraphs long
-        # by the time a patch has finished, and the console has to be restarted
-        # before the game will start at all. A sentence buried three paragraphs
-        # down is a sentence that gets skipped, and the user then sees the hang
-        # this fix was meant to remove.
-        self._restart = QFrame()
-        self._restart.setObjectName("restartnotice")
-        restart = QVBoxLayout(self._restart)
-        restart.setContentsMargins(16, 14, 16, 14)
-        restart.setSpacing(0)
-        self._restart_text = QLabel(RESTART_NOTICE)
-        self._restart_text.setWordWrap(True)
-        restart_font = self._restart_text.font()
-        restart_font.setPointSize(restart_font.pointSize() + 2)
-        restart_font.setBold(True)
-        self._restart_text.setFont(restart_font)
-        restart.addWidget(self._restart_text)
-        self._restart.hide()
-        layout.addWidget(self._restart)
+        # The console has this game loaded right now, which is the one state
+        # in which applying the fix is guaranteed to achieve nothing. Said
+        # here rather than only in a refusal at the button, because the whole
+        # point is that somebody finds out before they spend an evening on it.
+        self._running_notice = QFrame()
+        self._running_notice.setObjectName("runningnotice")
+        running = QVBoxLayout(self._running_notice)
+        running.setContentsMargins(16, 14, 16, 14)
+        running.setSpacing(0)
+        self._running_text = _wrapping(QLabel(""))
+        self._running_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        running.addWidget(self._running_text)
+        _wrapping(self._running_notice, QSizePolicy.Policy.Minimum)
+        self._running_notice.hide()
+        layout.addWidget(self._running_notice)
 
         # Why the fix is not being offered, and the way out of it. It sits
         # above the file table rather than replacing it, because the table is
@@ -635,30 +775,6 @@ class PatcherScreen(Screen):
         update.addLayout(row)
         self._update.hide()
         layout.addWidget(self._update)
-
-        # A release nobody has tested the fix on, above the table rather than
-        # in place of it. The scan read those files and their state is exactly
-        # what the table says; the only thing this adds is that nobody has
-        # watched the fix work on this particular release, which is a warning
-        # and never a reason to stop.
-        self._untested_notice = QFrame()
-        self._untested_notice.setObjectName("untestednotice")
-        untested = QVBoxLayout(self._untested_notice)
-        untested.setContentsMargins(16, 14, 16, 14)
-        untested.setSpacing(6)
-        self._untested_heading = QLabel(UNTESTED_HEADING)
-        self._untested_heading.setWordWrap(True)
-        untested_font = self._untested_heading.font()
-        untested_font.setPointSize(untested_font.pointSize() + 2)
-        untested_font.setBold(True)
-        self._untested_heading.setFont(untested_font)
-        untested.addWidget(self._untested_heading)
-        self._untested_body = QLabel("")
-        self._untested_body.setWordWrap(True)
-        self._untested_body.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        untested.addWidget(self._untested_body)
-        self._untested_notice.hide()
-        layout.addWidget(self._untested_notice)
 
         # The state of the console, said once and said loudly. It is the whole
         # answer in every case except a successful scan, so it sits above the
@@ -811,6 +927,11 @@ class PatcherScreen(Screen):
     # -- lifecycle
 
     def on_enter(self):
+        # First, and before anything at all is read off the console. A screen
+        # that starts scanning behind the dialogue has already asked a console
+        # that is holding the game loaded, and every answer it gets back from
+        # one of those is the wrong answer.
+        self.ask_before_starting()
         self.start_scan()
 
     def on_leave(self):
@@ -867,7 +988,12 @@ class PatcherScreen(Screen):
         self._scan_text = ""
         self._detail.setText(self._compose(""))
         self._hide_update()
-        self._hide_untested()
+        self._hide_verdict()
+        # Asked before a byte is read out of the game, because the answer
+        # decides whether Apply may come alive at all and because somebody
+        # should be reading it while the scan runs rather than after it.
+        self._running = self.running_this_game()
+        self._show_running(self._running)
         self._clear_state()
         self._patch.setEnabled(False)
         self._rescan.setEnabled(False)
@@ -948,7 +1074,16 @@ class PatcherScreen(Screen):
         For a fix that is only right for some accounts. A scan cannot tell
         which of those the person in front of it has, so the screen asks and
         this is where the answer is read.
+
+        And for the game the console has loaded right now. That one is not a
+        judgement about the files: they may be perfectly patchable and the
+        patch would still achieve nothing, because the console goes on running
+        the module it loaded until it is restarted. Refused here rather than
+        allowed and regretted, which is the evening this screen lost once
+        already.
         """
+        if self._running:
+            return False
         return not self.CONFIRM_WITH or self._confirm.isChecked()
 
     def _on_confirmed(self, _checked):
@@ -960,6 +1095,92 @@ class PatcherScreen(Screen):
             and not (self._update_state is not None
                      and self._update_state.blocks)
             and self.patch_allowed())
+
+    def _notice_dialogue(self, title, body, button="OK"):
+        """One plain modal dialogue, with this screen blurred out behind it.
+
+        Both of the dialogues this screen shows are built here, so that they
+        are the same shape as each other on all three screens and so there is
+        one place that knows how the blur goes on and comes off again.
+
+        The blur is not decoration. What is behind a dialogue is a screen full
+        of sentences, and a dialogue over a screen somebody can still read is
+        one they dismiss while reading past it. Blurred, there is one thing on
+        the screen to read, which is the whole reason either of these is a
+        dialogue rather than another sentence.
+        """
+        effect = QGraphicsBlurEffect(self)
+        effect.setBlurRadius(NOTICE_BLUR)
+        self.setGraphicsEffect(effect)
+        try:
+            box = QDialog(self)
+            box.setWindowTitle(title)
+            box.setModal(True)
+            rows = QVBoxLayout(box)
+            rows.setContentsMargins(20, 18, 20, 16)
+            rows.setSpacing(14)
+            words = _wrapping(QLabel(body))
+            words.setMinimumWidth(420)
+            rows.addWidget(words)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+            buttons.button(QDialogButtonBox.Ok).setText(button)
+            buttons.accepted.connect(box.accept)
+            rows.addWidget(buttons)
+            box.exec()
+        finally:
+            # Whatever happened to the dialogue, the screen behind it has to
+            # come back. A blur left on is a screen nobody can read again.
+            self.setGraphicsEffect(None)
+
+    def ask_before_starting(self):
+        """The one thing to do before a patch screen is any use at all.
+
+        A seam like ask_firmware and ask_for_folder, so that a test can answer
+        it without a modal dialogue on a machine with no display, and so that
+        all three screens say it in the same words from the same place.
+
+        Why it is a dialogue and why nothing else may happen behind it: the
+        console loads a game's module when the game starts and keeps hold of
+        it until the console is restarted. Patching a game the console has
+        loaded writes new files to the hard drive and changes nothing at all
+        about what is running, and quitting back to the XMB does not shake the
+        module loose either. Somebody lost an evening to exactly this. The
+        game was running the whole time, every scan came back saying the files
+        were already fixed, and the fault he was patching out sat there
+        unchanged until he gave up. Nothing on the screen was wrong. This
+        sentence was on it, in among the others, and he read past it.
+        """
+        self._notice_dialogue("Before you start", BEFORE_NOTICE, "Continue")
+
+    def say_restart_needed(self):
+        """Shown once, after a patch or a restore has been read back.
+
+        The same seam as the one above and for the same reasons. It replaced a
+        framed panel that said this at three times the length and stayed on
+        screen afterwards, which is a panel people learn the shape of and stop
+        reading. Shown after the read-back rather than after the write,
+        because until the console has been read back nobody knows there is
+        anything on it to restart for.
+        """
+        self._notice_dialogue("Restart the console", RESTART_NOTICE)
+
+    def more_about_this_fix(self):
+        """What the expander holds, as one block of text.
+
+        Everything in here was a paragraph or a framed banner above the file
+        table. None of it changes what somebody does next: it is the fault the
+        fix addresses said at length, and whatever else is worth knowing about
+        this particular game. It is kept because it is true and worth having,
+        and it is behind one closed line because in front of the table it
+        stood between every user and the state of their own game.
+
+        One implementation for all three screens. A screen with something of
+        its own to put here fills in BACKGROUND rather than overriding this.
+        """
+        parts = [self.config.get("symptom", "")]
+        for body, emphasis in self.BACKGROUND:
+            parts.append(" ".join(part for part in (body, emphasis) if part))
+        return "\n\n".join(part for part in parts if part)
 
     def ask_firmware(self):
         """Which firmware the console is running, from the user, or "".
@@ -1101,6 +1322,68 @@ class PatcherScreen(Screen):
             # as saying nothing. It must never become a guess.
             return "", ""
 
+    def _read_running_title(self, host):
+        """The title ID the console has loaded right now, or "". The seam.
+
+        Written as its own method for the same reason _read_firmware is: it is
+        the one place this screen reaches the network for this answer, so a
+        test replaces it and nothing in a test goes near a console.
+
+        A console that will not answer has not said what it is running, and
+        silence must never become a refusal to patch. The scan that follows
+        reaches the same console and says in its own words what it found.
+        """
+        if read_console is None or running_title is None:
+            return ""
+        try:
+            return running_title(read_console(host)) or ""
+        except Exception:                                   # noqa: BLE001
+            return ""
+
+    def running_this_game(self):
+        """This screen's own game, if the console has it loaded, or "".
+
+        Only this screen's game counts. A console sitting in another game is
+        not a reason to refuse anything here: the module this fix cares about
+        is the one belonging to the title on this card, and refusing a Black
+        Ops 1 patch because somebody left Modern Warfare 3 running would be a
+        refusal the user cannot make sense of and did not deserve.
+        """
+        host = self.connection.host if self.connection else ""
+        if not host:
+            return ""
+        found = titles.normalise(self._read_running_title(host))
+        if not found or titles.KNOWN_TITLE_IDS.get(found) != self.title_key:
+            return ""
+        return found
+
+    def _show_running(self, title_id):
+        """Say the console has the game loaded, or take the notice away."""
+        if not title_id:
+            self._running_notice.hide()
+            return
+        self._running_text.setText(RUNNING_NOTICE.format(
+            name=self.config.get("short") or self.config.get("name")
+            or self.title,
+            title_id=title_id))
+        self._paint_running()
+        self._running_notice.show()
+
+    def _paint_running(self):
+        """The theme's warning colour, in the shape of the other notices."""
+        accent = self._colour_name("warn") or self._colour_name("text")
+        surface = self._colour_name("surface_alt") \
+            or self._colour_name("surface")
+        text = self._colour_name("text")
+        if not (accent and surface and text):
+            return
+        self._running_notice.setStyleSheet(
+            f"QFrame#runningnotice {{ background-color: {surface};"
+            f" border: 1px solid {accent};"
+            f" border-left: 6px solid {accent};"
+            f" border-radius: 6px; }}")
+        self._running_text.setStyleSheet(f"color: {text}; border: none;")
+
     def _lister(self, host):
         return transport.FtpLister(host)
 
@@ -1229,7 +1512,7 @@ class PatcherScreen(Screen):
         if report is None:
             self._patch.setEnabled(False)
             self._hide_update()
-            self._hide_untested()
+            self._hide_verdict()
             if self._reading_back:
                 # The usual panel for this says nothing has been changed on the
                 # console, and a moment ago something was. Say what happened
@@ -1274,6 +1557,10 @@ class PatcherScreen(Screen):
             self._files.resizeColumnToContents(column)
         self._fit_files(len(report.files))
 
+        # Before anything else on the page is worked out, because it is the
+        # answer the user opened this screen for.
+        self._show_verdict(report)
+
         self._scan_text = self._verdict(report)
         self._detail.setText(self._compose(self._scan_text))
         self._show_next_step(report)
@@ -1283,13 +1570,6 @@ class PatcherScreen(Screen):
         self._update_state = flow.update_check(report.title_id,
                                                self._installed_version())
         self._show_update(self._update_state)
-        # A warning beside the table rather than in place of it, and it never
-        # touches the button below: the files have been read, and what is in
-        # them is what decides whether the fix is offered.
-        if self._untested():
-            self._show_untested(report.title_id)
-        else:
-            self._hide_untested()
         self._patch.setEnabled(report.can_patch
                                and not self._update_state.blocks
                                and self.patch_allowed())
@@ -1299,17 +1579,26 @@ class PatcherScreen(Screen):
         # needing fixing, one this program could not recognise, one it never
         # managed to read -- leaves both the panel and the notice where they
         # are, hidden, and the wording underneath says what is actually known.
-        if self._reading_back and self._patch_message and _all_fixed(report):
+        confirmed = bool(self._reading_back and self._patch_message
+                         and _all_fixed(report))
+        if confirmed:
             self._show_success()
-        # A restore needs the restart for the same reason a patch does: the
-        # console is still running the module it loaded, so until it has been
-        # off and on again the files just put back are not the ones in use.
-        if self._reading_back and self._restored_ok:
-            self._show_restart_notice(RESTART_AFTER_RESTORE)
         self.status_message.emit(
             f"{report.title_id}: " +
             (f"{len(report.to_patch)} file(s) to fix" if report.to_patch
              else "nothing to do"))
+        # Last, once, and for either direction. A restore needs the restart
+        # for the same reason a patch does, because the console is still
+        # running the module it loaded whichever way the files moved, and a
+        # user who has just been shown two dialogues saying the same thing has
+        # been taught that the second one is not worth reading. The two are
+        # decided together here so that they cannot both fire.
+        #
+        # A repaint replays this whole method to redraw the table, and
+        # _reading_back is false by then, so the dialogue belongs to the
+        # read-back and to nothing else.
+        if confirmed or (self._reading_back and self._restored_ok):
+            self.say_restart_needed()
 
     def next_step_words(self):
         """What to say when this program will not touch a file, or "".
@@ -1459,35 +1748,71 @@ class PatcherScreen(Screen):
             return where
         return f"{where}. {UNTESTED_LINE}"
 
-    def _show_untested(self, title_id):
-        self._untested_body.setText(UNTESTED_BODY.format(
-            title_id=title_id or "This copy of the game"))
-        self._paint_untested()
-        self._untested_notice.show()
+    def verdict_words(self, report):
+        """(token, line) for the sentence under the game's name, or ("", "").
 
-    def _hide_untested(self):
-        self._untested_notice.hide()
+        One implementation for all three screens and for any added later. The
+        question is the same one on every card, the answer comes out of the
+        same report, and three screens answering it in three sets of words
+        would be three screens to keep in step.
 
-    def _paint_untested(self):
-        """The theme's warning colour, in the shape of the update notice.
-
-        Drawn like the other panel that stands between a user and the button,
-        because it carries the same weight: something about this run is worth
-        knowing before it starts.
+        The two cases that have no fix state to report, a set of files that is
+        not what the fix expects and a set nothing could be read out of, are
+        answered on this line as well. They used to be a framed paragraph of
+        their own further down, which is the arrangement that put the answer
+        somebody came for below the part of the screen they read.
         """
-        accent = self._colour_name("warn") or self._colour_name("text")
-        surface = self._colour_name("surface_alt") \
-            or self._colour_name("surface")
-        text = self._colour_name("text")
-        if not (accent and surface and text):
+        if report is None:
+            return "", ""
+        name = (self.config.get("short") or self.config.get("name")
+                or self.title)
+        fixed, stock, strange, unread = _fix_state(report)
+        if fixed and stock:
+            pattern = VERDICT_MIXED
+        elif fixed:
+            pattern = VERDICT_FIXED
+        elif stock:
+            pattern = VERDICT_NOT_FIXED
+        elif strange:
+            pattern = VERDICT_STRANGE
+        elif unread:
+            pattern = VERDICT_UNREAD
+        else:
+            # Nothing in this folder that the fix has any opinion about, so
+            # there is no verdict to give and the line stays off rather than
+            # inventing one.
+            return "", ""
+        line = pattern.format(name=name)
+        # Only where there is a fix state as well. Said on its own above, the
+        # strange files are the whole verdict, and repeating it here would be
+        # the same point twice in one sentence.
+        if strange and (fixed or stock):
+            line = f"{line} {VERDICT_SOME_STRANGE}"
+        if self._untested():
+            line = f"{line} {VERDICT_UNTESTED}"
+        return VERDICT_TOKENS.get(pattern, "text"), line
+
+    def _show_verdict(self, report):
+        token, line = self.verdict_words(report)
+        if not line:
+            self._hide_verdict()
             return
-        self._untested_notice.setStyleSheet(
-            f"QFrame#untestednotice {{ background-color: {surface};"
-            f" border: 1px solid {accent};"
-            f" border-left: 6px solid {accent};"
-            f" border-radius: 6px; }}")
-        self._untested_heading.setStyleSheet(f"color: {accent}; border: none;")
-        self._untested_body.setStyleSheet(f"color: {text}; border: none;")
+        self._verdict_token = token
+        self._verdict_line.setText(line)
+        self._paint_verdict()
+        self._verdict_line.show()
+
+    def _hide_verdict(self):
+        self._verdict_token = ""
+        self._verdict_line.setText("")
+        self._verdict_line.hide()
+
+    def _paint_verdict(self):
+        """The theme's own colour for the state, and never a colour name."""
+        ink = (self._colour_name(self._verdict_token)
+               or self._colour_name("text"))
+        if ink:
+            self._verdict_line.setStyleSheet(f"color: {ink};")
 
     def _paint_success(self):
         """Green, in the theme's own ok, with the check mark drawn in it."""
@@ -1508,24 +1833,6 @@ class PatcherScreen(Screen):
         except (AttributeError, TypeError, ValueError):
             ratio = 1.0
         self._success_icon.setPixmap(icons.pixmap("check", accent, 22, ratio))
-
-    def _paint_restart(self):
-        """Loud on purpose, and in the theme's warning colour.
-
-        This is an instruction rather than a fault, but it carries the same
-        cost as one when it is missed: the game hangs and the user believes the
-        patch did it.
-        """
-        accent = self._colour_name("warn") or self._colour_name("text")
-        surface = self._colour_name("surface_alt") or self._colour_name("surface")
-        if not (accent and surface):
-            return
-        self._restart.setStyleSheet(
-            f"QFrame#restartnotice {{ background-color: {surface};"
-            f" border: 2px solid {accent};"
-            f" border-left: 8px solid {accent};"
-            f" border-radius: 6px; }}")
-        self._restart_text.setStyleSheet(f"color: {accent}; border: none;")
 
     def _paint_notice(self):
         """Quieter than the restart notice, and in the same shape.
@@ -1733,6 +2040,11 @@ class PatcherScreen(Screen):
         # between a user and a patch built for another version of the game.
         if self._update_state is not None and self._update_state.blocks:
             return
+        # The same, for a console that has this game loaded. The button is off
+        # in that case too, and this is the check that makes the refusal real
+        # rather than a matter of which widget happened to be enabled.
+        if self._running:
+            return
         # Which firmware this is signing for, asked here rather than gating
         # the button on it. Gating it disabled Apply on a console that did not
         # say, with nothing on screen to answer with, so the fix could not be
@@ -1874,26 +2186,20 @@ class PatcherScreen(Screen):
         self._read_back_wanted = worked
 
     def _show_success(self):
-        """The green panel, and then the restart notice under it.
+        """The green panel. What the user is to do next is a dialogue now.
 
-        In that order and never one without the other: the panel is the good
-        news and the notice is the price of it, and a user who reads the first
-        and misses the second gets the hang this whole screen exists to remove.
+        The panel used to be followed by a framed instruction to restart the
+        console, which stayed on the screen afterwards and was the fourth
+        framed paragraph on it. The instruction is worth more said once, over
+        a blurred screen, with nothing else to look at.
         """
         self._success_heading.setText(SUCCESS_HEADING)
         self._success_body.setText(SUCCESS_BODY)
         self._paint_success()
         self._success.show()
-        self._show_restart_notice()
-
-    def _show_restart_notice(self, text=RESTART_NOTICE):
-        self._restart_text.setText(text)
-        self._paint_restart()
-        self._restart.show()
 
     def _hide_success(self):
         self._success.hide()
-        self._restart.hide()
 
     def _read_back_failed(self, reason=""):
         """The patch worked; the confirming read did not.
@@ -1914,7 +2220,7 @@ class PatcherScreen(Screen):
         # that read can make.
         self._hide_success()
         self._hide_update()
-        self._hide_untested()
+        self._hide_verdict()
         self._files.clear()
         self._files.setVisible(False)
         self._filler.setVisible(True)
@@ -2329,12 +2635,12 @@ class PatcherScreen(Screen):
             self._paint_notice()
         if not self._success.isHidden():
             self._paint_success()
-        if not self._restart.isHidden():
-            self._paint_restart()
         if not self._update.isHidden():
             self._paint_update()
-        if not self._untested_notice.isHidden():
-            self._paint_untested()
+        if not self._running_notice.isHidden():
+            self._paint_running()
+        if not self._verdict_line.isHidden():
+            self._paint_verdict()
         if self._writing:
             return
         if self._panel_token:
@@ -2559,26 +2865,34 @@ class BlackOpsOnePatcher(PatcherScreen):
     # about why the map packs do it.
     CONFIRM_WITH = CONFIRM
 
+    # The only one of the three screens with anything framed above the table,
+    # and it has one thing rather than the two it used to carry.
     NOTICES = (
-        # First, because it decides whether to go any further. The fix makes
-        # the client hash the account ID. An account made before Sony's 2018
-        # change still authenticates on a hash of the online ID, so applying
-        # this to one hands it an identity the server has never held and
-        # breaks something that works today. Nothing on the console tells the
-        # two apart, so the person at the keyboard has to.
+        # It stays because it decides whether to go any further at all. The
+        # fix makes the client hash the account ID. An account made before
+        # Sony's 2018 change still authenticates on a hash of the online ID,
+        # so applying this to one hands it an identity the server has never
+        # held and breaks something that works today. Nothing on the console
+        # tells the two apart, so the person at the keyboard has to, and they
+        # have to do it before they press anything.
         (CAUTION, CAUTION_ACTION, "warn"),
-        # Not this fix's doing and not something this fix cures, so it is said
-        # here rather than left for somebody to find out in a lobby. The
-        # wording stops at what has been seen: two consoles, no date, and no
-        # claim about why the map packs do it.
+    )
+
+    # The map packs. Worth having and true, and it changes nothing about how
+    # this fix is applied: it is not this fix's doing, it is not something
+    # this fix cures, and there is no step here anybody takes differently
+    # because of it. So it moved off the front of the screen, where it was the
+    # second framed paragraph a user met before reaching the state of their
+    # own game. The wording stops at what has been seen: two consoles, no
+    # date, and no claim about why the map packs do it.
+    BACKGROUND = (
         ("If you cannot find a public match, the map packs are the cause "
          "rather than this fix. Black Ops 1 will not place you in a public "
          "game while its map packs are installed. Renaming or removing them "
          "lets matchmaking work again. This has been confirmed on two "
          "consoles.",
          "This is being looked into, and the aim is a fix that leaves the "
-         "map packs alone.",
-         "info"),
+         "map packs alone."),
     )
     # Between Diagnostics and the other two fixes, so the three game fixes sit
     # together and the card most people are here for is not behind them.

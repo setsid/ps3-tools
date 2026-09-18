@@ -1138,6 +1138,10 @@ class ScreenCase(ConsoleCase):
     #: unknown firmware set this themselves.
     firmware = ("cfw", "4.93 CEX Cobra 8.5")
 
+    #: What the stubbed console says it has loaded. Nothing, for every test
+    #: but the ones about a game that is running.
+    running = ""
+
     def build(self, screen_class, host="127.0.0.1"):
         connection = ConnectionState(host)
         services = Services(connection, StubTheme())
@@ -1145,6 +1149,15 @@ class ScreenCase(ConsoleCase):
         # Nothing in a test reaches the network, and the firmware read is an
         # HTTP call, so it is answered here for every screen these build.
         screen._read_firmware = lambda _host: self.firmware
+        # The same for the read that says which game the console has loaded.
+        screen._read_running_title = lambda _host: self.running
+        # Both dialogues are modal and there is no display here, so a real one
+        # would hang the suite for ever. They are answered and recorded rather
+        # than replaced one test at a time: every test that enters a screen
+        # meets the first of them.
+        screen.dialogues = []
+        screen.ask_before_starting = lambda: screen.dialogues.append("before")
+        screen.say_restart_needed = lambda: screen.dialogues.append("restart")
         self.addCleanup(screen.deleteLater)
         server = getattr(self, "server", None)
         if server is not None:
@@ -2396,38 +2409,39 @@ class AfterAPatch(ScreenCase):
             BO2_ID, notes=["Nothing was left to do."]))
         self.settle(services)
         self.assertEqual(len(self.scans), 1)
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
-    # -- the restart notice
+    # -- the dialogue that follows a patch
 
     def test_a_confirmed_patch_says_to_restart_the_console(self):
         screen, services = self.scanned_screen()
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
         self.patch_the_console()
         self.finish_patch(screen, _patch_result(BO2_ID, self.BO2_FILES))
         self.settle(services)
-        self.assertTrue(screen._restart.isVisibleTo(screen))
-        self.assertEqual(screen._restart_text.text(), patcher.RESTART_NOTICE)
-        self.assertIn("Restart your PlayStation 3",
-                      screen._restart_text.text())
-        # In a frame of its own, not a paragraph in the running text.
-        self.assertNotIn("Restart your PlayStation 3", screen._detail.text())
+        self.assertEqual(screen.dialogues.count("restart"), 1)
+        # In a dialogue of its own, not a paragraph in the running text.
+        self.assertNotIn("restart your PlayStation 3",
+                         screen._detail.text().lower())
 
-    def test_the_restart_notice_survives_the_read_back(self):
+    def test_the_restart_dialogue_comes_after_the_read_back(self):
         screen, services = self.scanned_screen()
         self.patch_the_console()
         self.finish_patch(screen, _patch_result(BO2_ID, self.BO2_FILES))
+        # The bytes are written and the confirming scan is still out, so
+        # nobody knows yet that there is anything on the console to restart
+        # for.
+        self.assertEqual(screen.dialogues.count("restart"), 0)
         self.settle(services)
         self.assertEqual(len(self.scans), 2)
-        self.assertTrue(screen._restart.isVisibleTo(screen))
-        self.assertEqual(screen._restart_text.text(), patcher.RESTART_NOTICE)
+        self.assertEqual(screen.dialogues.count("restart"), 1)
 
     def test_a_failed_patch_does_not_tell_anybody_to_restart_anything(self):
         screen, services = self.scanned_screen()
         self.finish_patch(screen, _patch_result(
             BO2_ID, error="Nothing was uploaded."))
         self.settle(services)
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     def test_scanning_again_by_hand_clears_the_last_patch_s_messages(self):
         screen, services = self.scanned_screen()
@@ -2436,8 +2450,9 @@ class AfterAPatch(ScreenCase):
         self.settle(services)
         screen.start_scan()
         self.settle(services)
-        self.assertFalse(screen._restart.isVisibleTo(screen))
         self.assertNotIn("Changed:", screen._detail.text())
+        # And a second scan does not say it a second time.
+        self.assertEqual(screen.dialogues.count("restart"), 1)
 
     # -- the success panel, which is the read-back's to give and nobody else's
 
@@ -2449,12 +2464,12 @@ class AfterAPatch(ScreenCase):
         # is known here is what this program tried to do, which is not grounds
         # for a green panel or for sending anybody to restart a console.
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
         self.settle(services)
         self.assertTrue(screen._success.isVisibleTo(screen))
-        self.assertTrue(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 1)
 
-    def test_a_confirmed_patch_puts_the_green_panel_above_the_notice(self):
+    def test_a_confirmed_patch_shows_the_green_panel_and_says_what_next(self):
         screen, services = self.scanned_screen()
         self.patch_the_console()
         self.finish_patch(screen, _patch_result(BO2_ID, self.BO2_FILES))
@@ -2462,12 +2477,9 @@ class AfterAPatch(ScreenCase):
 
         self.assertEqual(self.states(screen), ["already fixed"] * 3)
         self.assertTrue(screen._success.isVisibleTo(screen))
-        self.assertTrue(screen._restart.isVisibleTo(screen))
-        layout = screen.layout()
-        self.assertLess(layout.indexOf(screen._success),
-                        layout.indexOf(screen._restart))
+        self.assertEqual(screen.dialogues.count("restart"), 1)
         self.assertFalse(screen._success_icon.pixmap().isNull())
-        # And the one line the user came for is still underneath both.
+        # And the one line the user came for is still underneath it.
         self.assertIn("Changed in %s: EBOOT.BIN, t6_ps3f.self, "
                       "t6mp_ps3f.self" % BO2_ID,
                       screen._detail.text())
@@ -2483,7 +2495,7 @@ class AfterAPatch(ScreenCase):
         self.settle(services)
 
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
         self.assertIn("could not be read back", screen._detail.text())
 
     def test_an_unreachable_console_gets_neither_panel(self):
@@ -2495,7 +2507,7 @@ class AfterAPatch(ScreenCase):
         self.settle(services)
 
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
         self.assertIn("could not be read back", screen._detail.text())
 
     def test_a_file_still_needing_fixing_is_not_a_success(self):
@@ -2508,7 +2520,7 @@ class AfterAPatch(ScreenCase):
 
         self.assertEqual(self.states(screen), ["needs fixing"] * 3)
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     def test_a_file_that_comes_back_unrecognised_is_not_a_success(self):
         screen, services = self.scanned_screen()
@@ -2520,7 +2532,7 @@ class AfterAPatch(ScreenCase):
 
         self.assertEqual(self.states(screen), ["not recognised"] * 3)
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     def test_a_file_that_was_never_examined_is_not_a_success(self):
         # Nothing was read out of these files at all, which is a fault in this
@@ -2534,7 +2546,7 @@ class AfterAPatch(ScreenCase):
 
         self.assertEqual(self.states(screen), ["not checked"] * 3)
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     def test_a_failed_patch_never_reaches_the_success_panel(self):
         screen, services = self.scanned_screen()
@@ -2542,7 +2554,7 @@ class AfterAPatch(ScreenCase):
             BO2_ID, error="The console refused the upload halfway through."))
         self.settle(services)
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     def test_scanning_again_by_hand_takes_the_success_panel_away(self):
         screen, services = self.scanned_screen()
@@ -2553,7 +2565,6 @@ class AfterAPatch(ScreenCase):
         screen.start_scan()
         self.settle(services)
         self.assertFalse(screen._success.isVisibleTo(screen))
-        self.assertFalse(screen._restart.isVisibleTo(screen))
 
     def test_the_success_panel_takes_its_green_from_the_theme(self):
         connection = ConnectionState("127.0.0.1")
@@ -2571,21 +2582,6 @@ class AfterAPatch(ScreenCase):
             style = style.replace(value, "")
         self.assertNotIn("#", style)
         self.assertFalse(screen._success_icon.pixmap().isNull())
-
-    def test_the_restart_notice_takes_its_colour_from_the_theme(self):
-        connection = ConnectionState("127.0.0.1")
-        services = Services(connection, _ColourfulTheme())
-        screen = patcher.BlackOpsTwoPatcher(services)
-        self.addCleanup(screen.deleteLater)
-        screen._show_restart_notice()
-        style = (screen._restart.styleSheet()
-                 + screen._restart_text.styleSheet())
-        self.assertIn(_ColourfulTheme.COLOURS["warn"], style)
-        # The object-name selector is the only other "#" allowed in here.
-        style = style.replace("QFrame#restartnotice", "")
-        for value in set(_ColourfulTheme.COLOURS.values()):
-            style = style.replace(value, "")
-        self.assertNotIn("#", style)
 
 
 @unittest.skipIf(QApplication is None, "PySide6 is not available")
@@ -2731,23 +2727,28 @@ class AReleaseNobodyHasTested(ScreenCase):
         self.settle(services)
         return screen
 
-    def notice(self, screen):
-        return " ".join([screen._untested_heading.text(),
-                         screen._untested_body.text()])
-
     def test_an_untested_release_reads_as_a_warning_not_a_refusal(self):
         screen = self.screen_for_untested()
-        self.assertTrue(screen._untested_notice.isVisibleTo(screen))
-        words = self.notice(screen)
-        self.assertIn("has not been tested", words)
-        self.assertIn("checked before anything is written", words)
-        self.assertIn("finds its own patch site", words)
-        self.assertIn("Desktop", words)
-        # The refusal that is left is the one the files themselves decide.
-        self.assertIn("If the patch site is not in these files", words)
+        words = screen._verdict_line.text()
+        self.assertTrue(screen._verdict_line.isVisibleTo(screen))
+        self.assertIn(patcher.VERDICT_UNTESTED, words)
         for forbidden in ("will not start", "nothing will be read",
                           "This is a refusal"):
             self.assertNotIn(forbidden, words)
+
+    def test_the_untested_warning_is_a_clause_rather_than_a_banner(self):
+        """The four-paragraph panel that used to say this is gone.
+
+        It stood between the user and the state of their own game, which is
+        the whole fault the verdict line was added to fix, and it said at
+        length what the line says in a clause.
+        """
+        screen = self.screen_for_untested()
+        self.assertFalse(hasattr(screen, "_untested_notice"))
+        self.assertFalse(hasattr(patcher, "UNTESTED_BODY"))
+        self.assertIn(patcher.VERDICT_UNTESTED, screen._verdict_line.text())
+        self.assertTrue(screen._verdict_line.text().startswith(
+            patcher.VERDICT_NOT_FIXED.format(name="Modern Warfare 3")))
 
     def test_the_fix_is_still_offered_on_a_release_nobody_has_tested(self):
         screen = self.screen_for_untested()
@@ -2756,7 +2757,7 @@ class AReleaseNobodyHasTested(ScreenCase):
         self.assertEqual(self.server.written, {})
 
     def test_the_release_is_called_untested_where_the_screen_names_it(self):
-        # The panel is read once on the way in. This line sits beside the
+        # The verdict line says it at the top. This one sits beside the
         # button and names the folder about to be written to.
         screen = self.screen_for_untested()
         self.assertIn(MW3_ID, screen._where.text())
@@ -2779,9 +2780,9 @@ class AReleaseNobodyHasTested(ScreenCase):
         self.assertEqual(self.server.written, {})
 
     def test_the_same_point_is_not_made_twice_under_the_table(self):
-        # The panel above the table already says this release is untested,
-        # and the caveat for an unverified release says it again in other
-        # words, which reads as two separate problems.
+        # The verdict line above the table already says this release is
+        # untested, and the caveat for an unverified release says it again in
+        # other words, which reads as two separate problems.
         screen = self.screen_for_untested()
         self.assertNotIn("nobody has confirmed", screen._detail.text())
 
@@ -2844,7 +2845,7 @@ class TypingWhereTheGameIs(ScreenCase):
         self.settle(services)
         self.assertEqual(screen._files.topLevelItemCount(), len(self.FILES))
         self.assertTrue(screen._patch.isEnabled())
-        self.assertTrue(screen._untested_notice.isVisibleTo(screen))
+        self.assertIn(patcher.VERDICT_UNTESTED, screen._verdict_line.text())
         self.assertIn("This release has not been tested.",
                       screen._where.text())
         self.assertEqual(self.server.written, {})
@@ -3347,7 +3348,7 @@ class RestoringFromTheScreen(ScreenCase):
         self.assertEqual(chosen.title_id, BO2_ID)
         # Said no, so nothing happened.
         self.assertEqual(self.server.written, {})
-        self.assertTrue(screen._restart.isHidden())
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     # -- the good case
 
@@ -3365,8 +3366,9 @@ class RestoringFromTheScreen(ScreenCase):
         # Read off the console afterwards, not worked out from what was sent.
         self.assertEqual(self.states(screen), ["needs fixing"] * 3)
         self.assertIn("Put back", screen._detail.text())
-        self.assertFalse(screen._restart.isHidden())
-        self.assertIn("Restart your PlayStation 3", screen._restart_text.text())
+        # One dialogue, the same one a patch ends in, because the console
+        # holds the module it loaded whichever way the files moved.
+        self.assertEqual(screen.dialogues.count("restart"), 1)
         # It has to be plain that this can be undone in turn.
         self.assertIn("apply the fix again", screen._detail.text())
         self.assertTrue(screen._patch.isEnabled())
@@ -3418,7 +3420,7 @@ class RestoringFromTheScreen(ScreenCase):
         self.assertIn("backup folder has not been changed",
                       screen._detail.text())
         self.assertEqual(self.server.written, {})
-        self.assertTrue(screen._restart.isHidden())
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
     def test_a_console_that_goes_away_mid_restore_says_to_try_again(self):
         backup_on_disk(self.root, BO2_ID, self.stock)
@@ -3430,7 +3432,7 @@ class RestoringFromTheScreen(ScreenCase):
         self.assertIn("could not be written to the console",
                       screen._detail.text())
         self.assertIn("safe", screen._detail.text())
-        self.assertTrue(screen._restart.isHidden())
+        self.assertEqual(screen.dialogues.count("restart"), 0)
 
 
 # --- the title update the fix was verified against -------------------------
@@ -3802,3 +3804,514 @@ class _ScanStub:
     can_patch = True
     chosen = ()
     untested = False
+
+
+# --- the two dialogues -----------------------------------------------------
+#
+# Somebody spent an evening patching a game that was running on the console
+# the whole time. Every scan came back saying the files were already fixed,
+# the fault he was patching out never moved, and nothing on the screen was
+# wrong: the console keeps hold of the module it loaded, so the files on the
+# hard drive changed and the thing running did not. The sentence that would
+# have saved the evening was on the screen, among the other sentences.
+
+#: The three cards, which are three configurations of one class and have to
+#: stay that way. Every assertion below that names a function object is there
+#: to stop the next fix for one screen being a copy of it on the others.
+ALL_THREE = (patcher.BlackOpsOnePatcher, patcher.BlackOpsTwoPatcher,
+             patcher.ModernWarfareThreePatcher)
+
+BO2_SET = ("EBOOT.BIN", "t6_ps3f.self", "t6mp_ps3f.self")
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class TheDialogueBeforeAnythingHappens(ScreenCase):
+    """Opening a patch screen asks, before it does anything else at all."""
+
+    def recording_screen(self, screen_class=None):
+        """A screen that writes down everything it does, in order."""
+        self.start(BO2_ID, {name: self_file("bo2", name)
+                            for name in BO2_SET})
+        screen, services = self.build(
+            screen_class or patcher.BlackOpsTwoPatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(installation("ready", BO2_ID, "bo2")))})
+        done = []
+        screen.ask_before_starting = lambda: done.append("dialogue")
+        opener = screen._lister
+
+        def counted(host):
+            done.append("scan")
+            return opener(host)
+
+        def read(_host):
+            done.append("read the console")
+            return ""
+
+        screen._lister = counted
+        screen._read_running_title = read
+        return screen, services, done
+
+    def test_the_dialogue_comes_before_the_scan_and_before_any_read(self):
+        screen, services, done = self.recording_screen()
+        screen.on_enter()
+        self.settle(services)
+        self.assertEqual(done[0], "dialogue")
+        self.assertIn("scan", done)
+        self.assertIn("read the console", done)
+
+    def test_nothing_at_all_has_happened_when_the_dialogue_is_put_up(self):
+        """The screen is asked to prove it, at the moment it asks.
+
+        A screen that starts scanning behind the dialogue has already put the
+        question to a console that is holding the game loaded, and every
+        answer from one of those is the wrong answer.
+        """
+        screen, services, done = self.recording_screen()
+        seen = {}
+
+        def answer():
+            seen["done"] = list(done)
+            seen["task"] = screen._task
+            seen["rows"] = screen._files.topLevelItemCount()
+            seen["scan"] = screen._scan
+            done.append("dialogue")
+
+        screen.ask_before_starting = answer
+        screen.on_enter()
+        self.settle(services)
+        self.assertEqual(seen["done"], [])
+        self.assertIsNone(seen["task"])
+        self.assertIsNone(seen["scan"])
+        self.assertEqual(seen["rows"], 0)
+
+    def test_the_dialogue_says_the_game_must_not_have_been_run(self):
+        self.assertEqual(patcher.BEFORE_NOTICE, (
+            "Before you start, make sure the game has not been run since the "
+            "console was last switched on. If you have played it, restart "
+            "your PlayStation 3 and leave it sitting on the XMB."))
+
+    def test_every_screen_asks_it_from_the_same_one_implementation(self):
+        for screen_class in ALL_THREE:
+            with self.subTest(screen=screen_class.__name__):
+                self.assertIs(screen_class.ask_before_starting,
+                              patcher.PatcherScreen.ask_before_starting)
+                self.assertIs(screen_class._notice_dialogue,
+                              patcher.PatcherScreen._notice_dialogue)
+
+    def test_the_screen_behind_a_dialogue_is_blurred_and_comes_back(self):
+        """A dialogue over a readable screen is one people read past.
+
+        The blur is the reason either of these is a dialogue rather than
+        another sentence among the sentences that were already there.
+        """
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        seen = []
+
+        def peek(_box):
+            seen.append(screen.graphicsEffect())
+            return 1
+
+        with mock.patch.object(patcher.QDialog, "exec", peek):
+            patcher.PatcherScreen.ask_before_starting(screen)
+        self.assertEqual(len(seen), 1)
+        self.assertIsInstance(seen[0], patcher.QGraphicsBlurEffect)
+        self.assertGreater(seen[0].blurRadius(), 0)
+        # And the screen is readable again the moment it is dismissed.
+        self.assertIsNone(screen.graphicsEffect())
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class TheDialogueWhenTheFilesHaveMoved(ScreenCase):
+    """One dialogue after a patch and after a restore, and never two."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="ps3tools-test-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def scanned_screen(self, state="stock"):
+        self.start(BO2_ID, {name: self_file("bo2", name, state)
+                            for name in BO2_SET})
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(installation("ready", BO2_ID, "bo2",
+                                      tu_version="1.19")))})
+        screen._backup_root = self.root
+        screen._confirm_restore = lambda *args: True
+        screen.on_enter()
+        self.settle(services)
+        return screen, services
+
+    def test_it_says_to_restart_the_console_and_nothing_else(self):
+        self.assertEqual(
+            patcher.RESTART_NOTICE,
+            "Now fully restart your PlayStation 3 before running the game.")
+
+    def test_a_patch_that_is_confirmed_shows_it_exactly_once(self):
+        screen, services = self.scanned_screen()
+        for name in BO2_SET:
+            self.server.files[self.remote(name)] = self_file(
+                "bo2", name, "patched")
+        screen._writing = True
+        screen._on_patched(_patch_result(BO2_ID, BO2_SET))
+        screen._finished_writing()
+        self.settle(services)
+        self.assertEqual(screen.dialogues.count("restart"), 1)
+
+    def test_a_restore_that_is_confirmed_shows_the_same_one_dialogue(self):
+        stock = {name: self_file("bo2", name) for name in BO2_SET}
+        backup_on_disk(self.root, BO2_ID, stock)
+        screen, services = self.scanned_screen(state="patched")
+        screen._on_restore()
+        for _ in range(3):
+            self.settle(services)
+        self.assertEqual(screen.dialogues.count("restart"), 1)
+
+    def test_the_framed_panels_it_replaced_are_gone_from_the_screen(self):
+        """Neither the panel nor the second wording of it is left anywhere.
+
+        Two framed paragraphs said this, one for a patch and one for a
+        restore, in three lines each and in almost the same words. A panel
+        people learn the shape of is a panel people stop reading.
+        """
+        screen, _services = self.scanned_screen()
+        self.assertFalse(hasattr(screen, "_restart"))
+        self.assertFalse(hasattr(screen, "_restart_text"))
+        self.assertFalse(hasattr(patcher, "RESTART_AFTER_RESTORE"))
+        self.assertFalse(hasattr(patcher.PatcherScreen,
+                                 "_show_restart_notice"))
+
+    def test_every_screen_says_it_from_the_same_one_implementation(self):
+        for screen_class in ALL_THREE:
+            with self.subTest(screen=screen_class.__name__):
+                self.assertIs(screen_class.say_restart_needed,
+                              patcher.PatcherScreen.say_restart_needed)
+
+    def test_both_dialogues_are_built_by_one_method_with_one_shape(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        shown = []
+        screen._notice_dialogue = lambda *args: shown.append(args)
+        patcher.PatcherScreen.ask_before_starting(screen)
+        patcher.PatcherScreen.say_restart_needed(screen)
+        self.assertEqual([args[1] for args in shown],
+                         [patcher.BEFORE_NOTICE, patcher.RESTART_NOTICE])
+
+
+# --- what is left above the file table -------------------------------------
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class WhatIsLeftAboveTheFileTable(ScreenCase):
+    """One line, one verdict, the warnings that matter, and an expander.
+
+    The three screens carried a heading, several paragraphs of explanation and
+    up to two framed notes each before the user reached anything describing
+    their own console. They also looked nothing like each other.
+    """
+
+    #: The widgets every screen has, in the order every screen has them.
+    SHAPE = ("_heading", "_verdict_line", "_symptom", "_more", "_where",
+             "_success", "_running_notice", "_update", "_panel", "_files")
+
+    def test_the_expander_is_closed_when_the_screen_opens(self):
+        for screen_class in ALL_THREE:
+            with self.subTest(screen=screen_class.__name__):
+                screen, _services = self.build(screen_class)
+                self.assertFalse(screen._more.is_open())
+                self.assertEqual(screen._more.summary(),
+                                 "More about this fix")
+
+    def test_the_expander_holds_the_explanation_that_was_on_the_screen(self):
+        for key, screen_class in (("bo1", patcher.BlackOpsOnePatcher),
+                                  ("bo2", patcher.BlackOpsTwoPatcher),
+                                  ("mw3",
+                                   patcher.ModernWarfareThreePatcher)):
+            with self.subTest(screen=screen_class.__name__):
+                screen, _services = self.build(screen_class)
+                self.assertIn(titles.TITLES[key]["symptom"],
+                              screen._more.text())
+
+    def test_one_line_above_it_says_what_the_fix_does(self):
+        for screen_class in ALL_THREE:
+            with self.subTest(screen=screen_class.__name__):
+                screen, _services = self.build(screen_class)
+                self.assertEqual(screen._symptom.text(), screen_class.blurb)
+                # One sentence. The paragraphs are in the expander.
+                self.assertNotIn(". ", screen._symptom.text())
+
+    def test_the_warning_that_changes_what_somebody_does_stays_in_view(self):
+        """Black Ops 1 and the accounts made before late 2018.
+
+        It decides whether to go any further at all: an account from before
+        Sony's change already authenticates on a hash of the online ID, and
+        this fix would hand it an identity the server has never held. Nothing
+        on the console tells the two apart, so the person at the keyboard has
+        to, and they have to do it before they press anything.
+        """
+        screen, _services = self.build(patcher.BlackOpsOnePatcher)
+        self.assertEqual(len(screen._notices), 1)
+        _frame, words, loud, _token = screen._notices[0]
+        self.assertEqual(words.text(), patcher.CAUTION)
+        self.assertEqual(loud.text(), patcher.CAUTION_ACTION)
+
+    def test_the_note_that_changes_nothing_moved_into_the_expander(self):
+        screen, _services = self.build(patcher.BlackOpsOnePatcher)
+        framed = " ".join(words.text() + " " + loud.text()
+                          for _frame, words, loud, _token in screen._notices)
+        self.assertNotIn("map packs", framed)
+        self.assertIn("map packs", screen._more.text())
+        self.assertIn("matchmaking", screen._more.text())
+
+    def test_the_other_two_screens_have_nothing_framed_above_the_table(self):
+        for screen_class in (patcher.BlackOpsTwoPatcher,
+                             patcher.ModernWarfareThreePatcher):
+            with self.subTest(screen=screen_class.__name__):
+                screen, _services = self.build(screen_class)
+                self.assertEqual(screen._notices, [])
+
+    def test_the_three_screens_are_laid_out_in_the_same_order(self):
+        for screen_class in ALL_THREE:
+            with self.subTest(screen=screen_class.__name__):
+                screen, _services = self.build(screen_class)
+                layout = screen.layout()
+                places = [layout.indexOf(getattr(screen, name))
+                          for name in self.SHAPE]
+                self.assertNotIn(-1, places)
+                self.assertEqual(places, sorted(places))
+
+    def test_one_implementation_of_all_of_it_and_never_three(self):
+        shared = ("ask_before_starting", "say_restart_needed",
+                  "_notice_dialogue", "more_about_this_fix", "verdict_words",
+                  "_show_verdict", "running_this_game", "_read_running_title",
+                  "patch_allowed")
+        for screen_class in ALL_THREE:
+            for name in shared:
+                with self.subTest(screen=screen_class.__name__, seam=name):
+                    self.assertIs(getattr(screen_class, name),
+                                  getattr(patcher.PatcherScreen, name))
+
+
+# --- the state of the fix, said first --------------------------------------
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class TheVerdictUnderTheGamesName(ScreenCase):
+    """Whether the game is fixed, said where somebody will actually read it.
+
+    It was a green word in the fourth column of a table, below a stack of
+    framed paragraphs. Somebody read that screen and then asked for the
+    feature it was already telling him he had.
+    """
+
+    def scanned(self, states):
+        self.start(BO2_ID, {name: self_file("bo2", name, states[name])
+                            for name in BO2_SET})
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(installation("ready", BO2_ID, "bo2")))})
+        screen.on_enter()
+        self.settle(services)
+        return screen
+
+    def every_file(self, state):
+        return {name: state for name in BO2_SET}
+
+    def test_a_game_that_is_already_fixed_says_there_is_nothing_to_do(self):
+        screen = self.scanned(self.every_file("patched"))
+        self.assertTrue(screen._verdict_line.isVisibleTo(screen))
+        self.assertEqual(
+            screen._verdict_line.text(),
+            "Black Ops II on this console is already fixed. Nothing to do.")
+        self.assertEqual(screen._verdict_token, "ok")
+
+    def test_a_game_that_has_not_been_fixed_says_so(self):
+        screen = self.scanned(self.every_file("stock"))
+        self.assertEqual(screen._verdict_line.text(),
+                         "Black Ops II on this console has not been fixed "
+                         "yet.")
+        self.assertEqual(screen._verdict_token, "warn")
+
+    def test_a_half_finished_set_says_some_and_some(self):
+        states = self.every_file("stock")
+        states["EBOOT.BIN"] = "patched"
+        screen = self.scanned(states)
+        self.assertEqual(
+            screen._verdict_line.text(),
+            "Some of Black Ops II's files are fixed and some are not.")
+
+    def test_it_sits_above_the_notices_and_above_the_table(self):
+        screen = self.scanned(self.every_file("stock"))
+        layout = screen.layout()
+        self.assertLess(layout.indexOf(screen._heading),
+                        layout.indexOf(screen._verdict_line))
+        for below in (screen._symptom, screen._more, screen._files,
+                      screen._panel, screen._update):
+            self.assertLess(layout.indexOf(screen._verdict_line),
+                            layout.indexOf(below))
+
+    def test_it_is_larger_and_bolder_than_the_line_under_it(self):
+        screen = self.scanned(self.every_file("stock"))
+        self.assertTrue(screen._verdict_line.font().bold())
+        self.assertGreater(screen._verdict_line.font().pointSize(),
+                           screen._symptom.font().pointSize())
+
+    def test_nothing_is_claimed_before_the_console_has_been_read(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        self.assertFalse(screen._verdict_line.isVisibleTo(screen))
+        self.assertEqual(screen._verdict_line.text(), "")
+
+    def test_files_that_are_not_what_the_fix_expects_read_on_that_line(self):
+        screen = self.scanned(self.every_file("neither"))
+        self.assertEqual(screen._verdict_line.text(),
+                         "Black Ops II on this console has files that are "
+                         "not what the fix expects.")
+        self.assertEqual(screen._verdict_token, "error")
+
+    def test_one_strange_file_among_stock_ones_is_said_on_that_line_too(self):
+        states = self.every_file("stock")
+        states["EBOOT.BIN"] = "neither"
+        screen = self.scanned(states)
+        self.assertEqual(
+            screen._verdict_line.text(),
+            "Black Ops II on this console has not been fixed yet. Some of "
+            "its files are not what the fix expects.")
+
+    def test_an_untested_release_is_a_clause_and_never_a_banner(self):
+        states = self.every_file("stock")
+        self.start(BO2_ID, {name: self_file("bo2", name, states[name])
+                            for name in BO2_SET})
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        found = installation("ready", BO2_ID, "bo2")
+        found.untested = True
+        found.verified = False
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(found))})
+        screen.on_enter()
+        self.settle(services)
+        self.assertTrue(screen._verdict_line.text().endswith(
+            patcher.VERDICT_UNTESTED))
+        self.assertFalse(hasattr(screen, "_untested_notice"))
+
+    def test_every_screen_answers_it_from_the_same_one_implementation(self):
+        for screen_class in ALL_THREE:
+            with self.subTest(screen=screen_class.__name__):
+                self.assertIs(screen_class.verdict_words,
+                              patcher.PatcherScreen.verdict_words)
+
+
+# --- the game the console has loaded right now -----------------------------
+
+
+@unittest.skipIf(QApplication is None, "PySide6 is not available")
+class RefusingToPatchAGameTheConsoleHasLoaded(ScreenCase):
+    """The evening this screen lost, refused at the button this time.
+
+    The console loads a game's module when the game starts and keeps it until
+    the console is restarted. Patching a loaded game writes the files to the
+    hard drive and changes nothing about what is running.
+    """
+
+    def scanned(self, running):
+        self.running = running
+        self.start(BO2_ID, {name: self_file("bo2", name)
+                            for name in BO2_SET})
+        screen, services = self.build(patcher.BlackOpsTwoPatcher)
+        self.addCleanup(setattr, patcher, "detect", patcher.detect)
+        patcher.detect = type("stub", (), {"find_installations": staticmethod(
+            detector_for(installation("ready", BO2_ID, "bo2")))})
+        screen.on_enter()
+        self.settle(services)
+        return screen, services
+
+    def test_this_screens_own_game_running_stops_the_fix_being_applied(self):
+        screen, _services = self.scanned(BO2_ID)
+        self.assertFalse(screen._patch.isEnabled())
+        self.assertFalse(screen.patch_allowed())
+        self.assertTrue(screen._running_notice.isVisibleTo(screen))
+
+    def test_it_says_which_release_and_what_to_do_about_it(self):
+        screen, _services = self.scanned(BO2_ID)
+        words = screen._running_text.text()
+        self.assertIn(BO2_ID, words)
+        self.assertIn("Black Ops II is running on the console now", words)
+        self.assertIn("Quit the game", words)
+        self.assertIn("restart your PlayStation 3", words)
+        self.assertIn("press Scan again", words)
+
+    def test_pressing_apply_anyway_sends_nothing_and_asks_nothing(self):
+        screen, services = self.scanned(BO2_ID)
+        asked = []
+
+        def capture(*args, **kwargs):
+            asked.append(args)
+            return patcher.QMessageBox.No
+
+        with mock.patch.object(patcher.QMessageBox, "question", capture):
+            screen._on_patch()
+        self.settle(services)
+        self.assertEqual(asked, [])
+        self.assertEqual(self.server.written, {})
+
+    def test_another_game_running_is_not_a_reason_to_refuse(self):
+        """Only the module this fix cares about matters.
+
+        A Black Ops II patch refused because somebody left Modern Warfare 3
+        running is a refusal the user cannot make sense of and did not earn.
+        """
+        screen, _services = self.scanned(MW3_ID)
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertTrue(screen.patch_allowed())
+        self.assertFalse(screen._running_notice.isVisibleTo(screen))
+
+    def test_a_title_this_tool_has_never_heard_of_is_not_a_reason_either(self):
+        screen, _services = self.scanned("BLES99999")
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertFalse(screen._running_notice.isVisibleTo(screen))
+
+    def test_a_console_sitting_on_the_xmb_is_left_alone(self):
+        screen, _services = self.scanned("")
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertFalse(screen._running_notice.isVisibleTo(screen))
+        self.assertEqual(screen.running_this_game(), "")
+
+    def test_the_answer_is_read_again_on_every_scan(self):
+        """Unlike the firmware, this is the one thing being asked to change.
+
+        A user told to quit the game and restart the console presses Scan
+        again, and an answer kept from the first read would go on refusing
+        them on a console that is now sitting on the XMB.
+        """
+        screen, services = self.scanned(BO2_ID)
+        self.assertFalse(screen._patch.isEnabled())
+        screen._read_running_title = lambda _host: ""
+        screen._rescan.click()
+        self.settle(services)
+        self.assertTrue(screen._patch.isEnabled())
+        self.assertFalse(screen._running_notice.isVisibleTo(screen))
+
+    def test_a_console_that_will_not_say_is_never_turned_into_a_refusal(self):
+        screen, services = self.scanned(BO2_ID)
+
+        def silent(_host):
+            raise OSError("the console stopped answering")
+
+        screen._read_running_title = silent
+        screen._rescan.click()
+        self.settle(services)
+        # The seam itself is what swallows this, so a screen that gets no
+        # answer patches exactly as it did before any of this existed.
+        self.assertEqual(
+            patcher.PatcherScreen._read_running_title(screen, "127.0.0.1"),
+            "")
+
+    def test_the_read_goes_through_one_seam_and_nothing_else(self):
+        screen, _services = self.build(patcher.BlackOpsTwoPatcher)
+        self.assertTrue(hasattr(patcher.PatcherScreen, "_read_running_title"))
+        screen._read_running_title = lambda host: "  bles-01717 "
+        # Normalised the way every other title ID on this screen is, because
+        # webMAN prints them in more than one shape.
+        self.assertEqual(screen.running_this_game(), BO2_ID)

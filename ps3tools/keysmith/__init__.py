@@ -147,7 +147,7 @@ def decrypt(file, klicensee="", keys_path=""):
 
 
 def sign(elf, template, klicensee="", keys_path="", filename="",
-         key_revision=None):
+         key_revision=None, grown_segments=False):
     """An ELF put back into the container its template came from.
 
     The template is the user's own original file. Everything that identifies
@@ -167,6 +167,12 @@ def sign(elf, template, klicensee="", keys_path="", filename="",
     which is a third party's paired CFW and HEN builds of the same title
     differing in that field and in nothing else.
 
+    grown_segments says the caller deliberately made a loadable segment
+    longer, which a fix needing a code cave past the end of the loaded part of
+    one has to do. Off by default, because a patch that changes instructions
+    in place moves nothing and a header that moved under one of those is a
+    fault. See sign.py for what it does and does not allow.
+
     A fake-signed template is rebuilt through its own header, which carries no
     keyset at all, so key_revision does not apply to one and is ignored.
     """
@@ -179,7 +185,8 @@ def sign(elf, template, klicensee="", keys_path="", filename="",
         return _fself.rebuild(parsed, elf)
     store = _keys.load(keys_path) if keys_path else None
     return _sign.rebuild(parsed, elf, _klic(klicensee), store,
-                         filename=filename, key_revision=key_revision)
+                         filename=filename, key_revision=key_revision,
+                         grown_segments=grown_segments)
 
 
 def fake_sign(elf, template, klicensee="", keys_path="", filename=""):
@@ -190,8 +197,8 @@ def fake_sign(elf, template, klicensee="", keys_path="", filename=""):
     metadata, so it goes back out in the form it came in.
 
     It is not what a PS3HEN console needs. HEN loads an ordinary retail
-    re-sign, as long as it is built against the 3.55-era keyset: the published
-    Schroeder's paired CFW and HEN builds of Modern Warfare 2 are both retail
+    re-sign, as long as it is built against the 3.55-era keyset: Jakes625's
+    paired CFW and HEN builds of Modern Warfare 2 are both retail
     re-signs, and the only header field that differs between them is the SCE
     key revision, 0x0010 against 0x000A. That is what sign(key_revision=...)
     is for.

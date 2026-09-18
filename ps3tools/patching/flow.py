@@ -1036,8 +1036,14 @@ def _build_all(tool, chosen, saved, kind, module, workdir, progress, out,
                 ", ".join(sorted(used_fallback)) +
                 ", so the values the fix was verified against were used")
         destination = os.path.join(workdir, item.name + ".signed")
+        # Asked of the fix rather than looked up in a table here. A fix that
+        # extends a segment says so itself, so a fifth one cannot be added
+        # with the declaration left behind in a file it never touched, which
+        # is exactly how this title's first two faults happened.
         tool.sign(profile, info, source, patched_path, destination,
-                  item.name, klicensee)
+                  item.name, klicensee,
+                  grown_segments=bool(getattr(module, "EXTENDS_SEGMENT",
+                                              False)))
 
         step(f"checking the rebuilt {item.name}")
         _verify_build(tool, item, source, destination, patched, klicensee,

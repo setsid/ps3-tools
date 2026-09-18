@@ -105,6 +105,13 @@ CACHE_VALID_AT = 4
 STOCK = "stock"
 PATCHED = "patched"
 
+#: This fix makes a loadable segment longer, which the other three do not.
+#: Read by whatever re-signs the patched file: a rebuild checks the ELF
+#: against the shape the original had, and a segment that grew is a fault
+#: under every fix but this one. Declared here rather than in a table
+#: somewhere else so that it travels with the fix that does it.
+EXTENDS_SEGMENT = True
+
 
 class NotThisBuild(Exception):
     """Something the fix needs was not found, or was not what it must be.

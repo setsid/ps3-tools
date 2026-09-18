@@ -415,8 +415,8 @@ class TheApplyPath(unittest.TestCase):
             return body
 
         def sign(self, profile, info, source, elf_path, destination,
-                 target_name, klicensee=None):
-            self.signed.append((profile, target_name))
+                 target_name, klicensee=None, grown_segments=False):
+            self.signed.append((profile, target_name, grown_segments))
             with open(elf_path, "rb") as handle:
                 elf = handle.read()
             with open(destination, "wb") as handle:
@@ -482,8 +482,37 @@ class TheApplyPath(unittest.TestCase):
         """The CID_FN hash binds the content ID to the file name, so a file
         signed under the wrong one is valid and will not load."""
         self.build()
-        self.assertEqual([name for _profile, name in self.tool.signed],
-                         [self.item.name])
+        self.assertEqual([name for _profile, name, _grown
+                          in self.tool.signed], [self.item.name])
+
+    def test_the_signer_is_told_this_fix_extends_a_segment(self):
+        """Without it the rebuild refuses the file, because a segment that
+        moved is a fault under the other three fixes."""
+        self.assertTrue(mw2.EXTENDS_SEGMENT)
+        self.build()
+        self.assertEqual([grown for _profile, _name, grown
+                          in self.tool.signed], [True])
+
+    def test_a_fix_that_says_nothing_gets_the_strict_answer(self):
+        """The declaration travels with the fix, so a fix with none is
+        signed the way the three that patch in place are."""
+        class Quiet:
+            STOCK = mw2.STOCK
+            PATCHED = mw2.PATCHED
+            NotThisBuild = mw2.NotThisBuild
+            find_site = staticmethod(mw2.find_site)
+            check = staticmethod(mw2.check)
+            apply = staticmethod(mw2.apply)
+            cave_bytes = staticmethod(mw2.cave_bytes)
+            CAVE = mw2.CAVE
+            CAVE_BYTES = mw2.CAVE_BYTES
+            ANCHOR = mw2.ANCHOR
+
+        self.assertFalse(getattr(Quiet, "EXTENDS_SEGMENT", False))
+        flow._build_all(self.tool, [self.item], self.saved, "mw2", Quiet,
+                        self.workdir, None, self.out)
+        self.assertEqual([grown for _profile, _name, grown
+                          in self.tool.signed], [False])
 
     def test_a_file_that_comes_back_wrong_stops_the_run(self):
         """The check that the rebuilt file decrypts to what went into it."""
@@ -618,6 +647,68 @@ class TheRealBuild(unittest.TestCase):
         cave = REFERENCE_CAVE - BASE
         self.assertEqual(back[cave:cave + mw2.CAVE_BYTES],
                          self.stock[cave:cave + mw2.CAVE_BYTES])
+
+    def test_the_patched_file_signs_and_comes_back_exactly(self):
+        """The whole thing, both firmwares, against the real container.
+
+        This is the part the suite was not doing when Apply refused on a
+        console: the fix extends a segment, and signing checks the ELF
+        against the shape the original had. The check was right to fire, and
+        the answer is not only to expect the extension but to carry it: the
+        payload has to be sliced with the ELF's own headers, and the copy of
+        those headers the SELF keeps in its own header has to be the grown
+        one, or the console maps the old length and none of the cave.
+        """
+        from ps3tools import keysmith
+        from ps3tools.patching.signer import Signer
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            elf_path = os.path.join(folder, "patched.elf")
+            with open(elf_path, "wb") as handle:
+                handle.write(self.patched)
+            for kind, revision in (("cfw", "0010"), ("hen", "000A")):
+                with self.subTest(firmware=kind):
+                    tool = Signer(firmware_kind=kind)
+                    out = os.path.join(folder, f"{kind}.self")
+                    tool.sign(None, {}, STOCK_SELF, elf_path, out,
+                              "default_mp.self", sce_corpus.IW_KLIC,
+                              grown_segments=True)
+                    back = keysmith.decrypt(out, sce_corpus.IW_KLIC)
+                    self.assertEqual(back, self.patched)
+                    self.assertEqual(
+                        tool.info(out, sce_corpus.IW_KLIC)["key_revision"],
+                        revision)
+                    signed = keysmith.read(out)
+                    self.assertEqual(signed.program_headers[0].filesz,
+                                     headers(self.patched)[0][3])
+                    self.assertEqual(signed.program_headers[0].memsz,
+                                     headers(self.patched)[0][4])
+
+    def test_the_signed_header_says_what_the_reference_build_s_says(self):
+        """His shipped container carries the grown segment too, in both
+        firmwares. A file that said the old length would load the old
+        length."""
+        from ps3tools import keysmith
+        theirs = keysmith.read(REFERENCE)
+        self.assertEqual(theirs.program_headers[0].filesz, 0x006E0000)
+        self.assertEqual(theirs.program_headers[0].memsz, 0x006E0000)
+
+    def test_signing_without_the_declaration_refuses(self):
+        """The check stays exactly as strict for everything that has not
+        said it moved a segment."""
+        from ps3tools import keysmith
+        from ps3tools.keysmith.errors import SigningFailed
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            elf_path = os.path.join(folder, "patched.elf")
+            with open(elf_path, "wb") as handle:
+                handle.write(self.patched)
+            with self.assertRaises(SigningFailed) as caught:
+                keysmith.sign(self.patched, STOCK_SELF, sce_corpus.IW_KLIC,
+                              filename="default_mp.self")
+        message = str(caught.exception)
+        self.assertIn("program header 0 filesz", message)
+        self.assertIn("6DA960", message.upper())
 
     def test_the_second_region_decrypts_to_the_same_image(self):
         """Which is what says region alone changes nothing on this update."""

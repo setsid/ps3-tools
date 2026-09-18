@@ -308,26 +308,32 @@ def rebuilds_section_table(revision):
     return bool(REBUILDS_SECTION_TABLE.get(revision))
 
 
-def section_payloads(template, elf, metadata):
+def section_payloads(template, elf, metadata, headers=None):
     """The plaintext bytes each metadata section should carry, in order.
 
     Plaintext here means compressed if the section is compressed, because the
     HMAC and the encryption are both over that, not over the raw segment.
 
+    headers is the program header table to slice the ELF with, which is the
+    ELF's own where the caller said a segment grew and the template's
+    otherwise. The two are identical in every other case, because
+    _check_geometry has just refused anything else.
+
     Compression follows the template section by section. The PS3HEN path does
     not come through here at all: it builds its own table, and what it
     compresses is decided there.
     """
+    headers = template.program_headers if headers is None else headers
     out = []
     for section in metadata.sections:
         if section.section_type == SECTION_TYPE_PHDR:
-            if section.index >= len(template.program_headers):
+            if section.index >= len(headers):
                 raise SigningFailed(
                     "a metadata section names a program header that is not "
                     "there", path=template.path, field="section index",
-                    expected=f"< {len(template.program_headers)}",
+                    expected=f"< {len(headers)}",
                     found=section.index)
-            phdr = template.program_headers[section.index]
+            phdr = headers[section.index]
             body = elf[phdr.offset:phdr.offset + phdr.filesz]
             if len(body) != phdr.filesz:
                 raise SigningFailed(
@@ -355,7 +361,7 @@ def section_payloads(template, elf, metadata):
 
 
 def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
-            filename="", key_revision=None):
+            filename="", key_revision=None, grown_segments=False):
     """A SELF built from this template and this ELF.
 
     keep_layout reuses the template's own section offsets when the payload
@@ -373,6 +379,19 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     erk and riv. None keeps the template's own, which is what a custom
     firmware console wants. PS3HEN wants 0x000A; the module docstring has the
     evidence for that.
+
+    grown_segments says the caller meant a segment to get bigger. Off by
+    default, and off is the right answer for a patch that changes
+    instructions in place: a program header that moved under one of those is
+    a file this cannot describe, and signing it against the template's layout
+    would give something that looks right and is not.
+
+    On it, a loadable segment may carry more than the template's did and the
+    payload is taken from the ELF's own headers rather than the template's.
+    Nothing else may move. A patch that needs a code cave past the end of the
+    loaded part of a segment has to extend that segment or the console never
+    maps what was written, and without this the sections would be cut to the
+    template's sizes and the cave dropped from the file that gets signed.
     """
     # Checked before anything else: a fake-signed template has no keys and no
     # metadata, so every message from further down would be about the wrong
@@ -384,7 +403,7 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
             field="key revision", expected="a retail key revision",
             found=template.sce.key_revision)
     store = store or keymod.load()
-    _check_geometry(template, elf)
+    headers = _check_geometry(template, elf, grown_segments)
     # The template is always opened with its own keyset. Only the keyset it is
     # written back out under is a choice, and decrypt_metadata has to have run
     # before that choice can be made, because it is what records which of the
@@ -393,8 +412,9 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     revision, keyset = _signing_keyset(template, store, key_revision)
     if rebuilds_section_table(key_revision):
         return _rebuild_from_elf(template, elf, metadata, klicensee, store,
-                                 filename, key_revision, revision, keyset)
-    payloads = section_payloads(template, elf, metadata)
+                                 filename, key_revision, revision, keyset,
+                                 headers)
+    payloads = section_payloads(template, elf, metadata, headers)
 
     unchanged = all(
         len(payload) == section.data_size
@@ -465,9 +485,17 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     blob = _metadata_blob(metadata.header, new_sections, key_table,
                           metadata.optional, metadata.signature,
                           metadata.raw_length)
+    # Where the sections were packed again, the section header table is not
+    # where the template said it was any more, and the SELF header's own
+    # pointer to it has to move with it. Left alone it names whatever now sits
+    # at the old offset, which is a file that describes itself wrongly in a
+    # field nothing in this program reads and something else might.
+    moved = None if (keep_layout and unchanged) else _shdr_offset(new_sections)
     header = _header(template, control_infos, section_infos, metadata, blob,
                      klicensee, store, data_length=len(elf),
-                     key_revision=revision, keyset=keyset)
+                     key_revision=revision, keyset=keyset,
+                     shdr_offset=moved,
+                     program_headers=_moved_headers(template, headers))
 
     # Where the layout is kept, the rebuild starts from the original file so
     # that whatever sits in the gaps between sections survives. A retail SELF
@@ -492,7 +520,7 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
 
 
 def _rebuild_from_elf(template, elf, metadata, klicensee, store, filename,
-                      key_revision, revision, keyset):
+                      key_revision, revision, keyset, headers=None):
     """A SELF whose section table comes from the ELF, which is the HEN form.
 
     The template still says everything that identifies the file, and the ELF
@@ -512,7 +540,7 @@ def _rebuild_from_elf(template, elf, metadata, klicensee, store, filename,
     too.
     """
     sections, payloads, key_table = _elf_section_table(
-        template, elf, compresses_for(key_revision))
+        template, elf, compresses_for(key_revision), headers)
     key_count = len(key_table) // SLOT_BYTES
     signature_at, header_length = _header_geometry(template, metadata,
                                                    len(sections), key_count)
@@ -572,7 +600,8 @@ def _rebuild_from_elf(template, elf, metadata, klicensee, store, filename,
                      key_revision=revision, keyset=keyset,
                      header_length=header_length,
                      shdr_offset=_shdr_offset(sections),
-                     sign_at=signature_at if signable else None)
+                     sign_at=signature_at if signable else None,
+                     program_headers=_moved_headers(template, headers))
     out = bytearray(header)
     for offset, blob_bytes in zip(offsets, stored):
         if offset > len(out):
@@ -581,7 +610,7 @@ def _rebuild_from_elf(template, elf, metadata, klicensee, store, filename,
     return bytes(out)
 
 
-def _elf_section_table(template, elf, compress):
+def _elf_section_table(template, elf, compress, headers=None):
     """(the metadata sections, their payloads, a key table for them).
 
     One type 2 section per program header and then the type 1 section header
@@ -589,14 +618,21 @@ def _elf_section_table(template, elf, compress):
     carry no offsets yet, because where they go depends on how long the
     header holding this table turns out to be.
 
+    headers is the program header table to slice with, which is the ELF's own
+    wherever the caller said a segment grew. The name of this function is the
+    point: the sections come from the ELF, and taking their lengths from the
+    template while calling them that is how a grown segment came back cut to
+    its old size with the code cave dropped out of the file.
+
     Compression is decided per section by whether it helps. See
     COMPRESSES_SECTIONS for what that reproduces.
     """
+    headers = template.program_headers if headers is None else headers
     sections = []
     payloads = []
     key_table = bytearray()
     slot = 0
-    for index, phdr in enumerate(template.program_headers):
+    for index, phdr in enumerate(headers):
         body = elf[phdr.offset:phdr.offset + phdr.filesz]
         if len(body) != phdr.filesz:
             raise SigningFailed(
@@ -744,6 +780,23 @@ def _signed_metadata(head, blob, run_at, sign_at, keyset, path):
     out = bytearray(blob)
     out[at:at + SIGNATURE_BYTES] = signature
     return bytes(out)
+
+
+def _moved_headers(template, headers):
+    """The program headers to write into the SELF's header, or None.
+
+    None whenever they are the template's own, so a rebuild of a file nobody
+    touched writes the template's bytes back exactly as they were rather than
+    re-packing a table to arrive at the same bytes.
+    """
+    if not headers:
+        return None
+    theirs = template.program_headers
+    if len(headers) != len(theirs):
+        return headers
+    same = all(mine.pack() == other.pack()
+               for mine, other in zip(headers, theirs))
+    return None if same else headers
 
 
 def _shdr_offset(sections):
@@ -910,15 +963,37 @@ def _npdrm_block(block, store, klicensee, filename):
     return ControlInfo(block.info_type, block.size, block.next, bytes(payload))
 
 
-def _check_geometry(template, elf):
-    """The ELF must have the shape the template describes.
+#: The program header fields that may differ when a caller says it grew a
+#: segment, and the direction they may differ in. Everything else about every
+#: header still has to match the template exactly: where a segment starts in
+#: the file, where it loads, what it is and what it may do are not things a
+#: patch has any business changing, and a file where one of them moved is one
+#: this cannot describe.
+GROWABLE = ("filesz", "memsz")
+
+
+def _check_geometry(template, elf, grown_segments=False):
+    """The ELF must have the shape the template describes. Returns its headers.
 
     A patch changes bytes inside segments and leaves the program headers
-    alone, which is what every patcher in this program does and what was
-    checked against a known-good rebuild. An ELF whose headers have moved
+    alone, which is what three of the four fixes in this program do and what
+    was checked against a known-good rebuild. An ELF whose headers have moved
     needs a different section and key layout, and quietly signing it against
     the template's layout would give a file that looks right and is not. So
     this refuses instead, naming the field that moved.
+
+    grown_segments is the one exception, and it is narrow. A fix whose code
+    cave lands past the end of the loaded part of a segment has to extend that
+    segment, or the console maps none of what was written. Such a caller says
+    so, and then a loadable segment may be longer than the template's and
+    nothing else may differ, in either direction. A segment that shrank is
+    still refused: no fix does that, and a payload cut short is the failure
+    this whole check exists to stop.
+
+    The headers come back because the payloads have to be sliced with them
+    rather than with the template's. Slicing with the template's is what would
+    cut a grown segment back to its old length and drop the cave out of the
+    file being signed, which is a patch that applies cleanly and does nothing.
     """
     from .structs import ElfHeader, ProgramHeader
     head = ElfHeader.read(elf, 0, template.path)
@@ -932,17 +1007,31 @@ def _check_geometry(template, elf):
                 "section layout read off the original does not describe it",
                 path=template.path, field=f"ELF {field}", expected=theirs,
                 found=mine)
+    out = []
     for index, phdr in enumerate(template.program_headers):
         at = head.phoff + index * ProgramHeader.SIZE
         other = ProgramHeader.read(elf, at, template.path)
         for field in ("type", "offset", "filesz", "memsz", "vaddr", "flags"):
-            if getattr(other, field) != getattr(phdr, field):
-                raise SigningFailed(
-                    "a program header has moved, so the section layout read "
-                    "off the original no longer describes this ELF",
-                    path=template.path,
-                    field=f"program header {index} {field}",
-                    expected=getattr(phdr, field), found=getattr(other, field))
+            mine = getattr(other, field)
+            theirs = getattr(phdr, field)
+            if mine == theirs:
+                continue
+            if grown_segments and field in GROWABLE and mine > theirs:
+                continue
+            raise SigningFailed(
+                "a program header has moved, so the section layout read "
+                "off the original no longer describes this ELF",
+                path=template.path,
+                field=f"program header {index} {field}",
+                expected=theirs, found=mine)
+        if other.offset + other.filesz > len(elf):
+            raise SigningFailed(
+                "a program header describes more of the file than there is",
+                path=template.path, field=f"program header {index} filesz",
+                expected=f"at most {len(elf) - other.offset}",
+                found=other.filesz)
+        out.append(other)
+    return out
 
 
 def _copy_section(section):
@@ -984,7 +1073,8 @@ def _metadata_blob(header, sections, key_table, optional, signature,
 
 def _header(template, control_infos, section_infos, metadata, blob, klicensee,
             store, data_length=None, key_revision=None, keyset=None,
-            header_length=None, shdr_offset=None, sign_at=None):
+            header_length=None, shdr_offset=None, sign_at=None,
+            program_headers=None):
     """Everything up to the first section's bytes.
 
     header_length and shdr_offset are for the path that builds its own
@@ -997,6 +1087,14 @@ def _header(template, control_infos, section_infos, metadata, blob, klicensee,
     to be made over the header this builds. Left out, whatever the blob
     already carries there is written as it stands, which is the template's
     own signature.
+
+    program_headers replaces the copy of the ELF's program header table that
+    the SELF carries in its own header. The header is otherwise the
+    template's bytes, so a patch that made a segment longer would leave the
+    file saying one length in its header and carrying another in its
+    sections: the console would map the shorter one and none of what was
+    written past it. Left out, the template's table stands, which is right
+    whenever nothing moved.
     """
     sce = template.sce
     keyset = keyset or template.keyset
@@ -1030,6 +1128,13 @@ def _header(template, control_infos, section_infos, metadata, blob, klicensee,
                            own.control_info_offset, own.control_info_size,
                            own.padding)
         head[SceHeader.SIZE:SceHeader.SIZE + SelfHeader.SIZE] = moved.pack()
+
+    if program_headers is not None:
+        at = template.self_header.phdr_offset
+        for phdr in program_headers:
+            packed = phdr.pack()
+            head[at:at + len(packed)] = packed
+            at += len(packed)
 
     at = template.self_header.control_info_offset
     for block in control_infos:

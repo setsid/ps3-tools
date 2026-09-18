@@ -1100,7 +1100,7 @@ class TheWholeRun(unittest.TestCase):
                 return image
 
             def sign(self, profile, info, source, elf_path, destination,
-                     target_name, klicensee=None):
+                     target_name, klicensee=None, grown_segments=False):
                 with open(elf_path, "rb") as handle:
                     image = handle.read()
                 fields = {name: info[name]

@@ -174,7 +174,7 @@ class Signer:
         return elf
 
     def sign(self, profile, info, source, elf_path, destination, target_name,
-             klicensee=None):
+             klicensee=None, grown_segments=False):
         """The patched ELF put back into the container source came out of.
 
         profile, info and target_name are taken for the same reasons the old
@@ -187,6 +187,12 @@ class Signer:
         scetool's -g and it feeds the CID_FN hash here, for the same reason:
         that hash binds the content ID to the file name, and a file written
         under a name it was not signed for is valid and will not load.
+
+        grown_segments is passed straight through. It says the fix that was
+        just applied extended a loadable segment on purpose, which one of
+        them does and the rest do not. Defaulting it off here as well as
+        below means a caller that has not thought about it gets the strict
+        answer.
         """
         del profile, info
         try:
@@ -210,7 +216,8 @@ class Signer:
                 out = keysmith.sign(elf, template, klicensee or "",
                                     self.keys_path,
                                     filename=target_name or "",
-                                    key_revision=self.key_revision)
+                                    key_revision=self.key_revision,
+                                    grown_segments=grown_segments)
         except keysmith.SceError as exc:
             raise ScetoolError(str(exc)) from None
         except OSError as exc:

@@ -96,8 +96,12 @@ class FakeScetool:
         return image
 
     def sign(self, profile, info, source, elf_path, destination, target_name,
-             klicensee=None):
+             klicensee=None, grown_segments=False):
+        # grown_segments is recorded rather than ignored: a fix that extends
+        # a segment has to reach the signer saying so, and a double that
+        # swallowed it would let that break without a test noticing.
         self.calls.append(("sign", target_name, klicensee, profile))
+        self.grown = grown_segments
         if self.fail_signing and target_name in self.fail_signing:
             raise scetool.ScetoolError(f"signing {target_name} failed")
         with open(elf_path, "rb") as handle:
@@ -230,6 +234,17 @@ class EveryTitleTheProgramCanPatch(unittest.TestCase):
                                                    key)
                 self.assertFalse(found.get("tool_fault"), found)
                 self.assertEqual(found["state"], patchstate.UNKNOWN)
+
+    def test_only_the_fix_that_moves_a_segment_says_it_does(self):
+        """Black Ops 1, Black Ops II and Modern Warfare 3 patch instructions
+        in place and move nothing, so the rebuild's check on the shape of the
+        ELF stays exactly as strict for them. Only Modern Warfare 2 extends a
+        segment, and only its own script says so.
+        """
+        declared = {key for key in titles.TITLES
+                    if getattr(patchstate.patcher_module(key),
+                               "EXTENDS_SEGMENT", False)}
+        self.assertEqual(declared, {"mw2"})
 
     def test_every_title_has_a_card_and_an_icon(self):
         from ps3tools.shell import icons, registry
@@ -1132,7 +1147,7 @@ class ThePatch(ConsoleCase):
             catch that before it reaches the console."""
 
             def sign(self, profile, info, source, elf_path, destination,
-                     target_name, klicensee=None):
+                     target_name, klicensee=None, grown_segments=False):
                 with open(elf_path, "r+b") as handle:
                     handle.seek(0x800)
                     handle.write(b"\xDE\xAD\xBE\xEF")

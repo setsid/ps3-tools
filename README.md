@@ -1,5 +1,5 @@
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
-
+---
 [![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)
 [![downloads](https://img.shields.io/github/downloads/setsid/ps3-tools/total?color=003791)](https://github.com/setsid/ps3-tools/releases)
 [![licence](https://img.shields.io/badge/licence-MIT-003791)](LICENSE)
@@ -25,8 +25,6 @@ Black Ops II, Modern Warfare 3 and Black Ops are fixed and in the app.
 
 Several titles also stop finding matches once their map packs are installed.
 That is separate from the fixes above and is not yet addressed.
-
----
 
 
 Tools for a PS3 running custom firmware, in one Windows program. A diagnostic

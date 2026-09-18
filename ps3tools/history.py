@@ -29,6 +29,31 @@ class Release:
 
 RELEASES = (
     Release(
+        version="1.4.2",
+        date="2026-09-18",
+        summary="The three patch screens are the same screen now, and the "
+                "program checks the game is not running before it starts.",
+        changes=(
+            "The console keeps hold of a game's code once it has loaded it, "
+            "so patching a game that has been played since the console was "
+            "switched on does nothing at all, and closing the game is not "
+            "enough. Somebody lost an evening to that. The screen now says "
+            "so before it does anything, and it checks: if the game is "
+            "running, it says to quit it and restart the console rather than "
+            "letting the patch go ahead and do nothing.",
+            "Every patch screen asks you to fully restart the console after "
+            "a patch or a restore, in one place rather than in two panels "
+            "that could both appear.",
+            "The patch screens carried several banners and a good deal of "
+            "explanation above the file list, and nobody read any of it. "
+            "Each now says one line about what the fix does, keeps any "
+            "warning that changes what you should do, and puts the rest "
+            "behind More about this fix.",
+            "The three patch screens look the same as each other. Where they "
+            "differ it is because the fix differs.",
+        ),
+    ),
+    Release(
         version="1.4.1",
         date="2026-09-17",
         summary="The update check runs at every launch, and the window has "

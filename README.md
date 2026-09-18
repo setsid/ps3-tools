@@ -1,4 +1,5 @@
 <img src="logo.png" width="420" alt="PS3 Tools by setsid">
+
 ---
 
 [![latest release](https://img.shields.io/github/v/release/setsid/ps3-tools?label=latest&color=003791)](https://github.com/setsid/ps3-tools/releases/latest)

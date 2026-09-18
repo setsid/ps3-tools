@@ -197,14 +197,18 @@ class States(FixtureCase):
         untested release of that game instead, and there is nothing to
         collect.
         """
+        # None of these three is in the table. BLES00683 used to be one of
+        # them and is Modern Warfare 2's own release now, so it would be
+        # named by its title ID rather than by the files beside it, which is
+        # a different case from the one this test is about.
         report = self.report({
-            GAME: folders("BLES00683", "BLES01945", "BLES02077"),
-            usrdir("BLES00683"): listing("list_usrdir_bo2.txt"),
+            GAME: folders("BLES01944", "BLES01945", "BLES02077"),
+            usrdir("BLES01944"): listing("list_usrdir_bo2.txt"),
             usrdir("BLES01945"): listing("list_usrdir_bo2.txt"),
             usrdir("BLES02077"): listing("list_usrdir_bo2.txt")})
         rows = {item.title_id: item for item in report.installations}
         self.assertEqual(sorted(rows),
-                         ["BLES00683", "BLES01945", "BLES02077"])
+                         ["BLES01944", "BLES01945", "BLES02077"])
         for row in rows.values():
             self.assertEqual(row.title_key, "bo2")
             self.assertTrue(row.untested)
@@ -219,10 +223,12 @@ class States(FixtureCase):
         attributed from the listing alone, so it is left alone and said to be
         left alone.
         """
+        # Three games now: both Modern Warfare titles ship a default_mp.self,
+        # so that name on its own says even less than it did.
         self.assertEqual(
             sorted(titles.keys_for_files(
                 ["t5mp_ps3f.self", "default_mp.self"])),
-            ["bo1", "mw3"])
+            ["bo1", "mw2", "mw3"])
 
     def test_bljm61034_is_never_treated_as_black_ops_two(self):
         # It was in an earlier draft of the table and Sony's manifest returns

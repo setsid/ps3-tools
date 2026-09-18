@@ -34,6 +34,22 @@ RELEASES = (
         summary="A new tool: Monitor, which graphs what the console is doing "
                 "while it does it.",
         changes=(
+            "A fourth fix: Modern Warfare 2. Multiplayer showing level 1 and "
+            "keeping nothing, on any PSN account made after late 2018. It is "
+            "the same identity fault as Black Ops and the fix goes the other "
+            "way about it: the identity the server holds you under is in the "
+            "reply the game reads when it signs in, so the fix takes that "
+            "rather than working one out. An account that already works is "
+            "handed the identity it already had.",
+            "That fix is built from work by Jakes625, with his permission, "
+            "and this program's own build of it comes out byte for byte the "
+            "same as his: the instruction at the hook, the forty four bytes "
+            "of the cave, and the change to the program header that makes "
+            "the cave executable. His releases carry a good deal more than "
+            "the stats fix and none of the rest of it is here.",
+            "The home screen is two sections now. The four game fixes sit "
+            "together under a heading of their own, and everything else is "
+            "under Console tools.",
             "Monitor is a new tool on the home screen. It reads the "
             "console's status page every few seconds while it is open and "
             "graphs the temperatures, the fan and the free space over time, "

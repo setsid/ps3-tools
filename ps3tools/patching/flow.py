@@ -197,17 +197,16 @@ def _bytes_state(site, word):
 def pattern_site_state(image, kind):
     """(state, detail) for a site that is found rather than looked up.
 
-    Black Ops 1 only. The other two titles read their state twice over, once
-    from the bytes at a recorded offset and once from the fix's own site
-    finding, and demand that the two agree. There is no recorded offset here
-    to be the second reading: the two known builds of this game put the same
-    code at different addresses, which is the whole reason the site is found
-    rather than written down.
+    Black Ops 1 and Modern Warfare 2. The other two titles read their state
+    twice over, once from the bytes at a recorded offset and once from the
+    fix's own site finding, and demand that the two agree. There is no
+    recorded offset here to be the second reading: Black Ops 1's two known
+    builds put the same code at different addresses, and Modern Warfare 2
+    shipped in seven regions with figures measured on one of them.
 
-    What takes its place is inside the fix. It will not answer at all unless
-    two independent signatures land on the same function, the imports resolve
-    the way the loader resolves them, and every landmark it needs is found
-    exactly once. Anything else comes back here as unknown, and unknown is
+    What takes its place is inside each fix. Neither will answer unless its
+    own signatures land in exactly one place and every fact it checks is what
+    it must be. Anything else comes back here as unknown, and unknown is
     reported and left alone exactly as an unreadable four bytes would be.
     """
     found = patchstate.decrypted_state(image, kind)
@@ -274,8 +273,8 @@ def site_offset(site, image, kind):
 
     A site with an offset written down answers straight away. A site found by
     pattern has to be looked for, and the answer is whatever the fix itself
-    found, because nothing else could know: the two known builds of that game
-    put the same code at different addresses.
+    found, because nothing else could know where the code landed in the build
+    in front of it.
     """
     if site.get("located_by") != "pattern":
         return site.get("file_offset")
@@ -786,8 +785,8 @@ def apply_fix(image, kind, module, context=None):
     because patch-bo2.py's main stops on a file that is already patched rather
     than saying so.
 
-    context is what a fix needs that is not in the decrypted image. Two of
-    the three need nothing. Black Ops 1 writes the path it will read the
+    context is what a fix needs that is not in the decrypted image. Three of
+    the four need nothing. Black Ops 1 writes the path it will read the
     account ID from into its own code cave, and the title in that path comes
     from this file's own content ID, which is in the SELF header and so is
     not in the image the fix is handed.
@@ -807,6 +806,12 @@ def apply_fix(image, kind, module, context=None):
                 patched, what = module.apply(bytes(data), content_id)
             except module.NotThisBuild as exc:
                 raise PatchFailed(f"{exc}.")
+            return patched, what["offset"]
+        if kind == "mw2":
+            # Needs nothing from outside the image: the identity it seeds the
+            # cache with is in the reply the game is already reading, so
+            # unlike Black Ops 1 there is no path and no account to put in.
+            patched, what = module.apply(bytes(data))
             return patched, what["offset"]
         if kind == "mw3":
             offset, state = module.find_site(data)

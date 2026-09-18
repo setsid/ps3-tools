@@ -12,7 +12,7 @@
     <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops-ii"><img src="docs/cards/black-ops-2.svg" alt="Black Ops II, fixed" width="180"></a></td>
     <td align="center"><a href="docs/tested-releases.md#call-of-duty-modern-warfare-3"><img src="docs/cards/modern-warfare-3.svg" alt="Modern Warfare 3, fixed" width="180"></a></td>
     <td align="center"><a href="docs/tested-releases.md#call-of-duty-black-ops"><img src="docs/cards/black-ops.svg" alt="Black Ops, fixed" width="180"></a></td>
-    <td align="center"><a href="docs/tested-releases.md#modern-warfare-2"><img src="docs/cards/modern-warfare-2.svg" alt="Modern Warfare 2, investigating" width="180"></a></td>
+    <td align="center"><a href="https://github.com/jacob-schroeder/IW4-Binaries"><img src="docs/cards/modern-warfare-2.svg" alt="Modern Warfare 2, fixed" width="180"></a></td>
   </tr>
   <tr>
     <td align="center"><a href="docs/tested-releases.md#world-at-war"><img src="docs/cards/world-at-war.svg" alt="World at War, untested" width="180"></a></td>
@@ -179,12 +179,37 @@ on one line would be a graph that lied.
 Each game misbehaves because of a fault in the game binary, not because of your
 account or your network.
 
-| | Black Ops II | Modern Warfare 3 | Black Ops |
-| --- | --- | --- | --- |
-| Symptom | Freezes while a PSN session is active | You reach a multiplayer lobby and are dropped back to the menu about a second later, on any account made after late 2018 | Multiplayer opens at rank 1 every time and nothing is kept, on any account made after late 2018 |
-| Files changed | `EBOOT.BIN`, `t6_ps3f.self`, `t6mp_ps3f.self` | `default_mp.self` | `t5mp_ps3f.self` |
-| Left alone | | `default.self`, campaign and Spec Ops | `t5_ps3f.self` and `EBOOT.BIN`, campaign and zombies |
-| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 | BLES01031 and BLUS30591, title update 1.13 |
+| | Black Ops II | Modern Warfare 3 | Black Ops | Modern Warfare 2 |
+| --- | --- | --- | --- | --- |
+| Symptom | Freezes while a PSN session is active | You reach a multiplayer lobby and are dropped back to the menu about a second later, on any account made after late 2018 | Multiplayer opens at rank 1 every time and nothing is kept, on any account made after late 2018 | Multiplayer shows level 1 and keeps nothing, on any account made after late 2018 |
+| Files changed | `EBOOT.BIN`, `t6_ps3f.self`, `t6mp_ps3f.self` | `default_mp.self` | `t5mp_ps3f.self` | `default_mp.self` |
+| Left alone | | `default.self`, campaign and Spec Ops | `t5_ps3f.self` and `EBOOT.BIN`, campaign and zombies | `default.self`, campaign and Spec Ops |
+| Confirmed on | BLES01717, title update 1.19 | BLES01428, title update 1.24 | BLES01031 and BLUS30591, title update 1.13 | Jakes625's own build, on title update 1.14. This program's build of the same fix has not been played on a console yet |
+
+### Modern Warfare 2, which asks the server instead
+
+Built from work by [Jakes625](https://github.com/jacob-schroeder/IW4-Binaries),
+with his permission. The stats fix is all that is taken: his releases carry
+about twenty security patches and a script compiler besides, and none of that
+is in this program.
+
+The fault is the same identity one as Black Ops, and the fix goes the other
+way about it. The game hashes your online ID to work out who it is, caches
+that, and asks the server about it. Black Ops has to derive the account ID
+locally because its sign-in reply carries no identity at all. This game's
+reply does carry one, so the fix takes the identity the server itself sent and
+seeds the game's cache with it before the game can use its own.
+
+That is why this one has no tick box in front of Apply. An account that
+already works is handed the identity it already had, and where the reply
+carries no identity the game is left to do exactly what it did before.
+
+One instruction is replaced with a branch into a code cave of 44 bytes, in the
+part of the file the game loads as code. Three facts about the build are
+checked before a byte is written, and any one of them failing is a refusal
+that says which.
+
+---
 
 ### Black Ops, and what follows from how it works
 
@@ -427,6 +452,14 @@ a real console was found that way.
 console. What a HEN console actually wants from a signed file was worked out
 that way, one attempt at a time, and he has answered every odd question and
 tried every odd build he has been sent without once running out of patience.
+
+**Jakes625** — worked out the Modern Warfare 2 stats fix and gave permission
+for it to be built into this program. His binaries are what this program's own
+build of that fix was checked against, instruction by instruction: the hook,
+the cave and the program header change all come out byte for byte the same.
+His work is at
+[jacob-schroeder/IW4-Binaries](https://github.com/jacob-schroeder/IW4-Binaries),
+and it carries a good deal more than the stats fix, none of which is here.
 
 **OpenResty** — worked out that Demonware derives the XUID from the account ID
 rather than from the PSN online ID. That is the fault behind every account made

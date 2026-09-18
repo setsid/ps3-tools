@@ -88,7 +88,7 @@ CARDS = (
     ("black-ops-2.svg", "B2", "Black Ops II", "fixed"),
     ("modern-warfare-3.svg", "M3", "Modern Warfare 3", "fixed"),
     ("black-ops.svg", "B1", "Black Ops", "fixed"),
-    ("modern-warfare-2.svg", "M2", "Modern Warfare 2", "investigating"),
+    ("modern-warfare-2.svg", "M2", "Modern Warfare 2", "fixed"),
     ("world-at-war.svg", "WW", "World at War", "untested"),
     ("modern-warfare.svg", "MW", "Modern Warfare", "untested"),
     ("ghosts.svg", "GH", "Ghosts", "untested"),

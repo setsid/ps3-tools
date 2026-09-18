@@ -538,6 +538,13 @@ class PatcherScreen(Screen):
     #: frame between the user and the answer they came for.
     BACKGROUND = ()
 
+    #: (words, link) naming whoever the fix was built from, shown under the
+    #: one line summary. On the screen rather than only in the About page,
+    #: because somebody using a fix somebody else worked out should be able to
+    #: see whose work it is without going looking. Empty for a fix that is
+    #: this program's own throughout.
+    CREDIT = ()
+
     #: The one line on the expander. The same on all three screens, because
     #: what is behind it is the same kind of thing on all three.
     MORE_SUMMARY = "More about this fix"
@@ -654,6 +661,21 @@ class PatcherScreen(Screen):
         self._symptom = QLabel(self.blurb or self.config.get("symptom", ""))
         self._symptom.setWordWrap(True)
         layout.addWidget(self._symptom)
+
+        # Whose work this fix came from, under the line that says what it
+        # does. A link rather than a name alone, so somebody can go and look
+        # at the work rather than take this program's word for whose it is.
+        self._credit = None
+        if self.CREDIT:
+            words, link = self.CREDIT
+            label = QLabel(f'{words} <a href="{link}">{link}</a>'
+                           if link else words)
+            label.setWordWrap(True)
+            label.setObjectName("dim")
+            label.setOpenExternalLinks(True)
+            label.setToolTip(f"Open {link} in your browser." if link else "")
+            layout.addWidget(label)
+            self._credit = label
 
         # Under the explanation, because it is about the game rather than
         # about this program, and above everything else, because somebody who
@@ -2884,6 +2906,53 @@ ACCOUNT_UNREADABLE = (
 ACCOUNT_NO_ID = (
     "np_cache.dat came off this console and the fix could not read an account "
     "ID out of it. What the file says:")
+
+
+#: Whose work the Modern Warfare 2 fix is, and where it lives. Said on the
+#: screen, in the About page and in the README, because all three are places
+#: somebody might look and none of them is where everybody looks.
+MW2_CREDIT_WORDS = "The Modern Warfare 2 fix is built from work by Jakes625."
+MW2_CREDIT_LINK = "https://github.com/jacob-schroeder/IW4-Binaries"
+
+
+@register
+class ModernWarfareTwoPatcher(PatcherScreen):
+    """Modern Warfare 2, whose correct identity the server has already sent.
+
+    The opposite direction to Black Ops 1. That game's sign-in reply carries
+    no user ID, so its fix works one out from the account ID. This one's
+    reply does carry it, so the fix takes what the server said and seeds the
+    game's own cache with it.
+
+    Which is why this screen has no tick box in front of Apply and Black Ops
+    1 does. Black Ops 1 replaces one way of working out an identity with
+    another, and on an account the first way suited that is a change for the
+    worse; this hands the game the identity the server itself is holding, and
+    an account that already works is handed the one it already had.
+    """
+
+    title_key = "mw2"
+    key = "mw2"
+    title = "Modern Warfare 2 stats fix"
+    blurb = ("Stops multiplayer showing level 1 and keeping nothing on a "
+             "newer PSN account.")
+    tile = "M2"
+    order = 40
+    CREDIT = (MW2_CREDIT_WORDS, MW2_CREDIT_LINK)
+
+    BACKGROUND = (
+        ("The identity the server holds you under is in the reply the game "
+         "reads when it signs in, so the fix uses that rather than working "
+         "one out. Where the reply carries no identity, the game is left to "
+         "do exactly what it did before.",
+         "An account that already works is handed the identity it already "
+         "had, so this is not a fix that can be applied to the wrong "
+         "account."),
+        (f"{MW2_CREDIT_WORDS} His releases carry about twenty security "
+         f"patches and a script compiler as well; none of that is in this "
+         f"program, which applies the stats fix and nothing else.",
+         f"His work is at {MW2_CREDIT_LINK}."),
+    )
 
 
 @register

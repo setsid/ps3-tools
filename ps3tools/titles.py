@@ -60,8 +60,10 @@ UPDATE_MANIFEST_URL = ("https://a0.ww.np.dl.playstation.net/tpl/np/"
 # SELF and needs none; the two t6 selfs are spawned by the game with this one,
 # so scetool needs it to decrypt or re-sign them.
 BO2_KLICENSEE = "8C10AC1473DF38ADD7A4F2EE8C838DAB"
-# InfinityWardKey as raw ASCII with a trailing NUL.
+# InfinityWardKey as raw ASCII with a trailing NUL. Both Modern Warfare
+# titles here are signed with it.
 MW3_KLICENSEE = "496E66696E697479576172644B657900"
+MW2_KLICENSEE = MW3_KLICENSEE
 # Black Ops 1's multiplayer binary.
 BO1_KLICENSEE = "AF0A8F0A8909F09234091AFADF909AF0"
 
@@ -120,6 +122,24 @@ PATCH_SITES = {
     # patch-bo1.py: two independent signatures have to agree on one function,
     # the imports are resolved the way the loader resolves them, and anything
     # that matches twice or not at all is refused rather than guessed at.
+    # Located by pattern for the same reason Black Ops 1 is, and for one
+    # more: seven regions of this game shipped and the figures were measured
+    # on one of them. The two that could be compared, BLES00683 and
+    # BLUS30377, decrypt to the same image, so region alone changes nothing
+    # on title update 1.14; a build where it does is found by the signature
+    # rather than missed by an offset.
+    #
+    # Three facts are checked in patch-mw2.py before anything is written: the
+    # instruction being displaced, the instruction after it, and the value at
+    # the identity cache pointer. Any one of them failing is a refusal naming
+    # it.
+    "mw2-multiplayer": {
+        "image": "default_mp.elf",
+        "located_by": "pattern",
+        "note": ("one instruction in the auth reply parser, sent into a code "
+                 "cave that seeds the identity cache with the server's own "
+                 "user ID"),
+    },
     "bo1-multiplayer": {
         "image": "t5mp.elf",
         "located_by": "pattern",
@@ -161,6 +181,16 @@ BO1_BINARIES = (
            "campaign and zombies; unaffected"),
     binary("EBOOT.BIN", FREE, None, None,
            "the launcher; unaffected"),
+)
+
+MW2_BINARIES = (
+    binary("default_mp.self", MW2_KLICENSEE, "mw2-multiplayer",
+           "default_mp.elf", "multiplayer"),
+    # Listed so a scan names it rather than passing over a file sitting beside
+    # the one being changed. It has no patch site: the identity the fix
+    # corrects is only asked for online, and the campaign does not go online.
+    binary("default.self", MW2_KLICENSEE, None, None,
+           "campaign and Spec Ops; unaffected"),
 )
 
 MW3_BINARIES = (
@@ -211,6 +241,17 @@ BO2_TITLE_IDS = (
 # because a title ID that matches nothing costs nothing and taking one out on
 # a negative result is how a real release stops being recognised. They are
 # recorded here so the next person knows they were looked at.
+# The seven releases of Modern Warfare 2 that the reference build this fix
+# came from was published for, and nothing beyond them. Other release
+# identifiers for this game may well exist; none was confirmed here, and an ID
+# that is not in this list is treated the way any unrecognised ID is, which is
+# a warning on the screen rather than a refusal.
+MW2_TITLE_IDS = (
+    "BLES00683", "BLES00684", "BLES00685", "BLES00686", "BLES00687",
+    "BLES00690",
+    "BLUS30377",
+)
+
 MW3_TITLE_IDS = (
     "BCKS10195",
     "BLES01428", "BLES01429", "BLES01430", "BLES01431", "BLES01432",
@@ -395,6 +436,35 @@ TITLES = {
                                       "c9646458"}},
         },
     },
+    "mw2": {
+        "key": "mw2",
+        "name": "Call of Duty: Modern Warfare 2",
+        "short": "Modern Warfare 2",
+        "binaries": MW2_BINARIES,
+        "title_ids": MW2_TITLE_IDS,
+        "latest_update": "1.14",
+        "verified_update": "1.14",
+        "repo": "https://github.com/jacob-schroeder/IW4-Binaries",
+        "symptom": ("Multiplayer shows you at level 1 and keeps none of your "
+                    "stats, on any PSN account made after late 2018. The "
+                    "game works your identity out by hashing your online ID "
+                    "and asks the server about that, and the server holds "
+                    "you under a different one."),
+        "set_advice": ("Only the multiplayer binary is changed. The campaign "
+                       "and Spec Ops binary is left alone."),
+        "advice": ("The correct identity is already in the reply the game is "
+                   "reading when it signs in, so the fix takes it from there "
+                   "instead of working one out. Nothing outside the game's "
+                   "own folder is touched, and the fix is the same whichever "
+                   "account you sign in with. Keep the backup: it is the "
+                   "only way back."),
+        "publishes_update_hashes": False,
+        # Empty, and it is not an oversight. The reference build this was
+        # made from has been played on a console; this program's own build of
+        # the same fix has not, and the screen says which of those two things
+        # is true rather than borrowing the other's confirmation.
+        "skus": {},
+    },
     "mw3": {
         "key": "mw3",
         "name": "Call of Duty: Modern Warfare 3",
@@ -575,9 +645,11 @@ def keys_for_files(names):
     those ship a default_mp.self. One user deleted game data chasing it.
 
     Black Ops 1 and Black Ops II are decided outright by their t5 and t6 file
-    names. The Modern Warfare 3 names are shared with other games built on the
-    same engine, so a match here means candidate and nothing more, and the
-    patch site is what settles it.
+    names. The two Modern Warfare titles share default_mp.self and
+    default.self with each other and with other games built on the same
+    engine, so a match on those means candidate and nothing more: the title
+    ID names the game, and the patch site settles whether the fix belongs to
+    the file.
     """
     present = {str(name) for name in (names or ())}
     return tuple(key for key in TITLES

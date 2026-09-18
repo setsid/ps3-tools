@@ -203,7 +203,8 @@ class ContentTests(AboutCase):
     def test_credits_name_what_is_bundled(self):
         text = self.text_of(self.build())
         for name in ("webMAN MOD", "keysmith", "naehrwert", "PySide6",
-                     "patch-bo1.py", "patch-bo2.py", "patch-mw3.py"):
+                     "patch-bo1.py", "patch-bo2.py", "patch-mw2.py",
+                     "patch-mw3.py"):
             self.assertIn(name, text)
 
     def test_the_patcher_credit_names_every_script_that_ships(self):
@@ -215,33 +216,39 @@ class ContentTests(AboutCase):
         everything that is inside the exe, so the names are checked against
         the directory rather than against a list written out here.
         """
-        entry = [detail for name, detail in about.CREDITS
-                 if "patch-bo1.py" in name][0]
         scripts = sorted(path.name for path in
                          pathlib.Path(ROOT, "tools", "patchers").glob("*.py"))
-        self.assertEqual(scripts,
-                         ["patch-bo1.py", "patch-bo2.py", "patch-mw3.py"])
+        self.assertTrue(scripts)
         name = [name for name, _detail in about.CREDITS
                 if "patch-bo1.py" in name][0]
         for script in scripts:
+            # Every script on disk, named. The count is deliberately not
+            # checked against a word in the sentence: the entry said "three"
+            # while four shipped, which is the same staleness this test
+            # exists to catch wearing different clothes.
             self.assertIn(script, name)
-        self.assertIn("three", entry)
 
     def test_the_people_who_found_the_faults_are_credited(self):
-        """Two of the three fixes exist because somebody outside this project
-        did the work, and the screen is where that is said.
+        """Most of these fixes exist because somebody outside this project did
+        the work, and the screen is where that is said.
 
         bjocampos found that the Black Ops II patch was leaving a third of the
-        game unpatched, and OpenResty found what Demonware actually hashes,
-        which is the whole of the Black Ops fix. A refactor of this tuple that
-        drops either name is a regression whatever else it improves.
+        game unpatched, OpenResty found what Demonware actually hashes, which
+        is the whole of the Black Ops fix, and the Modern Warfare 2 fix is
+        Jakes625's work built in with his permission. A refactor of this tuple
+        that drops a name is a regression whatever else it improves.
         """
         names = [name for name, _detail in about.CREDITS]
-        self.assertIn("bjocampos", names)
-        self.assertIn("OpenResty", names)
         text = self.text_of(self.build())
-        self.assertIn("bjocampos", text)
-        self.assertIn("OpenResty", text)
+        for name in ("bjocampos", "OpenResty", "Jakes625"):
+            self.assertIn(name, names)
+            self.assertIn(name, text)
+
+    def test_the_modern_warfare_2_work_is_linked_as_well_as_named(self):
+        """A name with no link is somebody the reader cannot go and find."""
+        links = [url for _words, url in about.REPOSITORIES]
+        self.assertIn("https://github.com/jacob-schroeder/IW4-Binaries",
+                      links)
 
     def test_it_states_its_own_licence_and_only_credits_the_rest(self):
         # The MIT claim is about this project's code. The others are credited,

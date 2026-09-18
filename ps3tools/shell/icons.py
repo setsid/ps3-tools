@@ -213,6 +213,7 @@ _BY_KEY = {
     "monitor": "monitor",
     "bo1": "gamepad",
     "bo2": "gamepad",
+    "mw2": "gamepad",
     "mw3": "gamepad",
     "about": "info",
     "packages": "download",

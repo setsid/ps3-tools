@@ -1200,15 +1200,25 @@ class ScreenCase(ConsoleCase):
 
 @unittest.skipIf(QApplication is None, "PySide6 is not available")
 class TheScreen(ScreenCase):
-    def test_both_cards_register_from_one_class(self):
+    def test_every_card_registers_from_one_class(self):
+        """One class per fix, all of them in the home screen's fixes section.
+
+        The orders are checked against each other rather than against the
+        numbers they happen to hold: order is a place within a section now,
+        and a test that pinned the numbers went red when the sections arrived
+        without anything being wrong.
+        """
         from ps3tools.shell import registry
         keys = {item.key: item for item in registry.screens()}
-        self.assertIn("bo2", keys)
-        self.assertIn("mw3", keys)
-        self.assertIs(keys["bo2"].__bases__[0], patcher.PatcherScreen)
-        self.assertIs(keys["mw3"].__bases__[0], patcher.PatcherScreen)
-        self.assertEqual((keys["bo2"].tile, keys["bo2"].order), ("B2", 20))
-        self.assertEqual((keys["mw3"].tile, keys["mw3"].order), ("M3", 30))
+        for key, tile in (("bo2", "B2"), ("mw3", "M3"), ("bo1", "B1"),
+                          ("mw2", "M2")):
+            self.assertIn(key, keys)
+            self.assertIs(keys[key].__bases__[0], patcher.PatcherScreen)
+            self.assertEqual(keys[key].tile, tile)
+            self.assertEqual(keys[key].group, "fixes")
+        orders = [keys[key].order for key in ("bo2", "mw3", "bo1", "mw2")]
+        self.assertEqual(orders, sorted(orders))
+        self.assertEqual(len(set(orders)), len(orders))
 
     def test_with_no_address_it_says_so_rather_than_hanging(self):
         screen, services = self.build(patcher.BlackOpsTwoPatcher, host="")

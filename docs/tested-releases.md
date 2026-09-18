@@ -117,15 +117,31 @@ Multiplayer opens at rank 1 every time and nothing you do is kept, on any PSN ac
 
 ---
 
-# Titles with no fix
+## Call of Duty: Modern Warfare 2
 
-## Modern Warfare 2
+**Confirmed working on .** Patched, written back, read off the console again and booted, on each of them.
 
-Believed to be the same identity fault as Black Ops: an account made after Sony's 2018 change works out to a different player than the one the server holds. Nothing has been taken apart yet and no release has been looked at.
+Multiplayer shows you at level 1 and keeps none of your stats, on any PSN account made after late 2018. The game works your identity out by hashing your online ID and asks the server about that, and the server holds you under a different one.
 
-No release of this title has been examined, so there is nothing to list.
+7 releases of this game are recognised. 7 recognised, not reported on.
+
+| Title ID | Region | Media | Status | Update hashes |
+| --- | --- | --- | --- | --- |
+| BLES00683 | Europe | disc | Recognised, not reported on | none |
+| BLES00684 | Europe | disc | Recognised, not reported on | none |
+| BLES00685 | Europe | disc | Recognised, not reported on | none |
+| BLES00686 | Europe | disc | Recognised, not reported on | none |
+| BLES00687 | Europe | disc | Recognised, not reported on | none |
+| BLES00690 | Europe | disc | Recognised, not reported on | none |
+| BLUS30377 | North America | disc | Recognised, not reported on | none |
+
+**BLES00683.** The build this fix was measured on. Its multiplayer binary decrypts to the same image as BLUS30377's, compared byte for byte, so region alone changes nothing on title update 1.14. The fix itself is Jakes625's work and his binaries have been played on a console; this program's own build of it has not, which is why no release below is marked as confirmed.
+
+> No update package hashes have been read for this title, so the program cannot say which title update is installed and does not check it before patching. That matters less here than it would elsewhere: this fix finds its own patch site in whatever build it is handed rather than trusting an address, so a build it was not written for is refused rather than patched wrongly.
 
 ---
+
+# Titles with no fix
 
 ## World at War
 

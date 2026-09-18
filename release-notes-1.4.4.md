@@ -1,7 +1,11 @@
 ## PS3 Tools 1.4.4
 
-A new tool: Monitor, which graphs what the console is doing while it does it.
+A fourth fix, Modern Warfare 2, and a new tool that graphs what the console is doing while it does it.
 
+- **Modern Warfare 2 stats fix.** Multiplayer showing level 1 and keeping nothing, on any PSN account made after late 2018. The same identity fault as Black Ops, fixed from the other end: the identity the server holds you under is in the reply the game reads when it signs in, so the fix takes that rather than working one out. An account that already works is handed the identity it already had, which is why this one has no tick box in front of Apply
+- That fix is built from work by [Jakes625](https://github.com/jacob-schroeder/IW4-Binaries), with his permission. This program's own build of it comes out byte for byte the same as his: the instruction at the hook, the forty four bytes of the cave, and the change to the program header that makes the cave executable. His releases carry about twenty security patches and a script compiler as well, and none of that is here
+- The fix finds its hook by signature rather than by an address, and checks three facts about the build before a byte is written. Any one of them failing is a refusal saying which
+- The home screen is two sections now: the four game fixes under a heading of their own, and everything else under Console tools
 - Monitor is a new tool on the home screen. Press Start and it reads the console's status page every few seconds, graphing the CPU and RSX temperatures, the fan and the free space against time, with the current figure above each graph and the lowest and highest of the window beside it
 - Holding the pointer over a line reads that moment out, so "how hot did it get while I was in that lobby" is a question the graph answers rather than one you estimate by eye
 - The interval runs from two seconds to a minute and the window from five minutes to everything recorded in the session. A console too slow to answer as fast as the interval asks is noticed, counted, and a longer interval suggested

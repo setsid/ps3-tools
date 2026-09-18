@@ -30,13 +30,18 @@ from ps3tools.shell.updatebanner import UpdateBanner
 
 SUPPORT_ADDRESS = "setsid.research@proton.me"
 
-#: The two patcher repositories and this one. The third is built from
+#: The patcher repositories and this one. This program's own is built from
 #: update.REPOSITORY, so the link and the update check can never disagree.
 REPOSITORIES = (
     ("Black Ops II PSN freeze fix",
      "https://github.com/setsid/bo2-ps3-psn-freeze-fix"),
     ("Modern Warfare 3 PSN fix",
      "https://github.com/setsid/mw3-ps3-psn-fix"),
+    # Not this project's repository. The Modern Warfare 2 fix is built from
+    # the work there, with permission, so it is listed among the links rather
+    # than only in the credits below.
+    ("Modern Warfare 2 binaries, by Jakes625",
+     "https://github.com/jacob-schroeder/IW4-Binaries"),
     (f"{APP_NAME} (this program)",
      f"https://github.com/{update.REPOSITORY}"),
     # Not used by this program, but the same console and the same audience:
@@ -86,10 +91,11 @@ CREDITS = (
      "The keys file this program reads to decrypt and re-sign a game binary. "
      "It is not this project's work and is not redistributed with the "
      "source."),
-    ("patch-bo1.py, patch-bo2.py and patch-mw3.py",
-     "The three patch scripts in tools/patchers, two of them from the "
-     "standalone repositories listed above and the Black Ops one written "
-     "for this program, shipped inside the exe so the patcher does not "
+    ("patch-bo1.py, patch-bo2.py, patch-mw2.py and patch-mw3.py",
+     "The patch scripts in tools/patchers, one per fix. Two come from the "
+     "standalone repositories listed above, the Black Ops one was written "
+     "for this program, and the Modern Warfare 2 one is built from work by "
+     "Jakes625. They are shipped inside the exe so the patcher does not "
      "depend on anything being installed alongside it."),
     ("PySide6 and Qt",
      "The window, the widgets and the drawing. Used as a dynamically linked "
@@ -105,6 +111,12 @@ CREDITS = (
      "way, one attempt at a time, and he has answered every odd question and "
      "tried every odd build he has been sent without once running out of "
      "patience."),
+    ("Jakes625",
+     "Worked out the Modern Warfare 2 stats fix and gave permission for it "
+     "to be built into this program. His binaries are what this program's "
+     "own build of that fix was checked against, instruction by instruction. "
+     "They carry a good deal more than the stats fix, and none of the rest "
+     "of it is here."),
     ("OpenResty",
      "Worked out that Demonware derives the XUID from the account ID "
      "rather than from the PSN online ID, which is the fault the Black Ops "

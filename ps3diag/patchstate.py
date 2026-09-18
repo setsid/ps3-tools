@@ -450,13 +450,14 @@ def _read_npdrm(data, start, end):
 # one you want used. Nothing here ever fetches them: a missing patcher means
 # the decrypted path answers unknown, which is the honest answer anyway.
 PATCHER_ENV = {"bo2": "PS3DIAG_BO2_PATCHER", "mw3": "PS3DIAG_MW3_PATCHER",
-               "bo1": "PS3DIAG_BO1_PATCHER"}
+               "bo1": "PS3DIAG_BO1_PATCHER", "mw2": "PS3DIAG_MW2_PATCHER"}
 
 # The vendored copies, which are what an exe has. They are the same scripts the
 # two repositories publish, kept here because those repositories are not on the
 # machine the exe runs on. Without them every file on the patcher screen came
 # back "not recognised" on a console that was perfectly fine.
 PATCHER_FILES = {"bo2": "patch-bo2.py", "mw3": "patch-mw3.py",
+                 "mw2": "patch-mw2.py",
                  "bo1": "patch-bo1.py"}
 BUNDLED_DIR = os.path.join("tools", "patchers")
 
@@ -467,7 +468,9 @@ PATCHER_PATHS = {"bo2": ("bo2/repo/patch-bo2.py", "bo2/patch-bo2.py",
                  "mw3": ("mw3-psn-fix/patch-mw3.py",
                          "mw3-ps3-psn-fix/patch-mw3.py"),
                  "bo1": ("bo1/repo/patch-bo1.py", "bo1/patch-bo1.py",
-                         "bo1-ps3-stats-fix/patch-bo1.py")}
+                         "bo1-ps3-stats-fix/patch-bo1.py"),
+                 "mw2": ("mw2/repo/patch-mw2.py", "mw2/patch-mw2.py",
+                         "mw2-ps3-stats-fix/patch-mw2.py")}
 
 _patchers = {}
 
@@ -564,6 +567,8 @@ def decrypted_state(data, kind):
             return _bo2_decrypted(module, data)
         if kind == "bo1":
             return _bo1_decrypted(module, data)
+        if kind == "mw2":
+            return _mw2_decrypted(module, data)
     except SystemExit as error:
         out["evidence"] = "the patcher stopped: %s" % (error or "no reason")
         return out
@@ -584,6 +589,39 @@ def _mw3_decrypted(module, data):
     return {"state": UNPATCHED if state == "stock" else PATCHED,
             "confidence": HIGH, "offset": offset,
             "evidence": ("the patcher's own signature matches at file offset "
+                         "%08X and reads as %s" % (offset, state))}
+
+
+def _mw2_decrypted(module, data):
+    """Modern Warfare 2, which finds its hook by signature.
+
+    Like Black Ops 1, there is no recorded offset for this to be checked
+    against, so the whole of the checking lives in the patcher and a refusal
+    from it comes back as unknown rather than as a verdict. Unlike Black Ops
+    1, the patcher also checks two instructions and one pointer value before
+    it will call a build its own, and any of those failing is what produces
+    the unknown.
+    """
+    try:
+        # The checks first. A build whose identity cache pointer reads
+        # something else is one the fix would refuse, so reporting it as
+        # unpatched would be telling somebody their file is fine to patch
+        # when it is not.
+        module.check(bytes(data))
+        offset, state = module.find_site(bytes(data))
+    except Exception as error:
+        return {"state": UNKNOWN, "confidence": LOW,
+                "evidence": ("the fix does not recognise this build: %s"
+                             % error)}
+    if state is None:
+        return {"state": UNKNOWN, "confidence": LOW, "offset": offset,
+                "evidence": ("the instruction the fix replaces has been "
+                             "changed to something this program did not "
+                             "write, so what is in this file is somebody "
+                             "else's patch")}
+    return {"state": UNPATCHED if state == module.STOCK else PATCHED,
+            "confidence": HIGH, "offset": offset,
+            "evidence": ("the fix's own signature matches at file offset "
                          "%08X and reads as %s" % (offset, state))}
 
 

@@ -57,7 +57,7 @@ CONFIRMED = {
 
 #: The order the titles appear in, which is the order of the cards on the
 #: README rather than alphabetical.
-ORDER = ("bo2", "mw3", "bo1")
+ORDER = ("bo2", "mw3", "bo1", "mw2")
 
 #: Anything true about one release that the tables above cannot say, keyed by
 #: title ID. These are facts about how a release is built rather than about
@@ -70,6 +70,13 @@ PER_RELEASE = {
         "and the first one it was not written against, which is the test that "
         "matters for a fix that finds its own patch site rather than being "
         "given an address."),
+    "BLES00683": (
+        "The build this fix was measured on. Its multiplayer binary decrypts "
+        "to the same image as BLUS30377's, compared byte for byte, so region "
+        "alone changes nothing on title update 1.14. The fix itself is "
+        "Jakes625's work and his binaries have been played on a console; "
+        "this program's own build of it has not, which is why no release "
+        "below is marked as confirmed."),
     "NPEB00756": (
         "This release is fake-signed, which scetool could not open at all. "
         "The program reads and writes fake-signed binaries itself now, so "
@@ -84,11 +91,6 @@ PER_RELEASE = {
 #: The games with no fix, said once each so that somebody arriving from the
 #: README card lands on something rather than on a missing anchor.
 NO_FIX = (
-    ("modern-warfare-2", "Modern Warfare 2",
-     "Believed to be the same identity fault as Black Ops: an account made "
-     "after Sony's 2018 change works out to a different player than the one "
-     "the server holds. Nothing has been taken apart yet and no release has "
-     "been looked at."),
     ("world-at-war", "World at War",
      "Lobbies are reported as failing to connect. Not investigated, and no "
      "release has been looked at."),

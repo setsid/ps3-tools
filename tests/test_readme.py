@@ -37,6 +37,12 @@ def anchor_for(heading):
     return re.sub(r"\s+", "-", text)
 
 
+#: The one card that links somewhere other than this repository's own notes.
+#: The Modern Warfare 2 fix is built from work published there, so the card
+#: leads to the work rather than to this project's page about it.
+OUTSIDE_LINK = "https://github.com/jacob-schroeder/IW4-Binaries"
+
+
 class TheCardsAtTheTop(unittest.TestCase):
     """Eight titles, four across and two down, each one a link."""
 
@@ -48,12 +54,22 @@ class TheCardsAtTheTop(unittest.TestCase):
         return re.findall(r'href="docs/tested-releases\.md#([^"]+)"',
                           self.readme)
 
+    def outside_links(self):
+        return [url for url in re.findall(r'<a href="(https?://[^"]+)">',
+                                          self.readme)
+                if url in (OUTSIDE_LINK,)]
+
     def images(self):
         return re.findall(r'src="(docs/cards/[^"]+)"', self.readme)
 
     def test_there_are_eight_of_them(self):
-        self.assertEqual(len(self.links()), 8)
         self.assertEqual(len(self.images()), 8)
+        self.assertEqual(len(self.links()) + len(self.outside_links()), 8)
+
+    def test_the_modern_warfare_2_card_leads_to_the_work_it_came_from(self):
+        self.assertEqual(self.outside_links(), [OUTSIDE_LINK])
+        self.assertIn(f'<a href="{OUTSIDE_LINK}"><img '
+                      f'src="docs/cards/modern-warfare-2.svg"', self.readme)
 
     def test_every_card_is_a_link_to_a_heading_that_exists(self):
         headings = {anchor_for(found) for found

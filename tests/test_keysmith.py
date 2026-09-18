@@ -919,8 +919,15 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
         self.assertEqual(back, original)
 
     def test_the_metadata_key_the_file_carries_is_the_one_it_had(self):
-        """Only the block wrapped around it is re-encrypted, so the section
-        data does not have to be touched at all."""
+        """The key and the counter the metadata is encrypted under are kept.
+
+        This used to assert the whole key table came back unchanged, which
+        was true only while signing at another revision left the section
+        bytes alone. A file signed for PS3HEN has its loaded sections
+        compressed, so the bytes move and the per-section hashes in that
+        table move with them. The key and the counter are what this is about
+        and they are untouched.
+        """
         item = sample("mw2-eboot")
         klic = bytes.fromhex(item.klicensee)
         before = keysmith.read(item.path)
@@ -931,7 +938,43 @@ class TheKeyRevisionAFileIsRebuiltAt(unittest.TestCase):
         second = after.decrypt_metadata(klic)
         self.assertEqual(first.info.key, second.info.key)
         self.assertEqual(first.start_iv, second.start_iv)
-        self.assertEqual(first.keys, second.keys)
+        self.assertEqual(len(first.keys), len(second.keys))
+
+    def test_signing_for_hen_compresses_the_loaded_sections(self):
+        """The fourth thing that makes a file a PS3HEN file.
+
+        Every HEN build surveyed compresses every loaded section and every
+        custom firmware build compresses none, across twenty-eight files. It
+        was taken for a build choice, and a patch with the other three
+        differences right black screened a real console the moment the
+        patched binary loaded.
+        """
+        item = sample("mw2-eboot")
+        klic = bytes.fromhex(item.klicensee)
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        for revision, want in ((0x000A, {2}), (None, {1})):
+            with self.subTest(key_revision=revision):
+                built = keysmith.read(keysmith.sign(
+                    elf, item.path, item.klicensee, key_revision=revision))
+                loaded = [s.compressed for s
+                          in built.decrypt_metadata(klic).sections
+                          if s.section_type == 2 and s.data_size]
+                self.assertTrue(loaded)
+                self.assertEqual(set(loaded), want)
+
+    def test_a_hen_file_is_smaller_than_the_one_it_came_from(self):
+        item = sample("mw2-mp")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        built = keysmith.sign(elf, item.path, item.klicensee,
+                              key_revision=0x000A)
+        self.assertLess(len(built), os.path.getsize(item.path))
+
+    def test_it_still_decrypts_back_to_what_went_in(self):
+        item = sample("mw2-mp")
+        elf = keysmith.decrypt(item.path, item.klicensee)
+        built = keysmith.sign(elf, item.path, item.klicensee,
+                              key_revision=0x000A)
+        self.assertEqual(keysmith.decrypt(built, item.klicensee), elf)
 
     def test_asking_for_the_revision_it_already_has_changes_nothing(self):
         item = sample("mw2-eboot")

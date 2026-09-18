@@ -58,7 +58,8 @@ from . import keys as keymod
 from . import npdrm as npdrm_hash
 from .errors import SigningFailed
 from .self import effective_klicensee
-from .structs import (CONTROL_DIGEST, CONTROL_FLAGS, CONTROL_NPDRM,
+from .structs import (COMPRESSED, CONTROL_DIGEST, CONTROL_FLAGS,
+                      CONTROL_NPDRM, UNCOMPRESSED,
                       ControlInfo, MetadataInfo,
                       SECTION_TYPE_PHDR, SECTION_TYPE_SHDR, SceHeader)
 
@@ -136,11 +137,52 @@ def _hmac_key(metadata, section):
     return key
 
 
-def section_payloads(template, elf, metadata):
+#: Whether a build for this key revision compresses its loaded sections.
+#:
+#: Surveyed the way the control flags were, across fourteen paired builds of
+#: each kind. Every custom firmware build stores every section uncompressed,
+#: one pattern with no exceptions. Every PS3HEN build compresses every loaded
+#: section, in two patterns that differ only by section count and never by
+#: whether a loaded section is compressed. So a HEN build compresses where a
+#: custom firmware build does not, without exception across twenty-eight
+#: files.
+#:
+#: This was taken for a build choice at first and it is not. A patch with the
+#: other three fields right went on to a HEN console cleanly and the console
+#: black screened at the moment the patched binary loaded, so the three were
+#: necessary and not sufficient.
+COMPRESSES_SECTIONS = {
+    0x000A: True,
+}
+
+
+def copy_compression(metadata_value):
+    """The section info's spelling of what a metadata section records.
+
+    The two tables use the same two numbers for the same idea, which is the
+    one mercy in this format.
+    """
+    return COMPRESSED if metadata_value == COMPRESSED else UNCOMPRESSED
+
+
+def compresses_for(revision):
+    """Whether to compress, or None to follow the template section by section.
+
+    None is the answer for every revision the survey does not cover, which
+    keeps the custom firmware path exactly as it was.
+    """
+    return COMPRESSES_SECTIONS.get(revision)
+
+
+def section_payloads(template, elf, metadata, compress=None):
     """The plaintext bytes each metadata section should carry, in order.
 
     Plaintext here means compressed if the section is compressed, because the
     HMAC and the encryption are both over that, not over the raw segment.
+
+    compress overrides the template section by section: True compresses every
+    loaded section, which is what a PS3HEN build does, and None follows the
+    template, which is what every other path has always done.
     """
     out = []
     for section in metadata.sections:
@@ -159,7 +201,12 @@ def section_payloads(template, elf, metadata):
                     "describes", path=template.path,
                     field=f"segment {section.index}", expected=phdr.filesz,
                     found=len(body))
-            if section.compressed == 2:
+            # A section with nothing in it stays as it is: compressing no
+            # bytes produces a zlib header the console would have to unpack
+            # for nothing, and no build in the survey does it.
+            wants = section.compressed == 2 if compress is None else (
+                compress and bool(body))
+            if wants:
                 body = zlib.compress(body, ZLIB_LEVEL)
         elif section.section_type == SECTION_TYPE_SHDR:
             # The section header table, taken from the template rather than
@@ -215,7 +262,8 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
     # candidate keysets actually opened this file.
     metadata = template.decrypt_metadata(klicensee, store)
     revision, keyset = _signing_keyset(template, store, key_revision)
-    payloads = section_payloads(template, elf, metadata)
+    compress = compresses_for(key_revision)
+    payloads = section_payloads(template, elf, metadata, compress)
 
     unchanged = all(
         len(payload) == section.data_size
@@ -272,6 +320,12 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
         copy = _copy_section(section)
         copy.data_offset = offset
         copy.data_size = len(payload)
+        # The record has to agree with the bytes. A section compressed on the
+        # way in and recorded as stored is a section the console will not
+        # unpack, which is the same black screen by another route.
+        if compress is not None and section.section_type == SECTION_TYPE_PHDR:
+            copy.compressed = COMPRESSED if (compress and payload) else (
+                UNCOMPRESSED)
         new_sections.append(copy)
 
     section_infos = [_copy_info(info) for info in template.section_infos]
@@ -280,6 +334,11 @@ def rebuild(template, elf, klicensee=b"", store=None, keep_layout=True,
             info = section_infos[section.index]
             info.offset = offset
             info.size = len(payload)
+            # The SELF's own table says the same thing in its own numbers,
+            # and the two disagreeing is a file that reads differently
+            # depending on which one a reader trusts.
+            if compress is not None:
+                info.compressed = copy_compression(section.compressed)
 
     # The file digest covers the ELF that was signed. That this is a plain
     # SHA1 of the ELF was verified against a known-good scetool build, whose

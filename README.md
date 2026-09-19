@@ -30,7 +30,7 @@ That is separate from the fixes above and is not yet addressed.
 
 ---
 
-Tools for a PS3 running custom firmware, in one Windows program. A diagnostic
+Tools for a PS3 running CFW or HEN, in one Windows program. A diagnostic
 that reads the console and writes everything a helper needs into one file; the
 two Call of Duty PSN fixes, applied over the network rather than by hand; title
 updates fetched from Sony at full speed; a package installer; a save data
@@ -39,7 +39,7 @@ backup; and a game transfer that resumes. It replaces `bo2-psn-fix.exe` and
 
 ## What you need
 
-A PS3 running custom firmware with webMAN MOD, switched on, sitting at the main
+A PS3 running CFW or HEN with webMAN MOD, switched on, sitting at the main
 menu rather than in a game, on the same network as the PC. The console's IP
 address. Nothing else: there is nothing to install and nothing to configure.
 
